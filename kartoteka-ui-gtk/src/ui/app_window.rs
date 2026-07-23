@@ -48,7 +48,7 @@ struct Widgets {
     toasts: adw::ToastOverlay,
     subtitle: adw::WindowTitle,
     listbox: gtk4::ListBox,
-    detail: gtk4::TextView,
+    detail: gtk4::Box,
 }
 
 pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
@@ -107,17 +107,12 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     sidebar.append(&search);
     sidebar.append(&list_scroll);
 
-    // Detail pane.
-    let detail = gtk4::TextView::builder()
-        .editable(false)
-        .cursor_visible(false)
-        .monospace(true)
-        .wrap_mode(gtk4::WrapMode::WordChar)
-        .left_margin(12)
-        .right_margin(12)
-        .top_margin(12)
-        .bottom_margin(12)
-        .build();
+    // Detail pane: a vertical box of field rows, rebuilt on selection.
+    let detail = gtk4::Box::new(Orientation::Vertical, 10);
+    detail.set_margin_top(18);
+    detail.set_margin_bottom(18);
+    detail.set_margin_start(18);
+    detail.set_margin_end(18);
     let detail_scroll = gtk4::ScrolledWindow::new();
     detail_scroll.set_child(Some(&detail));
     detail_scroll.set_hexpand(true);
@@ -622,7 +617,7 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             widgets.listbox.select_row(Some(&first));
         }
     } else {
-        widgets.detail.buffer().set_text("");
+        clear_box(&widgets.detail);
     }
 }
 
@@ -668,20 +663,149 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     let Some(library) = s.library.as_ref() else {
         return;
     };
-    let key = &s.entries[entry_idx].key;
+    let summary = &s.entries[entry_idx];
+    let key = summary.key.clone();
 
-    let mut text = library.read_entry_raw(key).unwrap_or_default();
-    if let Ok(Some(note)) = library.load_note(key) {
-        if !note.body.trim().is_empty() || !note.frontmatter.tags.is_empty() {
-            text.push_str("\n--- note ---\n");
-            if !note.frontmatter.tags.is_empty() {
-                text.push_str(&format!("tags: {}\n\n", note.frontmatter.tags.join(", ")));
-            }
-            text.push_str(note.body.trim());
-            text.push('\n');
+    let b = &widgets.detail;
+    clear_box(b);
+
+    // Title.
+    let title_text = if summary.title.is_empty() {
+        key.as_str()
+    } else {
+        summary.title.as_str()
+    };
+    let title = gtk4::Label::new(Some(title_text));
+    title.add_css_class("title-2");
+    title.set_wrap(true);
+    title.set_xalign(0.0);
+    title.set_halign(gtk4::Align::Start);
+    title.set_selectable(true);
+    b.append(&title);
+
+    // Byline.
+    let byline = match (summary.author.is_empty(), summary.year.is_empty()) {
+        (false, false) => format!("{} · {}", summary.author, summary.year),
+        (false, true) => summary.author.clone(),
+        (true, false) => summary.year.clone(),
+        (true, true) => String::new(),
+    };
+    if !byline.is_empty() {
+        let label = gtk4::Label::new(Some(&byline));
+        label.add_css_class("dim-label");
+        label.set_wrap(true);
+        label.set_xalign(0.0);
+        label.set_halign(gtk4::Align::Start);
+        b.append(&label);
+    }
+
+    let fields = gtk4::Box::new(Orientation::Vertical, 4);
+    fields.set_margin_top(8);
+
+    // Structured fields from the entry.
+    if let Ok(parsed) = library.load_entry(&key) {
+        let e = &parsed.entry;
+        fields.append(&field_row(
+            "Type",
+            &format!("{:?}", e.entry_type()).to_lowercase(),
+        ));
+        fields.append(&field_row("Key", &key));
+        if let Some(doi) = e.doi() {
+            fields.append(&field_row("DOI", doi));
+        }
+        if let Some(isbn) = e.isbn() {
+            fields.append(&field_row("ISBN", isbn));
         }
     }
-    widgets.detail.buffer().set_text(&text);
+
+    // Note-derived state: tags, attachments, annotations, prose.
+    let mut note_body = String::new();
+    if let Ok(Some(note)) = library.load_note(&key) {
+        if !note.frontmatter.tags.is_empty() {
+            fields.append(&field_row("Tags", &note.frontmatter.tags.join(", ")));
+        }
+        for att in &note.frontmatter.attachments {
+            let hex = att
+                .hash
+                .split_once(':')
+                .map(|(_, h)| h)
+                .unwrap_or(&att.hash);
+            let present = library.attachment_blob_path(hex).exists();
+            let pages = att
+                .pages
+                .map(|p| format!(", {p} pages"))
+                .unwrap_or_default();
+            let value = if present {
+                format!("{} ({}{})", att.filename, human_size(att.bytes), pages)
+            } else {
+                format!("{} — missing", att.filename)
+            };
+            fields.append(&field_row("PDF", &value));
+        }
+        note_body = note.body.trim().to_string();
+    }
+    if let Ok(Some(sidecar)) = library.load_annotations(&key) {
+        if !sidecar.annotations.is_empty() {
+            fields.append(&field_row(
+                "Annotations",
+                &sidecar.annotations.len().to_string(),
+            ));
+        }
+    }
+    b.append(&fields);
+
+    // Note prose.
+    if !note_body.is_empty() {
+        let sep = gtk4::Separator::new(Orientation::Horizontal);
+        sep.set_margin_top(6);
+        sep.set_margin_bottom(6);
+        b.append(&sep);
+        let prose = gtk4::Label::new(Some(&note_body));
+        prose.set_wrap(true);
+        prose.set_xalign(0.0);
+        prose.set_halign(gtk4::Align::Start);
+        prose.set_selectable(true);
+        b.append(&prose);
+    }
+}
+
+fn clear_box(b: &gtk4::Box) {
+    while let Some(child) = b.first_child() {
+        b.remove(&child);
+    }
+}
+
+fn field_row(name: &str, value: &str) -> gtk4::Box {
+    let row = gtk4::Box::new(Orientation::Horizontal, 10);
+    let name_label = gtk4::Label::new(Some(name));
+    name_label.add_css_class("dim-label");
+    name_label.set_xalign(1.0);
+    name_label.set_width_chars(11);
+    name_label.set_valign(gtk4::Align::Start);
+    let value_label = gtk4::Label::new(Some(value));
+    value_label.set_xalign(0.0);
+    value_label.set_halign(gtk4::Align::Start);
+    value_label.set_wrap(true);
+    value_label.set_selectable(true);
+    value_label.set_hexpand(true);
+    row.append(&name_label);
+    row.append(&value_label);
+    row
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
 }
 
 fn toast(widgets: &Rc<Widgets>, message: &str) {
