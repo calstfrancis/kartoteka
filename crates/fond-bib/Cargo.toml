@@ -18,6 +18,12 @@ serde_json.workspace = true
 blake3.workspace = true
 walkdir.workspace = true
 thiserror.workspace = true
+reqwest = { workspace = true, optional = true }
+
+[features]
+# Network acquisition (DOI/ISBN/arXiv lookup). Off by default so lean consumers of
+# fond-bib (e.g. Zerkalo) don't pull in reqwest/tokio.
+acquire = ["dep:reqwest"]
 
 [dev-dependencies]
 tempfile = "3"

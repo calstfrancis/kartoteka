@@ -116,5 +116,7 @@ called out here rather than buried.
    proprietary-distribution decision is made with eyes open. Do not enable any GPL-only
    `git2` backend feature.
 4. **`reqwest` must be pinned to `rustls-tls`** (no OpenSSL/native-tls) — both to avoid
-   OpenSSL's licensing/build friction and to keep the Windows build self-contained. Applies
-   at M5, listed now so it is not forgotten.
+   OpenSSL's licensing/build friction and to keep the Windows build self-contained.
+   **Done (M5):** the workspace `reqwest` uses `default-features = false, features =
+   ["blocking", "rustls-tls"]`, and it is feature-gated behind `fond-bib`'s `acquire`
+   feature so it is not pulled in unless acquisition is enabled.

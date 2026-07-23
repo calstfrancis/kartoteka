@@ -156,10 +156,10 @@ Slice A (annotation sidecar) is **done**. The PDF-touching slices (4.1/4.2/4.4) 
 
 ## Milestone 5 — acquisition
 
-- 5.1 DOI / ISBN / arXiv metadata lookup (`reqwest` **blocking + rustls**, one request at
-  a time).
-- 5.2 PDF metadata sniffing (embedded metadata → candidate fields).
-- 5.3 "Drop a PDF in → populated entry" end-to-end: hash, store blob, sniff, look up,
+- 5.1 ◐ Metadata lookup (`reqwest` **blocking + rustls**, feature-gated `acquire`).
+  **DOI done** (`kartoteka acquire --doi`, via doi.org→BibTeX). ISBN + arXiv still to do.
+- 5.2 ⬜ PDF metadata sniffing (embedded metadata → candidate fields).
+- 5.3 ⬜ "Drop a PDF in → populated entry" end-to-end: hash, store blob, sniff, look up,
   generate key, write entry + attachment record.
 
 ---

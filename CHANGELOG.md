@@ -2,6 +2,22 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased] — Milestone 5 (acquisition), slice A: DOI lookup
+
+### Added
+
+- **`kartoteka acquire --doi <doi>`** — look up a DOI via doi.org content negotiation
+  (BibTeX), parse it through the existing BibLaTeX path, and add an entry with a freshly
+  generated citation key. `--bibtex-file <path>` does the same from a local file (offline).
+- **`fond-bib::acquire`** — blocking HTTP (no async runtime), **feature-gated** behind
+  `acquire` so lean consumers of `fond-bib` (e.g. Zerkalo) don't pull in `reqwest`. Built
+  with **rustls** (no OpenSSL), per the licence audit.
+- `Library::add_bibtex` / `add_entries` — add entries with generated keys (as opposed to
+  `import_bibtex`, which preserves source keys).
+
+Still to come in Milestone 5: ISBN and arXiv lookup, PDF metadata sniffing, and the
+"drop a PDF in → populated entry" flow.
+
 ## [Unreleased] — Search (cross-cutting) + Milestone 4.2
 
 ### Added

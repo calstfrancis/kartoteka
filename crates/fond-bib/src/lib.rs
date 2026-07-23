@@ -6,6 +6,8 @@
 //! re-exports the Hayagriva types callers need so they need not depend on `hayagriva`
 //! directly for common cases.
 
+#[cfg(feature = "acquire")]
+pub mod acquire;
 pub mod annotation;
 pub mod collection;
 pub mod entry;

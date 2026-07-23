@@ -204,10 +204,33 @@ impl Library {
     /// assigned keys in input order.
     pub fn add_from_yaml(&self, input: &str) -> Result<Vec<String>> {
         let entries = entry::parse_all(input, Path::new("<input>"))?;
+        self.add_entries(&entries)
+    }
+
+    /// Add entries parsed from a BibLaTeX/BibTeX snippet, generating fresh citation keys
+    /// (unlike `import_bibtex`, which preserves the source keys). Used by acquisition.
+    pub fn add_bibtex(&self, source: &str) -> Result<Vec<String>> {
+        let library = hayagriva::io::from_biblatex_str(source).map_err(|errors| {
+            let joined = errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            BibError::Import {
+                message: format!("could not parse BibLaTeX: {joined}"),
+            }
+        })?;
+        let entries: Vec<_> = library.iter().cloned().collect();
+        self.add_entries(&entries)
+    }
+
+    /// Add entries with freshly generated, collision-free citation keys. Writes each
+    /// `entries/<key>.yml` and regenerates `library.yml`. Returns the assigned keys.
+    pub fn add_entries(&self, entries: &[hayagriva::Entry]) -> Result<Vec<String>> {
         let mut existing = self.existing_keys()?;
         let mut assigned = Vec::with_capacity(entries.len());
 
-        for e in &entries {
+        for e in entries {
             let family = entry::family_name(e);
             let year = entry::year(e);
             let title = entry::title_string(e);

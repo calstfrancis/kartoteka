@@ -13,7 +13,7 @@ name = "kartoteka"
 path = "src/main.rs"
 
 [dependencies]
-fond-bib = { path = "../crates/fond-bib" }
+fond-bib = { path = "../crates/fond-bib", features = ["acquire"] }
 fond-vault = { path = "../crates/fond-vault" }
 fond-doc = { path = "../crates/fond-doc" }
 fond-index = { path = "../crates/fond-index" }

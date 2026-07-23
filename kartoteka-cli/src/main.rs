@@ -73,6 +73,16 @@ enum Command {
         #[arg(long = "zotero-db")]
         zotero_db: Option<PathBuf>,
     },
+    /// Acquire an entry from a DOI (via doi.org) or a BibTeX file. A fresh citation key is
+    /// generated. Network is used only for --doi.
+    Acquire {
+        /// DOI to look up (e.g. 10.1000/xyz or https://doi.org/10.1000/xyz).
+        #[arg(long)]
+        doi: Option<String>,
+        /// Add from a local BibTeX file instead (offline).
+        #[arg(long)]
+        bibtex_file: Option<PathBuf>,
+    },
     /// Render a collection as a formatted reference list.
     Bib {
         /// Collection slug (the collections/<slug>.yml basename).
@@ -247,6 +257,23 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             };
             let report = library.import_bibtex(&source, &opts)?;
             print_import(&report);
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Acquire { doi, bibtex_file } => {
+            let library = Library::open(&cli.library)?;
+            let bibtex = match (doi, bibtex_file) {
+                (Some(doi), _) => fond_bib::acquire::fetch_doi_bibtex(&doi)?,
+                (None, Some(path)) => std::fs::read_to_string(&path)?,
+                (None, None) => return Err("provide --doi or --bibtex-file".into()),
+            };
+            let keys = library.add_bibtex(&bibtex)?;
+            if keys.is_empty() {
+                return Err("no entries found in the acquired record".into());
+            }
+            for key in &keys {
+                println!("acquired {key}");
+            }
             Ok(ExitCode::SUCCESS)
         }
 

@@ -42,3 +42,5 @@ jobs:
           echo "PDFIUM_LIB_PATH=$PWD\pdfium\bin" >> $env:GITHUB_ENV
       - name: Test
         run: cargo test --workspace
+      - name: Test (acquire feature)
+        run: cargo test -p fond-bib --features acquire
