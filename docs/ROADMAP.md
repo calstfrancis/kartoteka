@@ -108,15 +108,19 @@ Lossless-enough import that Cal can actually switch. Import BetterBibTeX `.bib` 
 and extractable existing PDF annotations. **Write a report of anything that did not map
 cleanly** rather than dropping it silently.
 
-- 2.1 `.bib` → `Entry` via `biblatex` → `hayagriva`, with a field-mapping table.
-- 2.2 Zotero SQLite reader (read-only) for tags, collections, attachment paths, item
+Slice A (`.bib` importer) is **done**; slice B (Zotero SQLite) is next.
+
+- 2.1 ✅ `.bib` → `Entry` via `hayagriva::io::from_biblatex_str`; keys preserved.
+- 2.2 ⬜ Zotero SQLite reader (read-only) for tags, collections, attachment paths, item
   relations.
-- 2.3 Tags/collections/read-status → `notes/` frontmatter + `collections/`.
-- 2.4 Attachment path capture → attachment records (hash + copy blobs into
-  `attachments/`).
-- 2.5 Existing PDF annotation extraction → `annots/` sidecars where extractable (depends
-  on `fond-doc`; may partly land with M4).
-- 2.6 **Migration report**: unmapped fields, dropped data, ambiguous keys, collisions.
+- 2.3 ◐ Tags → `notes/` frontmatter (done). Collections + read-status await the SQLite
+  reader (`.bib` has no clean collection representation).
+- 2.4 ✅ Attachment path capture → records (hash + copy blobs into `attachments/`);
+  missing files reported.
+- 2.5 ⬜ Existing PDF annotation extraction → `annots/` sidecars where extractable
+  (depends on `fond-doc`; may partly land with M4).
+- 2.6 ✅ **Migration report**: unmapped fields, key collisions, unsafe keys, missing
+  attachments.
 
 ---
 

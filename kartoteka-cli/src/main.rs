@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use fond_bib::entry;
-use fond_bib::{FsckReport, Library};
+use fond_bib::{FsckReport, ImportReport, Library};
 use fond_vault::{Identity, Vault};
 
 type CliResult<T> = std::result::Result<T, Box<dyn Error>>;
@@ -52,6 +52,22 @@ enum Command {
         key: String,
         #[arg(long)]
         json: bool,
+    },
+    /// Import entries from a BetterBibTeX / BibLaTeX .bib file. Citation keys are
+    /// preserved. Prints a report of anything that did not map cleanly.
+    Import {
+        /// Path to the .bib file.
+        #[arg(long = "from-bibtex")]
+        from_bibtex: PathBuf,
+        /// Overwrite entries whose key already exists (default: skip and report).
+        #[arg(long)]
+        overwrite: bool,
+        /// Do not hash and copy referenced attachment files.
+        #[arg(long)]
+        no_attachments: bool,
+        /// Resolve relative attachment paths against this directory.
+        #[arg(long)]
+        attachment_base: Option<PathBuf>,
     },
     /// Regenerate library.yml (and, later, the search index) fully from the files.
     Reindex,
@@ -161,6 +177,25 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Import {
+            from_bibtex,
+            overwrite,
+            no_attachments,
+            attachment_base,
+        } => {
+            let source = std::fs::read_to_string(&from_bibtex)?;
+            let library = Library::open(&cli.library)?;
+            let opts = fond_bib::ImportOptions {
+                overwrite,
+                copy_attachments: !no_attachments,
+                attachment_base: attachment_base
+                    .or_else(|| from_bibtex.parent().map(|p| p.to_path_buf())),
+            };
+            let report = library.import_bibtex(&source, &opts)?;
+            print_import(&report);
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Reindex => {
             let library = Library::open(&cli.library)?;
             library.regenerate_library_yml()?;
@@ -211,6 +246,44 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             println!("committed {}", &oid[..oid.len().min(10)]);
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+fn print_import(report: &ImportReport) {
+    println!("Imported {} entries.", report.imported.len());
+
+    let total_copied = report.attachments_copied.len();
+    if total_copied > 0 {
+        println!("Copied {total_copied} attachment(s) into attachments/.");
+    }
+    let total_tagged: usize = report.tags_written.iter().map(|(_, n)| n).sum();
+    if total_tagged > 0 {
+        println!(
+            "Wrote {total_tagged} tag(s) across {} note(s).",
+            report.tags_written.len()
+        );
+    }
+
+    if report.is_clean() {
+        println!("Everything mapped cleanly.");
+        return;
+    }
+
+    println!("\n--- migration report ---");
+    for key in &report.skipped_key_collisions {
+        println!("skipped (exists)    {key}  (use --overwrite to replace)");
+    }
+    for (key, reason) in &report.skipped_unsafe_keys {
+        println!("skipped (bad key)   {key}: {reason}");
+    }
+    for (key, path) in &report.attachments_missing {
+        println!("attachment missing  {key}: {path}");
+    }
+    for (key, fields) in &report.unmapped_fields {
+        println!("unmapped fields     {key}: {}", fields.join(", "));
+    }
+    for warning in &report.parse_warnings {
+        println!("warning             {warning}");
     }
 }
 

@@ -2,6 +2,28 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased] — Milestone 2 (migration), slice A: BibTeX import
+
+### Added
+
+- **`kartoteka import --from-bibtex <file>`** — import a BetterBibTeX / BibLaTeX `.bib`
+  library. **Citation keys are preserved** so existing `@key` references in Typst
+  documents keep working (keys unsafe as a cross-platform filename are skipped and
+  reported, never silently remapped).
+  - Bibliographic data via Hayagriva's BibLaTeX converter; `keywords` → note `tags`;
+    entries stay pure Hayagriva.
+  - Attachment `file` references are resolved, hashed (blake3), and copied into
+    `attachments/`, with a record written to the note. Handles Zotero's
+    `title:path:mimetype` form and `;`-separated lists.
+  - **Migration report** of everything that did not map cleanly: key collisions,
+    unsafe keys, missing attachment files, and source fields Kartoteka does not track.
+  - `--overwrite`, `--no-attachments`, `--attachment-base` flags.
+- `today_iso()` date helper (dependency-free) stamps `date-added` on notes created by
+  import.
+
+Still to come in Milestone 2: the Zotero SQLite reader (collections, item relations,
+proper attachment resolution) and PDF annotation extraction (partly Milestone 4).
+
 ## [0.1.0] — unreleased (Milestone 1: the vault)
 
 The headless vault. No UI, no network, no PDFs yet (see `docs/ROADMAP.md`).

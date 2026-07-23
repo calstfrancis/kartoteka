@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 hayagriva.workspace = true
+biblatex.workspace = true
 serde.workspace = true
 serde_yaml_ng.workspace = true
 blake3.workspace = true

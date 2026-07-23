@@ -134,6 +134,32 @@ impl Library {
         Ok(parsed)
     }
 
+    /// Write an entry to `entries/<entry.key()>.yml`, preserving its own key (no key
+    /// generation). Used by import, where the source's citation keys must be kept so
+    /// existing `@key` references in the user's documents keep working.
+    pub fn write_entry(&self, entry: &hayagriva::Entry) -> Result<PathBuf> {
+        let path = self.entry_path(entry.key());
+        let text = entry::serialize_entry(entry)?;
+        fs::write(&path, text).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    /// Write a note to `notes/<key>.md`.
+    pub fn write_note(&self, key: &str, note: &Note) -> Result<PathBuf> {
+        let path = self.note_path(key);
+        fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    pub fn attachments_dir(&self) -> PathBuf {
+        self.root.join(ATTACHMENTS_DIR)
+    }
+
+    /// Path where the blob with the given bare hex hash lives.
+    pub fn attachment_blob_path(&self, hex: &str) -> PathBuf {
+        self.root.join(ATTACHMENTS_DIR).join(hex)
+    }
+
     /// Load a note if one exists for the key.
     pub fn load_note(&self, key: &str) -> Result<Option<Note>> {
         let path = self.note_path(key);
@@ -277,10 +303,6 @@ impl Library {
         }
 
         Ok(report)
-    }
-
-    fn attachment_blob_path(&self, hex: &str) -> PathBuf {
-        self.root.join(ATTACHMENTS_DIR).join(hex)
     }
 }
 

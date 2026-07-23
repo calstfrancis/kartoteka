@@ -9,12 +9,15 @@
 pub mod collection;
 pub mod entry;
 pub mod error;
+pub mod import;
 pub mod key;
 pub mod library;
 pub mod note;
+pub mod util;
 
 pub use collection::Collection;
 pub use error::{BibError, Result};
+pub use import::{ImportOptions, ImportReport};
 pub use library::{FsckReport, Library};
 pub use note::{Attachment, Note, NoteFrontmatter, ReadStatus};
 
