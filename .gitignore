@@ -1,0 +1,9 @@
+# Build output
+/target
+
+# Planning scratch — not part of the shipped repo (see the brief)
+Plans/
+
+# Editor swap files
+*.kate-swp
+*~
