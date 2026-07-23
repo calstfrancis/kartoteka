@@ -124,15 +124,15 @@ extraction) remains, and it rides with Milestone 4 since it needs `fond-doc`.
 
 ---
 
-## Milestone 3 — bibliography output
+## Milestone 3 — bibliography output — **done**
 
-- 3.1 `kartoteka bib <collection> --style <sbl|chicago-notes|…>` — formatted CSL output
-  via `hayagriva`. SBL (`society-of-biblical-literature-fullnote-bibliography`) and
-  Chicago-notes (`chicago-notes-bibliography`) must both work.
-- 3.2 CSL style bundling per `LICENSES.md` (CC-BY-SA assets + attribution).
-- 3.3 `kartoteka annotated-bib <collection>` — emit a `.typ` file pairing each rendered
-  CSL entry with its `notes/` prose.
-- 3.4 Style/collection round-trip and golden-output tests.
+- 3.1 ✅ `kartoteka bib <collection> --style <sbl|chicago-notes|…>` — CSL output via
+  `hayagriva`. SBL and Chicago-notes both work, plus any archived style / `--style-file`.
+- 3.2 ✅ SBL bundled as a CC-BY-SA asset (`assets/styles/`, attribution in
+  `LICENSE-STYLES.md`); Chicago comes from Hayagriva's archive.
+- 3.3 ✅ `kartoteka annotated-bib <collection>` — emits a `.typ` pairing each rendered CSL
+  entry with its `notes/` prose, in collection order.
+- 3.4 ✅ Rendering tests for both styles, the entry-slice path, and annotated ordering.
 
 ---
 

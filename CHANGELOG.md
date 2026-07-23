@@ -2,6 +2,22 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased] — Milestone 3 (bibliography output)
+
+### Added
+
+- **`kartoteka bib <collection> --style <name>`** — render a collection as a formatted CSL
+  reference list. **SBL** (`sbl`) and **Chicago notes** (`chicago-notes`) both work, plus
+  `chicago-author-date`, any style in Hayagriva's archive by name or CSL id (e.g. `apa`,
+  `ieee`), or an arbitrary `--style-file <path.csl>`. `--html` for HTML output.
+- **`kartoteka annotated-bib <collection> --style <name>`** — emit a Typst document pairing
+  each rendered reference with its note prose, in the collection's own order. `-o <file>`
+  or stdout.
+- New `fond-bib::render` module wrapping Hayagriva's CSL `BibliographyDriver`.
+- **Bundled SBL style** (`assets/styles/sbl-fullnote-bibliography.csl`, CC BY-SA 3.0) —
+  Hayagriva's archive does not carry it. Redistributed verbatim with attribution; see
+  `assets/styles/LICENSE-STYLES.md` and `docs/LICENSES.md`.
+
 ## [Unreleased] — Milestone 2 (migration)
 
 ### Added — slice B: Zotero SQLite augmentation

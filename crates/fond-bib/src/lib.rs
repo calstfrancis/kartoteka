@@ -13,6 +13,7 @@ pub mod import;
 pub mod key;
 pub mod library;
 pub mod note;
+pub mod render;
 pub mod util;
 pub mod zotero;
 
@@ -21,6 +22,12 @@ pub use error::{BibError, Result};
 pub use import::{ImportOptions, ImportReport};
 pub use library::{FsckReport, Library};
 pub use note::{Attachment, Note, NoteFrontmatter, ReadStatus};
+pub use render::{resolve_style, style_from_csl, RenderedEntry};
+
+// Re-export the CSL output format and style type so the CLI need not depend on
+// `hayagriva` directly.
+pub use hayagriva::citationberg::IndependentStyle;
+pub use hayagriva::BufWriteFormat;
 
 // Re-export the Hayagriva entry types so downstream crates can name them without a direct
 // `hayagriva` dependency.

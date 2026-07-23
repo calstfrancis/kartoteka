@@ -84,6 +84,12 @@ the whole 2600-style corpus, to keep the attribution surface small and auditable
 wants zero third-party-copyleft assets in the product at all, the alternative is to author
 or commission the two styles from scratch — noted, but almost certainly not worth it.
 
+**As implemented (Milestone 3):** Chicago-notes/-author-date are loaded from Hayagriva's
+own bundled style archive (no separate asset). **SBL is not in that archive**, so it is
+bundled verbatim as `crates/fond-bib/assets/styles/sbl-fullnote-bibliography.csl`
+(`include_str!`-embedded) with its CC-BY-SA 3.0 notice and author attribution recorded in
+`crates/fond-bib/assets/styles/LICENSE-STYLES.md`. This is the only CC-BY-SA asset shipped.
+
 This is the single dependency I would not ship without an explicit sign-off, so it is
 called out here rather than buried.
 

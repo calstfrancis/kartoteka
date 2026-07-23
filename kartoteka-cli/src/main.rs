@@ -73,6 +73,34 @@ enum Command {
         #[arg(long = "zotero-db")]
         zotero_db: Option<PathBuf>,
     },
+    /// Render a collection as a formatted reference list.
+    Bib {
+        /// Collection slug (the collections/<slug>.yml basename).
+        collection: String,
+        /// Style name: sbl, chicago-notes, chicago-author-date, or a CSL id (e.g. apa).
+        #[arg(long, default_value = "sbl")]
+        style: String,
+        /// Use a CSL style file instead of a built-in / archived style.
+        #[arg(long)]
+        style_file: Option<PathBuf>,
+        /// Emit HTML instead of plain text.
+        #[arg(long)]
+        html: bool,
+    },
+    /// Emit a Typst annotated bibliography: each rendered reference paired with its note.
+    AnnotatedBib {
+        /// Collection slug.
+        collection: String,
+        /// Style name or CSL id (see `bib`).
+        #[arg(long, default_value = "sbl")]
+        style: String,
+        /// Use a CSL style file instead of a built-in / archived style.
+        #[arg(long)]
+        style_file: Option<PathBuf>,
+        /// Write the .typ to this file instead of stdout.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
     /// Regenerate library.yml (and, later, the search index) fully from the files.
     Reindex,
     /// Check the library for structural problems. Exits non-zero if any are found.
@@ -202,6 +230,45 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Bib {
+            collection,
+            style,
+            style_file,
+            html,
+        } => {
+            let library = Library::open(&cli.library)?;
+            let csl = load_style(&style, style_file.as_deref())?;
+            let format = if html {
+                fond_bib::BufWriteFormat::Html
+            } else {
+                fond_bib::BufWriteFormat::Plain
+            };
+            let rendered = library.bibliography_for_collection(&collection, &csl, format)?;
+            for item in &rendered {
+                println!("{}\n", item.text);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::AnnotatedBib {
+            collection,
+            style,
+            style_file,
+            output,
+        } => {
+            let library = Library::open(&cli.library)?;
+            let csl = load_style(&style, style_file.as_deref())?;
+            let typ = library.annotated_bibliography_typ(&collection, &csl)?;
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, typ)?;
+                    println!("Wrote {}", path.display());
+                }
+                None => print!("{typ}"),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Reindex => {
             let library = Library::open(&cli.library)?;
             library.regenerate_library_yml()?;
@@ -252,6 +319,19 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             println!("committed {}", &oid[..oid.len().min(10)]);
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+fn load_style(
+    name: &str,
+    style_file: Option<&std::path::Path>,
+) -> CliResult<fond_bib::IndependentStyle> {
+    match style_file {
+        Some(path) => {
+            let xml = std::fs::read_to_string(path)?;
+            Ok(fond_bib::style_from_csl(&xml)?)
+        }
+        None => Ok(fond_bib::resolve_style(name)?),
     }
 }
 
