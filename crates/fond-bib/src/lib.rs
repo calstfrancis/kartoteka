@@ -14,6 +14,7 @@ pub mod key;
 pub mod library;
 pub mod note;
 pub mod util;
+pub mod zotero;
 
 pub use collection::Collection;
 pub use error::{BibError, Result};

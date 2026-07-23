@@ -68,6 +68,10 @@ enum Command {
         /// Resolve relative attachment paths against this directory.
         #[arg(long)]
         attachment_base: Option<PathBuf>,
+        /// Augment with a Zotero zotero.sqlite: import collections and notes, matching
+        /// items to entries by DOI then title+year.
+        #[arg(long = "zotero-db")]
+        zotero_db: Option<PathBuf>,
     },
     /// Regenerate library.yml (and, later, the search index) fully from the files.
     Reindex,
@@ -182,6 +186,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             overwrite,
             no_attachments,
             attachment_base,
+            zotero_db,
         } => {
             let source = std::fs::read_to_string(&from_bibtex)?;
             let library = Library::open(&cli.library)?;
@@ -190,6 +195,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                 copy_attachments: !no_attachments,
                 attachment_base: attachment_base
                     .or_else(|| from_bibtex.parent().map(|p| p.to_path_buf())),
+                zotero_db,
             };
             let report = library.import_bibtex(&source, &opts)?;
             print_import(&report);
@@ -263,6 +269,18 @@ fn print_import(report: &ImportReport) {
             report.tags_written.len()
         );
     }
+    if !report.collections_created.is_empty() {
+        println!(
+            "Created {} collection(s) from Zotero.",
+            report.collections_created.len()
+        );
+    }
+    if report.notes_imported > 0 {
+        println!(
+            "Merged {} Zotero note(s) into entry notes.",
+            report.notes_imported
+        );
+    }
 
     if report.is_clean() {
         println!("Everything mapped cleanly.");
@@ -281,6 +299,15 @@ fn print_import(report: &ImportReport) {
     }
     for (key, fields) in &report.unmapped_fields {
         println!("unmapped fields     {key}: {}", fields.join(", "));
+    }
+    for label in &report.zotero_unmatched {
+        println!("zotero unmatched    {label}  (no entry matched by DOI or title+year)");
+    }
+    if report.standalone_notes_skipped > 0 {
+        println!(
+            "standalone notes    {} Zotero note(s) had no parent item to attach to",
+            report.standalone_notes_skipped
+        );
     }
     for warning in &report.parse_warnings {
         println!("warning             {warning}");

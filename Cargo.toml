@@ -23,6 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_json = "1"
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 blake3 = "1"
 walkdir = "2"
 directories = "5"

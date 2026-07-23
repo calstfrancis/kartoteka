@@ -1,18 +1,23 @@
 //! Migration import from Zotero. Slice A: the BetterBibTeX `.bib` importer (roadmap 2.1,
-//! 2.3, 2.4, 2.6). The Zotero SQLite reader (collections, annotations) is a later slice.
+//! 2.3, 2.4, 2.6). Slice B augments a `.bib` import from the Zotero SQLite store —
+//! collections and standalone/child notes — linking Zotero items to citation keys by DOI
+//! then title+year (roadmap 2.2, 2.3-collections).
 //!
 //! Imported entries **keep their original citation keys** — regenerating them would break
 //! every `@key` reference in the user's existing Typst documents. Anything that does not
 //! map cleanly is collected into [`ImportReport`] rather than dropped silently.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use biblatex::{Bibliography, ChunksExt};
 
+use crate::collection::Collection;
 use crate::error::{BibError, Result};
+use crate::key::ascii_fold;
 use crate::library::Library;
 use crate::note::Attachment;
-use crate::util;
+use crate::{entry, util, zotero};
 
 /// Options controlling an import run.
 #[derive(Debug, Clone)]
@@ -24,6 +29,9 @@ pub struct ImportOptions {
     /// Directory that relative attachment paths are resolved against (e.g. the folder the
     /// `.bib` was exported to). Absolute paths ignore this.
     pub attachment_base: Option<PathBuf>,
+    /// Optional Zotero `zotero.sqlite` to augment the import with collections and notes.
+    /// Items are matched to the imported entries by DOI, then title+year.
+    pub zotero_db: Option<PathBuf>,
 }
 
 impl Default for ImportOptions {
@@ -32,6 +40,7 @@ impl Default for ImportOptions {
             overwrite: false,
             copy_attachments: true,
             attachment_base: None,
+            zotero_db: None,
         }
     }
 }
@@ -57,6 +66,17 @@ pub struct ImportReport {
     pub attachments_copied: Vec<(String, String)>,
     /// `(key, referenced path)` for attachment files that could not be found.
     pub attachments_missing: Vec<(String, String)>,
+
+    // --- Zotero SQLite augmentation (slice B) ---
+    /// Collection slugs written to `collections/`.
+    pub collections_created: Vec<String>,
+    /// Number of Zotero child notes merged into entry notes.
+    pub notes_imported: usize,
+    /// Zotero standalone notes (no parent item) that could not be attached to a key.
+    pub standalone_notes_skipped: usize,
+    /// Zotero items referenced by a collection or note that did not match any imported
+    /// entry (by DOI or title+year). A human-readable label per item.
+    pub zotero_unmatched: Vec<String>,
 }
 
 impl ImportReport {
@@ -66,6 +86,8 @@ impl ImportReport {
             && self.parse_warnings.is_empty()
             && self.unmapped_fields.is_empty()
             && self.attachments_missing.is_empty()
+            && self.zotero_unmatched.is_empty()
+            && self.standalone_notes_skipped == 0
     }
 }
 
@@ -184,7 +206,131 @@ impl Library {
         }
 
         self.regenerate_library_yml()?;
+
+        if let Some(db) = &opts.zotero_db {
+            self.augment_from_zotero(db, &mut report)?;
+        }
+
         Ok(report)
+    }
+
+    /// Augment an import with data only the Zotero SQLite store holds: collections and
+    /// notes. Zotero items are linked to citation keys by matching DOI, then title+year,
+    /// against every entry currently in the library.
+    fn augment_from_zotero(&self, db: &Path, report: &mut ImportReport) -> Result<()> {
+        let data = zotero::read(db)?;
+
+        // Build the match index from all entries on disk (imported + pre-existing).
+        let mut doi_map: HashMap<String, String> = HashMap::new();
+        let mut title_year_map: HashMap<(String, Option<i32>), String> = HashMap::new();
+        for key in self.keys_sorted()? {
+            let parsed = self.load_entry(&key)?;
+            if let Some(doi) = parsed.entry.doi() {
+                doi_map
+                    .entry(zotero::normalize_doi(doi))
+                    .or_insert_with(|| key.clone());
+            }
+            if let Some(title) = entry::title_string(&parsed.entry) {
+                let folded = ascii_fold(&title);
+                if !folded.is_empty() {
+                    title_year_map
+                        .entry((folded, entry::year(&parsed.entry)))
+                        .or_insert_with(|| key.clone());
+                }
+            }
+        }
+
+        // Resolve each Zotero item id → citation key.
+        let mut item_key: HashMap<i64, String> = HashMap::new();
+        let mut item_by_id: HashMap<i64, &zotero::ZoteroItem> = HashMap::new();
+        for item in &data.items {
+            item_by_id.insert(item.item_id, item);
+            if let Some(key) = resolve_item(item, &doi_map, &title_year_map) {
+                item_key.insert(item.item_id, key);
+            }
+        }
+
+        // Track which item ids we actually needed, to report only relevant misses.
+        let mut needed: HashSet<i64> = HashSet::new();
+
+        // Collections → collections/<slug>.yml.
+        let mut used_slugs: HashSet<String> = HashSet::new();
+        for coll in &data.collections {
+            let mut keys = Vec::new();
+            for id in &coll.item_ids {
+                needed.insert(*id);
+                if let Some(key) = item_key.get(id) {
+                    if !keys.contains(key) {
+                        keys.push(key.clone());
+                    }
+                }
+            }
+            if keys.is_empty() {
+                continue; // nothing of this collection matched; skip the empty file
+            }
+            let slug = unique_slug(&zotero::slugify(&coll.name), &mut used_slugs);
+            let description = coll
+                .parent_name
+                .as_ref()
+                .map(|p| format!("Imported from Zotero. Subcollection of “{p}”."))
+                .or_else(|| Some("Imported from Zotero.".to_string()));
+            let collection = Collection {
+                name: coll.name.clone(),
+                description,
+                keys,
+            };
+            let path = self.collection_path(&slug);
+            std::fs::write(&path, collection.to_text()?).map_err(|e| BibError::io(&path, e))?;
+            report.collections_created.push(slug);
+        }
+
+        // Notes → appended to the parent entry's note prose.
+        let mut per_key_notes: HashMap<String, Vec<String>> = HashMap::new();
+        for note in &data.notes {
+            match note.parent_item_id {
+                None => report.standalone_notes_skipped += 1,
+                Some(pid) => {
+                    needed.insert(pid);
+                    if let Some(key) = item_key.get(&pid) {
+                        let md = zotero::html_to_markdown(&note.html);
+                        if !md.is_empty() {
+                            per_key_notes.entry(key.clone()).or_default().push(md);
+                        }
+                    }
+                }
+            }
+        }
+        for (key, chunks) in per_key_notes {
+            let mut note = self.load_note(&key)?.unwrap_or_default();
+            for chunk in chunks {
+                if !note.body.trim().is_empty() {
+                    note.body.push_str("\n\n");
+                }
+                note.body.push_str(&chunk);
+                note.body.push('\n');
+                report.notes_imported += 1;
+            }
+            self.write_note(&key, &note)?;
+        }
+
+        // Report items we needed but could not match.
+        for id in needed {
+            if !item_key.contains_key(&id) {
+                let label = item_by_id
+                    .get(&id)
+                    .map(|it| {
+                        it.title
+                            .clone()
+                            .unwrap_or_else(|| format!("Zotero item {}", it.zotero_key))
+                    })
+                    .unwrap_or_else(|| format!("Zotero item id {id}"));
+                report.zotero_unmatched.push(label);
+            }
+        }
+        report.zotero_unmatched.sort();
+        report.zotero_unmatched.dedup();
+
+        Ok(())
     }
 
     fn apply_extras(
@@ -285,6 +431,43 @@ impl Library {
             bytes: bytes.len() as u64,
             pages: None, // page count needs PDF parsing — Milestone 4.
         }))
+    }
+}
+
+/// Resolve a Zotero item to a citation key: DOI first (most reliable), then title+year.
+fn resolve_item(
+    item: &zotero::ZoteroItem,
+    doi_map: &HashMap<String, String>,
+    title_year_map: &HashMap<(String, Option<i32>), String>,
+) -> Option<String> {
+    if let Some(doi) = &item.doi {
+        if let Some(key) = doi_map.get(&zotero::normalize_doi(doi)) {
+            return Some(key.clone());
+        }
+    }
+    if let Some(title) = &item.title {
+        let folded = ascii_fold(title);
+        if !folded.is_empty() {
+            if let Some(key) = title_year_map.get(&(folded, item.year)) {
+                return Some(key.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Ensure a collection slug is unique, appending `-2`, `-3`, … on collision.
+fn unique_slug(base: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
     }
 }
 

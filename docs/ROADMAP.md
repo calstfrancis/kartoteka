@@ -108,19 +108,19 @@ Lossless-enough import that Cal can actually switch. Import BetterBibTeX `.bib` 
 and extractable existing PDF annotations. **Write a report of anything that did not map
 cleanly** rather than dropping it silently.
 
-Slice A (`.bib` importer) is **done**; slice B (Zotero SQLite) is next.
+Slices A (`.bib` importer) and B (Zotero SQLite) are **done**. Only 2.5 (annotation
+extraction) remains, and it rides with Milestone 4 since it needs `fond-doc`.
 
 - 2.1 ✅ `.bib` → `Entry` via `hayagriva::io::from_biblatex_str`; keys preserved.
-- 2.2 ⬜ Zotero SQLite reader (read-only) for tags, collections, attachment paths, item
-  relations.
-- 2.3 ◐ Tags → `notes/` frontmatter (done). Collections + read-status await the SQLite
-  reader (`.bib` has no clean collection representation).
+- 2.2 ✅ Zotero SQLite reader (read-only): items (title/DOI/year), collections, notes.
+- 2.3 ✅ Tags → `notes/` frontmatter; collections → `collections/` (via SQLite, linked by
+  DOI/title+year). Read-status has no native Zotero field, so it is not derived.
 - 2.4 ✅ Attachment path capture → records (hash + copy blobs into `attachments/`);
   missing files reported.
 - 2.5 ⬜ Existing PDF annotation extraction → `annots/` sidecars where extractable
-  (depends on `fond-doc`; may partly land with M4).
+  (depends on `fond-doc`; lands with Milestone 4).
 - 2.6 ✅ **Migration report**: unmapped fields, key collisions, unsafe keys, missing
-  attachments.
+  attachments, unmatched Zotero items, standalone notes.
 
 ---
 

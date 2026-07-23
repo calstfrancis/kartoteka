@@ -2,9 +2,23 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased] — Milestone 2 (migration), slice A: BibTeX import
+## [Unreleased] — Milestone 2 (migration)
 
-### Added
+### Added — slice B: Zotero SQLite augmentation
+
+- **`kartoteka import --from-bibtex <bib> --zotero-db <zotero.sqlite>`** — augment a
+  `.bib` import with data only Zotero's store holds. Read-only; never writes to Zotero.
+  - **Collections** → `collections/<slug>.yml`, with items linked to citation keys by
+    **DOI, then title+year** (the citation key isn't in Zotero's core tables). Empty
+    collections (no matched items) are skipped; subcollection parentage noted.
+  - **Notes** — Zotero child notes are converted from HTML to Markdown and merged into
+    the parent entry's note prose; standalone notes (no parent) are counted and reported.
+  - **Migration report** extended: collections created, notes merged, standalone notes
+    skipped, and Zotero items referenced by a collection/note that matched no entry.
+- New `fond-bib::zotero` module (read-only Zotero reader) and a dependency-free
+  HTML→Markdown converter for note bodies. Adds `rusqlite` (bundled SQLite).
+
+### Added — slice A: BibTeX import
 
 - **`kartoteka import --from-bibtex <file>`** — import a BetterBibTeX / BibLaTeX `.bib`
   library. **Citation keys are preserved** so existing `@key` references in Typst

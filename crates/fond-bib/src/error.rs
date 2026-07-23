@@ -35,6 +35,12 @@ pub enum BibError {
     #[error("cannot derive a citation key: entry has neither an author nor a title")]
     UnkeyableEntry,
 
+    #[error("import error: {message}")]
+    Import { message: String },
+
+    #[error("Zotero database error at {path}: {message}")]
+    Zotero { path: PathBuf, message: String },
+
     #[error("not a valid library at {path}: {message}")]
     Layout { path: PathBuf, message: String },
 }
