@@ -73,15 +73,37 @@ enum Command {
         #[arg(long = "zotero-db")]
         zotero_db: Option<PathBuf>,
     },
-    /// Acquire an entry from a DOI (via doi.org) or a BibTeX file. A fresh citation key is
-    /// generated. Network is used only for --doi.
+    /// Acquire an entry from a DOI, arXiv id, ISBN, or a BibTeX file. A fresh citation key
+    /// is generated. Network is used for --doi/--arxiv/--isbn.
     Acquire {
         /// DOI to look up (e.g. 10.1000/xyz or https://doi.org/10.1000/xyz).
         #[arg(long)]
         doi: Option<String>,
+        /// arXiv id to look up (e.g. 2103.12345).
+        #[arg(long)]
+        arxiv: Option<String>,
+        /// ISBN to look up (via OpenLibrary).
+        #[arg(long)]
+        isbn: Option<String>,
         /// Add from a local BibTeX file instead (offline).
         #[arg(long)]
         bibtex_file: Option<PathBuf>,
+    },
+    /// Drop a PDF in and get a populated entry: identify it (--doi/--arxiv/--isbn, else
+    /// sniff a DOI or metadata from the PDF), then attach the PDF to the resulting entry.
+    /// Uses PDFium for sniffing and page count.
+    AddPdf {
+        /// Path to the PDF.
+        path: PathBuf,
+        #[arg(long)]
+        doi: Option<String>,
+        #[arg(long)]
+        arxiv: Option<String>,
+        #[arg(long)]
+        isbn: Option<String>,
+        /// Attach to an existing entry with this key instead of acquiring a new one.
+        #[arg(long)]
+        key: Option<String>,
     },
     /// Render a collection as a formatted reference list.
     Bib {
@@ -133,6 +155,16 @@ enum Command {
     /// Extract the text layer from an entry's PDF attachment (needs PDFium; set
     /// PDFIUM_LIB_PATH if it is not on the system library path).
     PdfText { key: String },
+    /// Import highlights/underlines/strikeouts embedded in an entry's PDF into its
+    /// annotation sidecar (annots/<key>.json). Idempotent; needs PDFium.
+    ImportAnnots { key: String },
+    /// Export an entry's sidecar highlights into a copy of its PDF. Needs PDFium.
+    ExportAnnots {
+        key: String,
+        /// Where to write the annotated PDF.
+        #[arg(long, short)]
+        output: PathBuf,
+    },
     /// Check the library for structural problems. Exits non-zero if any are found.
     Fsck,
     /// Show git working-tree status.
@@ -260,20 +292,54 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::Acquire { doi, bibtex_file } => {
+        Command::Acquire {
+            doi,
+            arxiv,
+            isbn,
+            bibtex_file,
+        } => {
             let library = Library::open(&cli.library)?;
-            let bibtex = match (doi, bibtex_file) {
-                (Some(doi), _) => fond_bib::acquire::fetch_doi_bibtex(&doi)?,
-                (None, Some(path)) => std::fs::read_to_string(&path)?,
-                (None, None) => return Err("provide --doi or --bibtex-file".into()),
-            };
-            let keys = library.add_bibtex(&bibtex)?;
+            let keys = acquire_entry(&library, doi, arxiv, isbn, bibtex_file)?;
             if keys.is_empty() {
                 return Err("no entries found in the acquired record".into());
             }
             for key in &keys {
                 println!("acquired {key}");
             }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::AddPdf {
+            path,
+            doi,
+            arxiv,
+            isbn,
+            key,
+        } => {
+            let library = Library::open(&cli.library)?;
+
+            // Resolve the entry the PDF belongs to.
+            let target_key = if let Some(k) = key {
+                if !library.entry_path(&k).exists() {
+                    return Err(format!("no entry '{k}' to attach to").into());
+                }
+                k
+            } else if doi.is_some() || arxiv.is_some() || isbn.is_some() {
+                acquire_one(&library, doi, arxiv, isbn)?
+            } else {
+                identify_pdf(&library, &path)?
+            };
+
+            // Page count via PDFium if available; otherwise the record simply omits it.
+            let pages = fond_doc::bind_pdfium().ok().and_then(|pdfium| {
+                std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| fond_doc::page_count(&pdfium, &bytes).ok())
+                    .map(|n| n as u32)
+            });
+
+            let att = library.store_attachment(&target_key, &path, pages)?;
+            println!("attached {} to {target_key} ({})", att.filename, att.hash);
             Ok(ExitCode::SUCCESS)
         }
 
@@ -446,6 +512,76 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::ImportAnnots { key } => {
+            let library = Library::open(&cli.library)?;
+            let (blob, hash) = pdf_attachment(&library, &key)?;
+            let pdfium = fond_doc::bind_pdfium()?;
+            let bytes = std::fs::read(&blob)?;
+            let extracted = fond_doc::extract_annotations(&pdfium, &bytes)?;
+
+            let mut sidecar = library
+                .load_annotations(&key)?
+                .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(&key));
+            sidecar.pdf_hash = Some(hash);
+            for a in &extracted {
+                let kind = match a.kind {
+                    fond_doc::PdfAnnotationKind::Highlight => fond_bib::AnnotationKind::Highlight,
+                    fond_doc::PdfAnnotationKind::Underline => fond_bib::AnnotationKind::Underline,
+                    fond_doc::PdfAnnotationKind::Strikeout => fond_bib::AnnotationKind::Strikeout,
+                };
+                let quads = a.quadpoints.iter().map(|q| q.map(|v| v as f64)).collect();
+                sidecar.upsert(fond_bib::Annotation::imported(
+                    kind,
+                    a.page as u32,
+                    quads,
+                    a.snippet.clone(),
+                    a.contents.clone(),
+                ));
+            }
+            library.write_annotations(&sidecar)?;
+            println!(
+                "imported {} annotation(s) from PDF ({} total in sidecar)",
+                extracted.len(),
+                sidecar.annotations.len()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::ExportAnnots { key, output } => {
+            let library = Library::open(&cli.library)?;
+            let (blob, _hash) = pdf_attachment(&library, &key)?;
+            let sidecar = library
+                .load_annotations(&key)?
+                .ok_or_else(|| format!("no annotations recorded for '{key}'"))?;
+
+            let to_embed: Vec<fond_doc::AnnotationToEmbed> = sidecar
+                .annotations
+                .iter()
+                .filter(|a| {
+                    a.kind == fond_bib::AnnotationKind::Highlight && !a.quadpoints.is_empty()
+                })
+                .map(|a| fond_doc::AnnotationToEmbed {
+                    page: a.page as u16,
+                    quadpoints: a.quadpoints.iter().map(|q| q.map(|v| v as f32)).collect(),
+                    contents: a.note.clone(),
+                })
+                .collect();
+            if to_embed.is_empty() {
+                return Err("no highlight annotations to export".into());
+            }
+
+            let pdfium = fond_doc::bind_pdfium()?;
+            let bytes = std::fs::read(&blob)?;
+            let annotated = fond_doc::embed_highlights(&pdfium, &bytes, &to_embed)?;
+            std::fs::write(&output, annotated)?;
+            println!(
+                "wrote {} highlight(s) to {}",
+                to_embed.len(),
+                output.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Fsck => {
             let library = Library::open(&cli.library)?;
             let report = library.fsck()?;
@@ -489,6 +625,87 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Find the first present PDF attachment blob for an entry; returns its path and hash.
+fn pdf_attachment(library: &Library, key: &str) -> CliResult<(PathBuf, String)> {
+    let attachments = library
+        .load_note(key)?
+        .map(|n| n.frontmatter.attachments)
+        .unwrap_or_default();
+    for att in &attachments {
+        let hex = att
+            .hash
+            .split_once(':')
+            .map(|(_, h)| h)
+            .unwrap_or(&att.hash);
+        let path = library.attachment_blob_path(hex);
+        if path.exists() {
+            return Ok((path, att.hash.clone()));
+        }
+    }
+    Err(format!("no present PDF attachment for '{key}'").into())
+}
+
+fn acquire_entry(
+    library: &Library,
+    doi: Option<String>,
+    arxiv: Option<String>,
+    isbn: Option<String>,
+    bibtex_file: Option<PathBuf>,
+) -> CliResult<Vec<String>> {
+    if let Some(doi) = doi {
+        Ok(library.add_bibtex(&fond_bib::acquire::fetch_doi_bibtex(&doi)?)?)
+    } else if let Some(arxiv) = arxiv {
+        Ok(library.add_bibtex(&fond_bib::acquire::fetch_arxiv_bibtex(&arxiv)?)?)
+    } else if let Some(isbn) = isbn {
+        Ok(library.add_from_yaml(&fond_bib::acquire::fetch_isbn_yaml(&isbn)?)?)
+    } else if let Some(path) = bibtex_file {
+        Ok(library.add_bibtex(&std::fs::read_to_string(&path)?)?)
+    } else {
+        Err("provide --doi, --arxiv, --isbn, or --bibtex-file".into())
+    }
+}
+
+fn acquire_one(
+    library: &Library,
+    doi: Option<String>,
+    arxiv: Option<String>,
+    isbn: Option<String>,
+) -> CliResult<String> {
+    acquire_entry(library, doi, arxiv, isbn, None)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "acquisition produced no entry".into())
+}
+
+/// Identify a dropped PDF: sniff a DOI from its text, else build a minimal entry from its
+/// embedded metadata. Returns the citation key of the created entry.
+fn identify_pdf(library: &Library, path: &std::path::Path) -> CliResult<String> {
+    let pdfium = fond_doc::bind_pdfium()
+        .map_err(|e| format!("PDFium is needed to identify a PDF without an identifier: {e}"))?;
+    let bytes = std::fs::read(path)?;
+
+    if let Ok(text) = fond_doc::extract_text(&pdfium, &bytes) {
+        if let Some(doi) = fond_doc::find_doi(&text.full_text()) {
+            eprintln!("sniffed DOI {doi}");
+            let bibtex = fond_bib::acquire::fetch_doi_bibtex(&doi)?;
+            if let Some(key) = library.add_bibtex(&bibtex)?.into_iter().next() {
+                return Ok(key);
+            }
+        }
+    }
+
+    let meta = fond_doc::extract_metadata(&pdfium, &bytes)?;
+    if let Some(title) = meta.title {
+        eprintln!("no DOI found; building an entry from PDF metadata");
+        let yaml = fond_bib::acquire::minimal_book_yaml(&title, meta.author.as_deref())?;
+        if let Some(key) = library.add_from_yaml(&yaml)?.into_iter().next() {
+            return Ok(key);
+        }
+    }
+
+    Err("could not identify the PDF; pass --doi, --arxiv, --isbn, or --key".into())
 }
 
 fn load_style(

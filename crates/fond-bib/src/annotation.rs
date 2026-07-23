@@ -74,6 +74,39 @@ pub struct AnnotationSidecar {
     pub annotations: Vec<Annotation>,
 }
 
+impl Annotation {
+    /// Build an annotation imported from an embedded PDF annotation, with a deterministic
+    /// id derived from its kind/page/text so re-importing the same highlight is idempotent
+    /// (and re-anchoring by snippet still works across differently-produced PDFs).
+    pub fn imported(
+        kind: AnnotationKind,
+        page: u32,
+        quadpoints: Vec<[f64; 8]>,
+        snippet: Option<String>,
+        contents: Option<String>,
+    ) -> Annotation {
+        let seed = format!(
+            "{kind:?}|{page}|{}|{}",
+            snippet.as_deref().unwrap_or(""),
+            contents.as_deref().unwrap_or("")
+        );
+        let hex = blake3::hash(seed.as_bytes()).to_hex();
+        Annotation {
+            id: format!("pdf-{}", &hex.as_str()[..16]),
+            kind,
+            page,
+            quadpoints,
+            snippet,
+            snippet_prefix: None,
+            snippet_suffix: None,
+            color: None,
+            note: contents,
+            created: None,
+            modified: None,
+        }
+    }
+}
+
 impl AnnotationSidecar {
     /// A new, empty sidecar for a key.
     pub fn new(key: impl Into<String>) -> AnnotationSidecar {
@@ -82,6 +115,14 @@ impl AnnotationSidecar {
             key: key.into(),
             pdf_hash: None,
             annotations: Vec::new(),
+        }
+    }
+
+    /// Insert or replace an annotation by id (used when merging imported PDF annotations).
+    pub fn upsert(&mut self, annotation: Annotation) {
+        match self.annotations.iter_mut().find(|a| a.id == annotation.id) {
+            Some(existing) => *existing = annotation,
+            None => self.annotations.push(annotation),
         }
     }
 

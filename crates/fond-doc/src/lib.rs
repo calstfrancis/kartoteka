@@ -4,8 +4,15 @@
 //! library at runtime — nothing here requires PDFium at build time, and the public API
 //! exposes no UI-framework types (`docs/ARCHITECTURE.md` §4).
 
+pub mod annotation;
 pub mod error;
 pub mod pdf;
 
+pub use annotation::{
+    embed_highlights, extract_annotations, AnnotationToEmbed, PdfAnnotation, PdfAnnotationKind,
+};
 pub use error::{DocError, Result};
-pub use pdf::{bind_pdfium, extract_text, extract_text_from_file, PdfText};
+pub use pdf::{
+    bind_pdfium, extract_metadata, extract_text, extract_text_from_file, find_doi, page_count,
+    PdfMeta, PdfText,
+};

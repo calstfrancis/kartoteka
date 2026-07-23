@@ -147,19 +147,22 @@ Slice A (annotation sidecar) is **done**. The PDF-touching slices (4.1/4.2/4.4) 
   indexes it when PDFium is available.
 - 4.3 ✅ Annotation sidecar read/write (`annots/<key>.json`, `DATA-MODEL.md` schema) +
   fsck validation + `kartoteka annots`.
-- 4.4 ⬜ Import annotations from, and export them to, **embedded** PDF annotations, with
-  snippet-based re-anchoring so highlights survive a re-downloaded PDF.
+- 4.4 ✅ Import annotations from (`import-annots`), and export highlights to
+  (`export-annots`), **embedded** PDF annotations; import captures the highlighted text as
+  the re-anchoring snippet. (Export covers highlights — PDFium's high-level create API is
+  highlight-only; underline/strikeout import fine but export as highlights.)
 - 4.5 ◐ Present/missing attachment state is already a first-class fsck state; the
   `directories`-based rendered-page cache lands with 4.1.
 
 ---
 
-## Milestone 5 — acquisition
+## Milestone 5 — acquisition — **done**
 
-- 5.1 ◐ Metadata lookup (`reqwest` **blocking + rustls**, feature-gated `acquire`).
-  **DOI done** (`kartoteka acquire --doi`, via doi.org→BibTeX). ISBN + arXiv still to do.
-- 5.2 ⬜ PDF metadata sniffing (embedded metadata → candidate fields).
-- 5.3 ⬜ "Drop a PDF in → populated entry" end-to-end: hash, store blob, sniff, look up,
+- 5.1 ✅ Metadata lookup (`reqwest` **blocking + rustls**, feature-gated `acquire`):
+  DOI (doi.org→BibTeX), arXiv (via DataCite DOI), ISBN (OpenLibrary). Includes a
+  brace-aware sanitizer for doi.org's unquoted field values.
+- 5.2 ✅ PDF metadata sniffing (`fond-doc::extract_metadata` + `find_doi` text scan).
+- 5.3 ✅ `kartoteka add-pdf` — identify (id / DOI-sniff / metadata), then hash, store blob,
   generate key, write entry + attachment record.
 
 ---

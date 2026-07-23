@@ -2,21 +2,26 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased] — Milestone 5 (acquisition), slice A: DOI lookup
+## [Unreleased] — Milestone 5 (acquisition) — complete
 
 ### Added
 
-- **`kartoteka acquire --doi <doi>`** — look up a DOI via doi.org content negotiation
-  (BibTeX), parse it through the existing BibLaTeX path, and add an entry with a freshly
-  generated citation key. `--bibtex-file <path>` does the same from a local file (offline).
+- **`kartoteka acquire`** — populate an entry from an identifier, generating a fresh key:
+  - `--doi <doi>` — doi.org content negotiation (BibTeX).
+  - `--arxiv <id>` — routed through the arXiv DataCite DOI (`10.48550/arXiv.<id>`).
+  - `--isbn <isbn>` — OpenLibrary lookup, mapped to a Hayagriva entry.
+  - `--bibtex-file <path>` — from a local BibTeX file (offline).
+- **`kartoteka add-pdf <path>`** — the "drop a PDF in → populated entry" flow: identify the
+  paper (`--doi`/`--arxiv`/`--isbn`, else **sniff a DOI from the PDF text**, else build a
+  minimal entry from **embedded PDF metadata**), then hash + copy the PDF into
+  `attachments/` and record it on the entry. `--key` attaches to an existing entry instead.
 - **`fond-bib::acquire`** — blocking HTTP (no async runtime), **feature-gated** behind
-  `acquire` so lean consumers of `fond-bib` (e.g. Zerkalo) don't pull in `reqwest`. Built
-  with **rustls** (no OpenSSL), per the licence audit.
-- `Library::add_bibtex` / `add_entries` — add entries with generated keys (as opposed to
-  `import_bibtex`, which preserves source keys).
-
-Still to come in Milestone 5: ISBN and arXiv lookup, PDF metadata sniffing, and the
-"drop a PDF in → populated entry" flow.
+  `acquire`, built with **rustls** (no OpenSSL). Includes a brace-aware BibTeX sanitizer
+  that repairs the unquoted field values (`month=July`) doi.org sometimes returns.
+- **`fond-doc`** — `extract_metadata` (embedded title/author + page count) and a
+  dependency-free `find_doi` text scanner.
+- `Library::add_bibtex` / `add_entries` (generated keys) and `store_attachment` (hash +
+  copy a blob and record it on an entry's note).
 
 ## [Unreleased] — Search (cross-cutting) + Milestone 4.2
 
@@ -44,6 +49,19 @@ Still to come in Milestone 5: ISBN and arXiv lookup, PDF metadata sniffing, and 
   PDF attachment (found via its blake3 blob).
 - CI now downloads a PDFium prebuilt binary (Linux + Windows) so the extraction test runs
   in CI rather than skipping.
+
+## [Unreleased] — Milestone 4.4: embedded PDF annotations
+
+### Added
+
+- **`kartoteka import-annots <key>`** — read highlights/underlines/strikeouts embedded in
+  an entry's PDF attachment into its sidecar (`annots/<key>.json`), capturing the
+  highlighted text as the re-anchoring snippet. Idempotent (stable content-derived ids).
+- **`kartoteka export-annots <key> -o <pdf>`** — write the sidecar's highlights into a copy
+  of the entry's PDF.
+- **`fond-doc`** — `extract_annotations` (markup annotations + snippet via the text layer)
+  and `embed_highlights`; `fond-bib::Annotation::imported` (stable id) + `AnnotationSidecar::upsert`.
+  Round-trip tested (embed → save → extract). With this, **the roadmap is complete**.
 
 ## [Unreleased] — Milestone 4 (documents), slice A: annotation sidecar
 
