@@ -6,6 +6,7 @@ members = [
     "crates/fond-doc",
     "crates/fond-index",
     "kartoteka-cli",
+    "kartoteka-ui-gtk",
 ]
 
 [workspace.package]

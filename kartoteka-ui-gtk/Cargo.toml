@@ -1,0 +1,23 @@
+[package]
+name = "kartoteka-ui-gtk"
+version = "0.1.0-dev1"
+description = "Kartoteka — Linux GTK4/libadwaita frontend (proprietary)"
+license = "LicenseRef-Proprietary"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kartoteka-gtk"
+path = "src/main.rs"
+
+[dependencies]
+fond-bib = { path = "../crates/fond-bib" }
+fond-index = { path = "../crates/fond-index" }
+gtk4 = { version = "0.7", features = ["v4_10"] }
+libadwaita = { version = "0.5", features = ["v1_4"] }
+glib = "0.18"
+serde = { workspace = true }
+serde_json = { workspace = true }
+directories = { workspace = true }
