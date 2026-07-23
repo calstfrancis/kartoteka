@@ -2,6 +2,7 @@
 //! pane showing the selected entry's YAML and note. All data comes from `fond-bib`.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -37,6 +38,9 @@ struct AppState {
     /// Indices into `entries` matching the current filter, in display order.
     visible: Vec<usize>,
     query: String,
+    /// Full-text index over the current library (rebuilt on open); `None` if unavailable.
+    index: Option<fond_index::SearchIndex>,
+    key_to_index: HashMap<String, usize>,
 }
 
 struct Widgets {
@@ -89,7 +93,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let sidebar = gtk4::Box::new(Orientation::Vertical, 0);
     sidebar.set_width_request(320);
     let search = gtk4::SearchEntry::new();
-    search.set_placeholder_text(Some("Filter by author, title, or key"));
+    search.set_placeholder_text(Some("Search — author: title: tag: type: year:"));
     search.set_margin_top(6);
     search.set_margin_bottom(6);
     search.set_margin_start(6);
@@ -527,10 +531,30 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
     }
 
     let count = entries.len();
+    let key_to_index: HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.key.clone(), i))
+        .collect();
+
+    // Build the full-text index for field-scoped search (metadata + notes + annotations;
+    // PDF text is added by the CLI `reindex`). Failure is non-fatal — search falls back to
+    // a substring filter.
+    let index_dir = library.root().join(".kartoteka").join("index");
+    let index = match fond_index::SearchIndex::rebuild(&library, &index_dir, |_| None) {
+        Ok(idx) => Some(idx),
+        Err(e) => {
+            toast(widgets, &format!("Search index unavailable: {e}"));
+            None
+        }
+    };
+
     {
         let mut s = state.borrow_mut();
         s.library = Some(library);
         s.entries = entries;
+        s.key_to_index = key_to_index;
+        s.index = index;
         s.query.clear();
     }
     widgets.subtitle.set_subtitle(&format!(
@@ -543,22 +567,39 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
 }
 
 fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
-    // Recompute the visible set.
+    // Recompute the visible set: empty query → all; otherwise the tantivy index (field
+    // scoping: author: title: tag: type: year:), falling back to a substring match if the
+    // index is absent or the query doesn't parse.
     {
         let mut s = state.borrow_mut();
-        let q = s.query.to_lowercase();
-        let visible: Vec<usize> = s
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| {
-                q.is_empty()
-                    || e.title.to_lowercase().contains(&q)
-                    || e.author.to_lowercase().contains(&q)
-                    || e.key.to_lowercase().contains(&q)
-            })
-            .map(|(i, _)| i)
-            .collect();
+        let query = s.query.trim().to_string();
+        let visible: Vec<usize> = if query.is_empty() {
+            (0..s.entries.len()).collect()
+        } else {
+            let index_hits = s
+                .index
+                .as_ref()
+                .and_then(|idx| idx.search(&query, 1000).ok());
+            match index_hits {
+                Some(hits) => hits
+                    .iter()
+                    .filter_map(|h| s.key_to_index.get(&h.key).copied())
+                    .collect(),
+                None => {
+                    let q = query.to_lowercase();
+                    s.entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| {
+                            e.title.to_lowercase().contains(&q)
+                                || e.author.to_lowercase().contains(&q)
+                                || e.key.to_lowercase().contains(&q)
+                        })
+                        .map(|(i, _)| i)
+                        .collect()
+                }
+            }
+        };
         s.visible = visible;
     }
 
