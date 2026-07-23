@@ -2,16 +2,21 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased] — GUI: GTK4/libadwaita frontend (first slice)
+## [Unreleased] — GUI: GTK4/libadwaita frontend
 
 ### Added
 
 - **`kartoteka-ui-gtk`** — the Linux GTK4/libadwaita frontend crate (binary `kartoteka-gtk`),
-  a thin shell over `fond-bib`. First slice: open a library (remembered across launches),
+  a thin shell over `fond-bib`/`fond-index`. Open a library (remembered across launches),
   a sidebar list of entries with a live author/title/key filter, and a detail pane showing
   the selected entry's YAML and note. Follows the Fond house style (adw `ToolbarView`,
   `HeaderBar`, `ToastOverlay`, `navigation-sidebar`). App id
   `io.github.calstfrancis.Kartoteka`.
+- **Hamburger menu** with the house-standard **System / Light / Dark** theme toggle
+  (persisted), **Reindex search**, and **About**.
+- **Acquire dialog** (headerbar `+`) — add a reference by **DOI / arXiv / ISBN**; the
+  network lookup runs on a worker thread (UI stays responsive) and the entry is added and
+  the list refreshed on completion.
 
 ## [0.1.0-dev1] — 2026-07-23 — First development build
 

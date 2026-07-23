@@ -11,6 +11,9 @@ pub struct Config {
     /// The library directory last opened, restored on launch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_path: Option<PathBuf>,
+    /// Colour scheme: "system" (default), "light", or "dark".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 fn config_dir() -> PathBuf {

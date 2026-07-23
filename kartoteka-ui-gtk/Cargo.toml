@@ -13,7 +13,7 @@ name = "kartoteka-gtk"
 path = "src/main.rs"
 
 [dependencies]
-fond-bib = { path = "../crates/fond-bib" }
+fond-bib = { path = "../crates/fond-bib", features = ["acquire"] }
 fond-index = { path = "../crates/fond-index" }
 gtk4 = { version = "0.7", features = ["v4_10"] }
 libadwaita = { version = "0.5", features = ["v1_4"] }

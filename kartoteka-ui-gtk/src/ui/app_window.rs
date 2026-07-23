@@ -6,13 +6,21 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use gtk4::{gio, Orientation};
+use gtk4::{gio, glib, Orientation};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
 use fond_bib::{entry as bibentry, Library};
 
 use crate::config::Config;
+
+/// Which kind of identifier the acquire dialog is looking up.
+#[derive(Clone, Copy)]
+enum AcquireKind {
+    Doi,
+    Arxiv,
+    Isbn,
+}
 
 /// A compact, display-ready summary of one entry.
 struct EntrySummary {
@@ -59,6 +67,17 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let open_button = gtk4::Button::from_icon_name("folder-open-symbolic");
     open_button.set_tooltip_text(Some("Open library…"));
     header.pack_start(&open_button);
+
+    let add_button = gtk4::Button::from_icon_name("list-add-symbolic");
+    add_button.set_tooltip_text(Some("Acquire a reference…"));
+    header.pack_start(&add_button);
+
+    let menu_button = gtk4::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .menu_model(&build_menu())
+        .tooltip_text("Main menu")
+        .build();
+    header.pack_end(&menu_button);
 
     let reload_button = gtk4::Button::from_icon_name("view-refresh-symbolic");
     reload_button.set_tooltip_text(Some("Reload library"));
@@ -187,6 +206,25 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         });
     }
 
+    // Acquire button opens the dialog.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        add_button.connect_clicked(move |_| show_acquire_dialog(&state, &widgets));
+    }
+
+    // Hamburger actions (win.acquire / win.reindex / win.theme / win.about).
+    add_window_actions(&window, &state, &widgets, &config);
+
+    // Apply the saved colour scheme.
+    apply_theme(
+        &config
+            .borrow()
+            .theme
+            .clone()
+            .unwrap_or_else(|| "system".to_string()),
+    );
+
     // Restore the last-opened library.
     if let Some(path) = config.borrow().library_path.clone() {
         if path.is_dir() {
@@ -195,6 +233,266 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     }
 
     window
+}
+
+fn build_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+
+    let actions = gio::Menu::new();
+    actions.append(Some("Acquire…"), Some("win.acquire"));
+    actions.append(Some("Reindex search"), Some("win.reindex"));
+    menu.append_section(None, &actions);
+
+    let theme = gio::Menu::new();
+    theme.append(Some("System"), Some("win.theme::system"));
+    theme.append(Some("Light"), Some("win.theme::light"));
+    theme.append(Some("Dark"), Some("win.theme::dark"));
+    menu.append_submenu(Some("Theme"), &theme);
+
+    let about = gio::Menu::new();
+    about.append(Some("About Kartoteka"), Some("win.about"));
+    menu.append_section(None, &about);
+
+    menu
+}
+
+fn add_window_actions(
+    window: &adw::ApplicationWindow,
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+) {
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("acquire", None);
+        action.connect_activate(move |_, _| show_acquire_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("reindex", None);
+        action.connect_activate(move |_, _| reindex(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let config = config.clone();
+        let initial = config
+            .borrow()
+            .theme
+            .clone()
+            .unwrap_or_else(|| "system".to_string());
+        let action = gio::SimpleAction::new_stateful(
+            "theme",
+            Some(glib::VariantTy::STRING),
+            &initial.to_variant(),
+        );
+        action.connect_activate(move |action, param| {
+            if let Some(name) = param.and_then(|p| p.str()).map(|s| s.to_string()) {
+                apply_theme(&name);
+                action.set_state(&name.to_variant());
+                config.borrow_mut().theme = Some(name);
+                config.borrow().save();
+            }
+        });
+        window.add_action(&action);
+    }
+    {
+        let window_for_about = window.clone();
+        let action = gio::SimpleAction::new("about", None);
+        action.connect_activate(move |_, _| show_about(&window_for_about));
+        window.add_action(&action);
+    }
+}
+
+fn apply_theme(name: &str) {
+    let scheme = match name {
+        "light" => adw::ColorScheme::ForceLight,
+        "dark" => adw::ColorScheme::ForceDark,
+        _ => adw::ColorScheme::Default,
+    };
+    adw::StyleManager::default().set_color_scheme(scheme);
+}
+
+fn reindex(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let s = state.borrow();
+    let Some(library) = s.library.as_ref() else {
+        toast(widgets, "Open a library first");
+        return;
+    };
+    let dir = library.root().join(".kartoteka").join("index");
+    match fond_index::SearchIndex::rebuild(library, &dir, |_| None) {
+        Ok(_) => toast(widgets, "Search index rebuilt"),
+        Err(e) => toast(widgets, &format!("Reindex failed: {e}")),
+    }
+}
+
+fn show_about(window: &adw::ApplicationWindow) {
+    let about = gtk4::AboutDialog::builder()
+        .program_name("Kartoteka")
+        .version(env!("CARGO_PKG_VERSION"))
+        .comments("Plain-file reference manager and PDF library — part of Fond")
+        .transient_for(window)
+        .modal(true)
+        .build();
+    about.present();
+}
+
+fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let path = state
+        .borrow()
+        .library
+        .as_ref()
+        .map(|l| l.root().to_path_buf());
+    if let Some(path) = path {
+        open_library(state, widgets, path);
+    }
+}
+
+/// Modal dialog to acquire a reference by DOI / arXiv / ISBN. The network lookup runs on a
+/// worker thread; the result is applied on the main thread so the UI never blocks.
+// The glib main-context channel is deprecated in favour of async-channel; it remains the
+// simplest thread→main-loop bridge here and is still supported. Migrate when the UI adopts
+// async futures.
+#[allow(deprecated)]
+fn show_acquire_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Acquire reference"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let add = gtk4::Button::with_label("Add");
+    add.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&add);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 12);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let kinds = gtk4::StringList::new(&["DOI", "arXiv", "ISBN"]);
+    let dropdown = gtk4::DropDown::builder().model(&kinds).build();
+    let entry = gtk4::Entry::builder()
+        .placeholder_text("identifier, e.g. 10.1000/xyz")
+        .activates_default(true)
+        .hexpand(true)
+        .build();
+    let spinner = gtk4::Spinner::new();
+    spinner.set_halign(gtk4::Align::End);
+
+    content.append(&dropdown);
+    content.append(&entry);
+    content.append(&spinner);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let entry = entry.clone();
+        let dropdown = dropdown.clone();
+        let spinner = spinner.clone();
+        let add = add.clone();
+        add.connect_clicked(move |add| {
+            let identifier = entry.text().trim().to_string();
+            if identifier.is_empty() {
+                return;
+            }
+            let kind = match dropdown.selected() {
+                0 => AcquireKind::Doi,
+                1 => AcquireKind::Arxiv,
+                _ => AcquireKind::Isbn,
+            };
+
+            add.set_sensitive(false);
+            entry.set_sensitive(false);
+            spinner.start();
+
+            // (is_bibtex, payload) on success; error string otherwise.
+            let (sender, receiver) = glib::MainContext::channel::<Result<(bool, String), String>>(
+                glib::Priority::DEFAULT,
+            );
+            std::thread::spawn(move || {
+                let result = match kind {
+                    AcquireKind::Doi => {
+                        fond_bib::acquire::fetch_doi_bibtex(&identifier).map(|s| (true, s))
+                    }
+                    AcquireKind::Arxiv => {
+                        fond_bib::acquire::fetch_arxiv_bibtex(&identifier).map(|s| (true, s))
+                    }
+                    AcquireKind::Isbn => {
+                        fond_bib::acquire::fetch_isbn_yaml(&identifier).map(|s| (false, s))
+                    }
+                }
+                .map_err(|e| e.to_string());
+                let _ = sender.send(result);
+            });
+
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let entry = entry.clone();
+            let spinner = spinner.clone();
+            let add = add.clone();
+            receiver.attach(None, move |result| {
+                spinner.stop();
+                match result {
+                    Ok((is_bibtex, payload)) => {
+                        let added = {
+                            let s = state.borrow();
+                            let library = s.library.as_ref().expect("library open");
+                            if is_bibtex {
+                                library.add_bibtex(&payload)
+                            } else {
+                                library.add_from_yaml(&payload)
+                            }
+                        };
+                        match added {
+                            Ok(keys) => {
+                                toast(&widgets, &format!("Added {}", keys.join(", ")));
+                                dialog.close();
+                                reload_current(&state, &widgets);
+                            }
+                            Err(e) => {
+                                toast(&widgets, &format!("Could not parse record: {e}"));
+                                add.set_sensitive(true);
+                                entry.set_sensitive(true);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        toast(&widgets, &format!("Lookup failed: {e}"));
+                        add.set_sensitive(true);
+                        entry.set_sensitive(true);
+                    }
+                }
+                glib::ControlFlow::Break
+            });
+        });
+    }
+
+    dialog.present();
 }
 
 fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBuf) {
