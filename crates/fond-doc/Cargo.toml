@@ -1,0 +1,11 @@
+[package]
+name = "fond-doc"
+version = "0.1.0"
+description = "PDF rendering, text extraction, and annotation model — shared Fond crate (stub until Milestone 4)"
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

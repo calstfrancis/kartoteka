@@ -1,0 +1,20 @@
+[package]
+name = "fond-bib"
+version = "0.1.0"
+description = "Hayagriva bibliography model, on-disk vault layout, citation keys — shared Fond crate"
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+hayagriva.workspace = true
+serde.workspace = true
+serde_yaml_ng.workspace = true
+blake3.workspace = true
+walkdir.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

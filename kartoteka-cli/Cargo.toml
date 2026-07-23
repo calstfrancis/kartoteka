@@ -1,0 +1,22 @@
+[package]
+name = "kartoteka-cli"
+version = "0.1.0"
+description = "Kartoteka — headless reference manager and PDF library (proprietary)"
+license = "LicenseRef-Proprietary"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kartoteka"
+path = "src/main.rs"
+
+[dependencies]
+fond-bib = { path = "../crates/fond-bib" }
+fond-vault = { path = "../crates/fond-vault" }
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

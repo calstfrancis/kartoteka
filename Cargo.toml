@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fond-bib",
+    "crates/fond-vault",
+    "crates/fond-doc",
+    "crates/fond-index",
+    "kartoteka-cli",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.80"
+authors = ["Cal St Francis <calstfrancis@gmail.com>"]
+repository = "https://github.com/calstfrancis/kartoteka"
+
+# Shared dependency versions. Only Milestone 1 dependencies are declared here; PDF,
+# tantivy, and network crates are added at their milestones (see docs/ROADMAP.md).
+[workspace.dependencies]
+hayagriva = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+serde_json = "1"
+git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
+blake3 = "1"
+walkdir = "2"
+directories = "5"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+notify = "6"

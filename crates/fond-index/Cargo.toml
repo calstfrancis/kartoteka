@@ -1,0 +1,11 @@
+[package]
+name = "fond-index"
+version = "0.1.0"
+description = "Tantivy full-text index and derived metadata cache — shared Fond crate (stub until search lands)"
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

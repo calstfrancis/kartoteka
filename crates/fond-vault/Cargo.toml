@@ -1,0 +1,17 @@
+[package]
+name = "fond-vault"
+version = "0.1.0"
+description = "Git-backed vault operations and filesystem watching — shared Fond crate"
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+git2.workspace = true
+notify.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
