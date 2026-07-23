@@ -1,6 +1,9 @@
 # Build output
 /target
 
+# Vendored native libraries (PDFium prebuilt binary — not redistributed in-repo)
+/vendor
+
 # Planning scratch — not part of the shipped repo (see the brief)
 Plans/
 

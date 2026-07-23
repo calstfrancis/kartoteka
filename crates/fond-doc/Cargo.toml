@@ -1,7 +1,7 @@
 [package]
 name = "fond-doc"
 version = "0.1.0"
-description = "PDF rendering, text extraction, and annotation model — shared Fond crate (stub until Milestone 4)"
+description = "PDF rendering, text extraction, outline, and annotation import/export — shared Fond crate"
 license = "MIT"
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+pdfium-render.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]

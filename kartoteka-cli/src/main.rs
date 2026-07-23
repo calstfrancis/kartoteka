@@ -109,6 +109,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Extract the text layer from an entry's PDF attachment (needs PDFium; set
+    /// PDFIUM_LIB_PATH if it is not on the system library path).
+    PdfText { key: String },
     /// Check the library for structural problems. Exits non-zero if any are found.
     Fsck,
     /// Show git working-tree status.
@@ -313,6 +316,30 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                     }
                 }
             }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::PdfText { key } => {
+            let library = Library::open(&cli.library)?;
+            let attachments = library
+                .load_note(&key)?
+                .map(|n| n.frontmatter.attachments)
+                .unwrap_or_default();
+            let blob = attachments.iter().find_map(|att| {
+                let hex = att
+                    .hash
+                    .split_once(':')
+                    .map(|(_, h)| h)
+                    .unwrap_or(&att.hash);
+                let path = library.attachment_blob_path(hex);
+                path.exists().then_some(path)
+            });
+            let Some(path) = blob else {
+                return Err(format!("no present PDF attachment for '{key}'").into());
+            };
+            let pdfium = fond_doc::bind_pdfium()?;
+            let text = fond_doc::extract_text_from_file(&pdfium, &path)?;
+            print!("{}", text.full_text());
             Ok(ExitCode::SUCCESS)
         }
 

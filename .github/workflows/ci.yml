@@ -26,5 +26,19 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Fetch PDFium (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$HOME/pdfium"
+          curl -fsSL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz \
+            | tar -xz -C "$HOME/pdfium"
+          echo "PDFIUM_LIB_PATH=$HOME/pdfium/lib" >> "$GITHUB_ENV"
+      - name: Fetch PDFium (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          curl.exe -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz
+          mkdir pdfium; tar -xzf pdfium.tgz -C pdfium
+          echo "PDFIUM_LIB_PATH=$PWD\pdfium\bin" >> $env:GITHUB_ENV
       - name: Test
         run: cargo test --workspace

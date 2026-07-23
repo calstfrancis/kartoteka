@@ -141,8 +141,9 @@ extraction) remains, and it rides with Milestone 4 since it needs `fond-doc`.
 Slice A (annotation sidecar) is **done**. The PDF-touching slices (4.1/4.2/4.4) need
 `pdfium-render` + a PDFium native library available at runtime.
 
-- 4.1 ⬜ `fond-doc`: PDFium render + text-layer extraction + outline via `pdfium-render`.
-- 4.2 ⬜ Extracted PDF text feeds the search index (`fond-index`).
+- 4.1 ✅ `fond-doc`: PDFium text-layer extraction via `pdfium-render` (runtime binding via
+  `PDFIUM_LIB_PATH`); `kartoteka pdf-text <key>`. Bitmap render/outline not yet needed.
+- 4.2 ⬜ Extracted PDF text feeds the search index (`fond-index`) — next, with search.
 - 4.3 ✅ Annotation sidecar read/write (`annots/<key>.json`, `DATA-MODEL.md` schema) +
   fsck validation + `kartoteka annots`.
 - 4.4 ⬜ Import annotations from, and export them to, **embedded** PDF annotations, with

@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 fond-bib = { path = "../crates/fond-bib" }
 fond-vault = { path = "../crates/fond-vault" }
+fond-doc = { path = "../crates/fond-doc" }
 clap.workspace = true
 serde_json.workspace = true
 

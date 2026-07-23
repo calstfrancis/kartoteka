@@ -2,6 +2,19 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased] — Milestone 4 (documents), slice B: PDF text extraction
+
+### Added
+
+- **`fond-doc`** — PDF text extraction via `pdfium-render`, binding to a native PDFium
+  library at runtime (resolved from `PDFIUM_LIB_PATH`, else the system path). `extract_text`
+  returns per-page text; `full_text()` is the form fed to search. Text-only build (no image
+  feature). PDFium is BSD-3 and never vendored into the repo.
+- **`kartoteka pdf-text <key>`** — extract and print the text layer of an entry's present
+  PDF attachment (found via its blake3 blob).
+- CI now downloads a PDFium prebuilt binary (Linux + Windows) so the extraction test runs
+  in CI rather than skipping.
+
 ## [Unreleased] — Milestone 4 (documents), slice A: annotation sidecar
 
 ### Added
