@@ -6,6 +6,7 @@
 //! re-exports the Hayagriva types callers need so they need not depend on `hayagriva`
 //! directly for common cases.
 
+pub mod annotation;
 pub mod collection;
 pub mod entry;
 pub mod error;
@@ -17,6 +18,7 @@ pub mod render;
 pub mod util;
 pub mod zotero;
 
+pub use annotation::{Annotation, AnnotationKind, AnnotationSidecar};
 pub use collection::Collection;
 pub use error::{BibError, Result};
 pub use import::{ImportOptions, ImportReport};

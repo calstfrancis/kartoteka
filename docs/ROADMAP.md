@@ -138,12 +138,17 @@ extraction) remains, and it rides with Milestone 4 since it needs `fond-doc`.
 
 ## Milestone 4 — documents
 
-- 4.1 `fond-doc`: PDFium render + text-layer extraction + outline via `pdfium-render`.
-- 4.2 Extracted PDF text feeds the search index (`fond-index`).
-- 4.3 Annotation sidecar read/write (`annots/<key>.json`, `DATA-MODEL.md` schema).
-- 4.4 Import annotations from, and export them to, **embedded** PDF annotations, with
+Slice A (annotation sidecar) is **done**. The PDF-touching slices (4.1/4.2/4.4) need
+`pdfium-render` + a PDFium native library available at runtime.
+
+- 4.1 ⬜ `fond-doc`: PDFium render + text-layer extraction + outline via `pdfium-render`.
+- 4.2 ⬜ Extracted PDF text feeds the search index (`fond-index`).
+- 4.3 ✅ Annotation sidecar read/write (`annots/<key>.json`, `DATA-MODEL.md` schema) +
+  fsck validation + `kartoteka annots`.
+- 4.4 ⬜ Import annotations from, and export them to, **embedded** PDF annotations, with
   snippet-based re-anchoring so highlights survive a re-downloaded PDF.
-- 4.5 `directories`-based PDF cache; present/missing attachment state wired end-to-end.
+- 4.5 ◐ Present/missing attachment state is already a first-class fsck state; the
+  `directories`-based rendered-page cache lands with 4.1.
 
 ---
 

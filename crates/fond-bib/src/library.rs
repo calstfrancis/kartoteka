@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use hayagriva::Library as HLibrary;
 
+use crate::annotation::AnnotationSidecar;
 use crate::collection::Collection;
 use crate::entry::{self, ParsedEntry};
 use crate::error::{BibError, Result};
@@ -73,6 +74,10 @@ impl Library {
 
     pub fn collection_path(&self, slug: &str) -> PathBuf {
         self.root.join(COLLECTIONS_DIR).join(format!("{slug}.yml"))
+    }
+
+    pub fn annot_path(&self, key: &str) -> PathBuf {
+        self.root.join(ANNOTS_DIR).join(format!("{key}.json"))
     }
 
     pub fn library_yml_path(&self) -> PathBuf {
@@ -168,6 +173,23 @@ impl Library {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(BibError::io(&path, e)),
         }
+    }
+
+    /// Load an entry's annotation sidecar if one exists.
+    pub fn load_annotations(&self, key: &str) -> Result<Option<AnnotationSidecar>> {
+        let path = self.annot_path(key);
+        match fs::read_to_string(&path) {
+            Ok(text) => Ok(Some(AnnotationSidecar::parse(&text, &path)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(BibError::io(&path, e)),
+        }
+    }
+
+    /// Write an entry's annotation sidecar.
+    pub fn write_annotations(&self, sidecar: &AnnotationSidecar) -> Result<PathBuf> {
+        let path = self.annot_path(&sidecar.key);
+        fs::write(&path, sidecar.to_json()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
     }
 
     pub fn load_collection(&self, slug: &str) -> Result<Collection> {
@@ -302,6 +324,43 @@ impl Library {
             }
         }
 
+        // Annotation sidecars: parse, filename/inner-key agreement, and pdf_hash linkage.
+        for stem in self.dir_stems(ANNOTS_DIR, "json")? {
+            let path = self.annot_path(&stem);
+            let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
+            let sidecar = match AnnotationSidecar::parse(&text, &path) {
+                Ok(s) => s,
+                Err(e) => {
+                    report
+                        .unparseable_annotations
+                        .push((path.display().to_string(), e.to_string()));
+                    continue;
+                }
+            };
+            if sidecar.key != stem {
+                report
+                    .annotation_key_mismatches
+                    .push((stem.clone(), sidecar.key.clone()));
+            }
+            if let Some(pdf_hash) = &sidecar.pdf_hash {
+                let hex = strip_hash_prefix(pdf_hash);
+                let attached: bool = self
+                    .load_note(&stem)?
+                    .map(|note| {
+                        note.frontmatter
+                            .attachments
+                            .iter()
+                            .any(|a| strip_hash_prefix(&a.hash) == hex)
+                    })
+                    .unwrap_or(false);
+                if !attached {
+                    report
+                        .annotation_pdf_unmatched
+                        .push((stem.clone(), pdf_hash.clone()));
+                }
+            }
+        }
+
         Ok(report)
     }
 }
@@ -327,16 +386,18 @@ pub struct FsckReport {
     pub orphaned_attachments: Vec<String>,
     /// `(blob filename, detail)` where the blob's bytes do not hash to its name.
     pub hash_mismatched_attachments: Vec<(String, String)>,
+    /// `(annotation path, parse error)`.
+    pub unparseable_annotations: Vec<(String, String)>,
+    /// `(filename key, disagreeing inner key)` for annotation sidecars.
+    pub annotation_key_mismatches: Vec<(String, String)>,
+    /// `(entry key, pdf_hash)` where a sidecar's `pdf_hash` matches no attachment recorded
+    /// for that entry.
+    pub annotation_pdf_unmatched: Vec<(String, String)>,
 }
 
 impl FsckReport {
     pub fn is_clean(&self) -> bool {
-        self.dangling_collection_refs.is_empty()
-            && self.key_filename_mismatches.is_empty()
-            && self.unparseable_entries.is_empty()
-            && self.missing_attachments.is_empty()
-            && self.orphaned_attachments.is_empty()
-            && self.hash_mismatched_attachments.is_empty()
+        self.problem_count() == 0
     }
 
     pub fn problem_count(&self) -> usize {
@@ -346,5 +407,8 @@ impl FsckReport {
             + self.missing_attachments.len()
             + self.orphaned_attachments.len()
             + self.hash_mismatched_attachments.len()
+            + self.unparseable_annotations.len()
+            + self.annotation_key_mismatches.len()
+            + self.annotation_pdf_unmatched.len()
     }
 }

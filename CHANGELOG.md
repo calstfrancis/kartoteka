@@ -2,6 +2,23 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased] — Milestone 4 (documents), slice A: annotation sidecar
+
+### Added
+
+- **Annotation sidecar** (`annots/<key>.json`) — the `fond-bib::annotation` model from
+  `DATA-MODEL.md`: highlights/underlines/strikeouts/notes anchored on page + quadpoints +
+  a text snippet (with surrounding context) for re-anchoring against a differently-produced
+  copy of the same PDF. Pretty-printed JSON with stable field order, round-trip tested.
+- `Library::load_annotations` / `write_annotations`, and **fsck** validation of sidecars:
+  unparseable JSON, filename/inner-key mismatch, and a `pdf_hash` that matches no
+  attachment recorded on the entry.
+- **`kartoteka annots <key>`** — list an entry's annotations (`--json` for the raw sidecar).
+
+The PDF-touching parts of Milestone 4 (text extraction into the search index, and
+importing/exporting embedded PDF annotations) are the next slice; they need `pdfium-render`
+and a PDFium native library at runtime.
+
 ## [Unreleased] — Milestone 3 (bibliography output)
 
 ### Added

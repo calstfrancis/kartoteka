@@ -103,6 +103,12 @@ enum Command {
     },
     /// Regenerate library.yml (and, later, the search index) fully from the files.
     Reindex,
+    /// Show the annotations recorded for an entry.
+    Annots {
+        key: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check the library for structural problems. Exits non-zero if any are found.
     Fsck,
     /// Show git working-tree status.
@@ -277,6 +283,39 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Annots { key, json } => {
+            let library = Library::open(&cli.library)?;
+            match library.load_annotations(&key)? {
+                None => {
+                    if json {
+                        println!("null");
+                    } else {
+                        println!("no annotations for {key}");
+                    }
+                }
+                Some(sidecar) => {
+                    if json {
+                        print!("{}", sidecar.to_json()?);
+                    } else {
+                        println!(
+                            "{} annotation(s) for {key}{}",
+                            sidecar.annotations.len(),
+                            sidecar
+                                .pdf_hash
+                                .as_deref()
+                                .map(|h| format!("  (pdf {h})"))
+                                .unwrap_or_default()
+                        );
+                        for a in &sidecar.annotations {
+                            let label = a.snippet.as_deref().or(a.note.as_deref()).unwrap_or("");
+                            println!("  p{:<4} {:?}\t{}", a.page, a.kind, label);
+                        }
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Fsck => {
             let library = Library::open(&cli.library)?;
             let report = library.fsck()?;
@@ -416,6 +455,15 @@ fn print_fsck(report: &FsckReport) {
     }
     for (name, detail) in &report.hash_mismatched_attachments {
         println!("hash mismatch       attachments/{name}: {detail}");
+    }
+    for (path, msg) in &report.unparseable_annotations {
+        println!("unparseable annots  {path}: {msg}");
+    }
+    for (file, inner) in &report.annotation_key_mismatches {
+        println!("annot key mismatch  annots/{file}.json has inner key '{inner}'");
+    }
+    for (key, hash) in &report.annotation_pdf_unmatched {
+        println!("annot pdf unmatched {key}: {hash} matches no recorded attachment");
     }
     println!("\n{} problem(s) found", report.problem_count());
 }
