@@ -2,6 +2,20 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased] — Search (cross-cutting) + Milestone 4.2
+
+### Added
+
+- **`fond-index`** — tantivy full-text search over the library: metadata (`author`,
+  `title`, `year`, `type`), note prose, annotation snippets, and extracted PDF text, all in
+  one index under `.kartoteka/index/` (derived, rebuildable from the files).
+- **`kartoteka search <query>`** — free-text plus field scoping (`author:cone
+  tag:christology type:book year:1970`), `--limit`, `--json`. Ranked by relevance.
+- **`kartoteka reindex`** now also rebuilds the search index; when PDFium is available it
+  indexes present PDF attachments' text too (so search reaches inside PDFs).
+- Rebuild-from-scratch guarantee tested: deleting `.kartoteka/index/` and reindexing yields
+  identical results.
+
 ## [Unreleased] — Milestone 4 (documents), slice B: PDF text extraction
 
 ### Added

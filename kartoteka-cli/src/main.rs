@@ -101,8 +101,19 @@ enum Command {
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
-    /// Regenerate library.yml (and, later, the search index) fully from the files.
+    /// Regenerate library.yml and the search index fully from the files. If PDFium is
+    /// available, present PDF attachments are indexed too.
     Reindex,
+    /// Full-text search over metadata, notes, annotations, and PDF text. Field scoping:
+    /// author: title: tag: type: year:  (e.g. `kartoteka search author:cone tag:christology`).
+    Search {
+        #[arg(required = true)]
+        query: Vec<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the annotations recorded for an entry.
     Annots {
         key: String,
@@ -281,8 +292,73 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
         Command::Reindex => {
             let library = Library::open(&cli.library)?;
             library.regenerate_library_yml()?;
+
+            // Extract PDF text only if PDFium is available; otherwise index without it.
+            let pdfium = fond_doc::bind_pdfium().ok();
+            let pdf_text = |key: &str| -> Option<String> {
+                let pdfium = pdfium.as_ref()?;
+                let attachments = library
+                    .load_note(key)
+                    .ok()
+                    .flatten()
+                    .map(|n| n.frontmatter.attachments)
+                    .unwrap_or_default();
+                for att in &attachments {
+                    let hex = att
+                        .hash
+                        .split_once(':')
+                        .map(|(_, h)| h)
+                        .unwrap_or(&att.hash);
+                    let path = library.attachment_blob_path(hex);
+                    if path.exists() {
+                        if let Ok(text) = fond_doc::extract_text_from_file(pdfium, &path) {
+                            return Some(text.full_text());
+                        }
+                    }
+                }
+                None
+            };
+
+            let index_dir = cli.library.join(".kartoteka").join("index");
+            fond_index::SearchIndex::rebuild(&library, &index_dir, pdf_text)?;
             let n = library.keys_sorted()?.len();
-            println!("Regenerated library.yml ({n} entries)");
+            let pdf_note = if pdfium.is_some() {
+                ""
+            } else {
+                " (PDFium unavailable — PDF text not indexed)"
+            };
+            println!("Regenerated library.yml and search index ({n} entries){pdf_note}");
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Search { query, limit, json } => {
+            let index_dir = cli.library.join(".kartoteka").join("index");
+            if !index_dir.exists() {
+                return Err("no search index yet — run `kartoteka reindex` first".into());
+            }
+            let index = fond_index::SearchIndex::open(&index_dir)?;
+            let hits = index.search(&query.join(" "), limit)?;
+            if json {
+                let items: Vec<_> = hits
+                    .iter()
+                    .map(|h| {
+                        serde_json::json!({
+                            "key": h.key, "score": h.score,
+                            "title": h.title, "author": h.author, "year": h.year,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            } else if hits.is_empty() {
+                println!("no matches");
+            } else {
+                for h in &hits {
+                    println!(
+                        "{:.2}\t{}\t{}\t{}\t{}",
+                        h.score, h.key, h.author, h.year, h.title
+                    );
+                }
+            }
             Ok(ExitCode::SUCCESS)
         }
 

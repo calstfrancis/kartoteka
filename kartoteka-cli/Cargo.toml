@@ -16,6 +16,7 @@ path = "src/main.rs"
 fond-bib = { path = "../crates/fond-bib" }
 fond-vault = { path = "../crates/fond-vault" }
 fond-doc = { path = "../crates/fond-doc" }
+fond-index = { path = "../crates/fond-index" }
 clap.workspace = true
 serde_json.workspace = true
 

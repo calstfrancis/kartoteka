@@ -143,7 +143,8 @@ Slice A (annotation sidecar) is **done**. The PDF-touching slices (4.1/4.2/4.4) 
 
 - 4.1 ✅ `fond-doc`: PDFium text-layer extraction via `pdfium-render` (runtime binding via
   `PDFIUM_LIB_PATH`); `kartoteka pdf-text <key>`. Bitmap render/outline not yet needed.
-- 4.2 ⬜ Extracted PDF text feeds the search index (`fond-index`) — next, with search.
+- 4.2 ✅ Extracted PDF text feeds the search index (`fond-index`); `kartoteka reindex`
+  indexes it when PDFium is available.
 - 4.3 ✅ Annotation sidecar read/write (`annots/<key>.json`, `DATA-MODEL.md` schema) +
   fsck validation + `kartoteka annots`.
 - 4.4 ⬜ Import annotations from, and export them to, **embedded** PDF annotations, with
@@ -163,18 +164,17 @@ Slice A (annotation sidecar) is **done**. The PDF-touching slices (4.1/4.2/4.4) 
 
 ---
 
-## Search — cross-cutting from Milestone 1
+## Search — cross-cutting — **implemented**
 
-Search is not a milestone; it grows across them, all in one query with field-scoped
-syntax:
+`fond-index` (tantivy) + `kartoteka search`, all in one query with field-scoped syntax:
 
-- **M1**: metadata (`fond-bib` fields) + note text + tags/read-status, backed by
-  `fond-index` (tantivy + SQLite cache). Even before PDFs, `reindex` builds this from
-  files.
-- **M4**: PDF full text joins the same index.
-- Query syntax supports field scoping (`author:cone tag:christology status:read
-  "black theology"`), all against the disposable index that any `reindex` rebuilds.
+- ✅ Metadata (`author`, `title`, `year`, `type`) + note prose + tags + annotation snippets.
+- ✅ PDF full text joins the same index (indexed by `reindex` when PDFium is available).
+- ✅ Field scoping (`author:cone tag:christology type:book year:1970 "black theology"`),
+  `--limit`, `--json`, relevance-ranked.
+- ✅ Disposable/rebuildable: deleting `.kartoteka/index/` and reindexing yields identical
+  results (tested).
 
-`fond-index` may only ever *cache* what the authoritative files already say
-(`ARCHITECTURE.md` §1). Deleting `.kartoteka/` and reindexing must yield identical search
-results.
+Not yet done: a SQLite derived cache (the DATA-MODEL mentions one alongside tantivy) — the
+tantivy index alone covers current needs, so it is deferred until something needs it.
+Read-status is not indexed because Zotero has no native read-status to import (M2 note).

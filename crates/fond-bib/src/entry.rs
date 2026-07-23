@@ -61,6 +61,24 @@ pub fn year(entry: &HEntry) -> Option<i32> {
     entry.date().map(|d| d.year)
 }
 
+/// All authors as a single display string (`"Cone, James H., Doe, Jane"`), for indexing
+/// and search. Empty if the entry has no authors.
+pub fn author_names(entry: &HEntry) -> String {
+    entry
+        .authors()
+        .map(|people| {
+            people
+                .iter()
+                .map(|p| match &p.given_name {
+                    Some(given) if !given.is_empty() => format!("{}, {given}", p.name),
+                    _ => p.name.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
 /// Title as a plain string, if present.
 pub fn title_string(entry: &HEntry) -> Option<String> {
     entry.title().map(|t| t.value.to_string())
