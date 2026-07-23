@@ -13,6 +13,7 @@ use crate::collection::Collection;
 use crate::entry::{self, ParsedEntry};
 use crate::error::{BibError, Result};
 use crate::key;
+use crate::note::Attachment;
 use crate::note::Note;
 
 pub const ENTRIES_DIR: &str = "entries";
@@ -163,6 +164,54 @@ impl Library {
     /// Path where the blob with the given bare hex hash lives.
     pub fn attachment_blob_path(&self, hex: &str) -> PathBuf {
         self.root.join(ATTACHMENTS_DIR).join(hex)
+    }
+
+    /// Store a PDF (or any file) as an attachment of `key`: hash it (blake3), copy the blob
+    /// into `attachments/`, and record it in the entry's note (creating the note if
+    /// needed). `pages` is supplied by the caller (via `fond-doc`) so this crate stays
+    /// PDFium-free. Returns the attachment record.
+    pub fn store_attachment(
+        &self,
+        key: &str,
+        src: &Path,
+        pages: Option<u32>,
+    ) -> Result<Attachment> {
+        let bytes = fs::read(src).map_err(|e| BibError::io(src, e))?;
+        let hex = blake3::hash(&bytes).to_hex().to_string();
+
+        fs::create_dir_all(self.attachments_dir())
+            .map_err(|e| BibError::io(self.attachments_dir(), e))?;
+        let dest = self.attachment_blob_path(&hex);
+        if !dest.exists() {
+            fs::write(&dest, &bytes).map_err(|e| BibError::io(&dest, e))?;
+        }
+
+        let attachment = Attachment {
+            hash: format!("blake3:{hex}"),
+            filename: src
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("attachment")
+                .to_string(),
+            bytes: bytes.len() as u64,
+            pages,
+        };
+
+        let mut note = self.load_note(key)?.unwrap_or_default();
+        if !note
+            .frontmatter
+            .attachments
+            .iter()
+            .any(|a| a.hash == attachment.hash)
+        {
+            note.frontmatter.attachments.push(attachment.clone());
+        }
+        if note.frontmatter.date_added.is_none() {
+            note.frontmatter.date_added = Some(crate::util::today_iso());
+        }
+        self.write_note(key, &note)?;
+
+        Ok(attachment)
     }
 
     /// Load a note if one exists for the key.
