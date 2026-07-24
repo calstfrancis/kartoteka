@@ -305,6 +305,7 @@ fn build_menu() -> gio::Menu {
     actions.append(Some("Acquire…"), Some("win.acquire"));
     actions.append(Some("Add PDF…"), Some("win.add-pdf"));
     actions.append(Some("Import…"), Some("win.import"));
+    actions.append(Some("Export bibliography…"), Some("win.export-bib"));
     menu.append_section(None, &actions);
 
     let library = gio::Menu::new();
@@ -345,6 +346,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("add-pdf", None);
         action.connect_activate(move |_, _| show_add_pdf(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("export-bib", None);
+        action.connect_activate(move |_, _| show_export_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -422,14 +430,20 @@ fn apply_theme(name: &str) {
 }
 
 fn reindex(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
-    let s = state.borrow();
-    let Some(library) = s.library.as_ref() else {
-        toast(widgets, "Open a library first");
-        return;
+    let rebuilt = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        let dir = library.root().join(".kartoteka").join("index");
+        fond_index::SearchIndex::rebuild(library, &dir, |_| None)
     };
-    let dir = library.root().join(".kartoteka").join("index");
-    match fond_index::SearchIndex::rebuild(library, &dir, |_| None) {
-        Ok(_) => toast(widgets, "Search index rebuilt"),
+    match rebuilt {
+        Ok(index) => {
+            state.borrow_mut().index = Some(index);
+            toast(widgets, "Search index rebuilt");
+        }
         Err(e) => toast(widgets, &format!("Reindex failed: {e}")),
     }
 }
@@ -1371,15 +1385,19 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
         .map(|(i, e)| (e.key.clone(), i))
         .collect();
 
-    // Build the full-text index for field-scoped search (metadata + notes + annotations;
-    // PDF text is added by the CLI `reindex`). Failure is non-fatal — search falls back to
-    // a substring filter.
+    // Search index: open an existing one if present (cheap), else build it once. Rebuilding
+    // on every open would re-index the whole library at each launch — the menu's "Reindex
+    // search" refreshes it on demand. Search falls back to a substring filter if unavailable.
     let index_dir = library.root().join(".kartoteka").join("index");
-    let index = match fond_index::SearchIndex::rebuild(&library, &index_dir, |_| None) {
-        Ok(idx) => Some(idx),
-        Err(e) => {
-            toast(widgets, &format!("Search index unavailable: {e}"));
-            None
+    let index = if index_dir.join("meta.json").exists() {
+        fond_index::SearchIndex::open(&index_dir).ok()
+    } else {
+        match fond_index::SearchIndex::rebuild(&library, &index_dir, |_| None) {
+            Ok(idx) => Some(idx),
+            Err(e) => {
+                toast(widgets, &format!("Search index unavailable: {e}"));
+                None
+            }
         }
     };
 
@@ -1509,6 +1527,9 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     let b = &widgets.detail;
     clear_box(b);
 
+    // Load the note once (used for the action row, fields, and prose below).
+    let note = library.load_note(&key).ok().flatten();
+
     // Title.
     let title_text = if summary.title.is_empty() {
         key.as_str()
@@ -1539,6 +1560,38 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         b.append(&label);
     }
 
+    // First present PDF attachment (for the Open button).
+    let present_pdf = note.as_ref().and_then(|n| {
+        n.frontmatter.attachments.iter().find_map(|att| {
+            let hex = att
+                .hash
+                .split_once(':')
+                .map(|(_, h)| h)
+                .unwrap_or(&att.hash);
+            let path = library.attachment_blob_path(hex);
+            path.exists().then(|| (path, att.filename.clone()))
+        })
+    });
+
+    // Action row: edit note, open PDF.
+    let actions = gtk4::Box::new(Orientation::Horizontal, 8);
+    actions.set_margin_top(6);
+    let edit_button = gtk4::Button::with_label("Edit note");
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        edit_button.connect_clicked(move |_| show_note_editor(&state, &widgets, &key));
+    }
+    actions.append(&edit_button);
+    if let Some((path, filename)) = present_pdf {
+        let open_button = gtk4::Button::with_label("Open PDF");
+        let window = widgets.window.clone();
+        open_button.connect_clicked(move |_| open_pdf(&window, &path, &filename));
+        actions.append(&open_button);
+    }
+    b.append(&actions);
+
     let fields = gtk4::Box::new(Orientation::Vertical, 4);
     fields.set_margin_top(8);
 
@@ -1560,9 +1613,15 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
 
     // Note-derived state: tags, attachments, annotations, prose.
     let mut note_body = String::new();
-    if let Ok(Some(note)) = library.load_note(&key) {
+    if let Some(note) = &note {
         if !note.frontmatter.tags.is_empty() {
             fields.append(&field_row("Tags", &note.frontmatter.tags.join(", ")));
+        }
+        if let Some(status) = note.frontmatter.read_status {
+            fields.append(&field_row("Status", &format!("{status:?}").to_lowercase()));
+        }
+        if let Some(rating) = note.frontmatter.rating {
+            fields.append(&field_row("Rating", &"★".repeat(rating.min(5) as usize)));
         }
         for att in &note.frontmatter.attachments {
             let hex = att
@@ -1607,6 +1666,304 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         prose.set_selectable(true);
         b.append(&prose);
     }
+}
+
+/// Export a collection's bibliography: a formatted reference list, or an annotated Typst
+/// document. Choose a collection, CSL style, and format, then a file to save to.
+fn show_export_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let (slugs, names) = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        let slugs = library.collection_slugs().unwrap_or_default();
+        if slugs.is_empty() {
+            toast(
+                widgets,
+                "No collections to export (import from Zotero creates them)",
+            );
+            return;
+        }
+        let names: Vec<String> = slugs
+            .iter()
+            .map(|sl| {
+                library
+                    .load_collection(sl)
+                    .map(|c| c.name)
+                    .unwrap_or_else(|_| sl.clone())
+            })
+            .collect();
+        (slugs, names)
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Export bibliography"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let export = gtk4::Button::with_label("Export");
+    export.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&export);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let collection = gtk4::DropDown::from_strings(&name_refs);
+    let style =
+        gtk4::DropDown::from_strings(&["sbl", "chicago-notes", "chicago-author-date", "apa"]);
+    let format = gtk4::DropDown::from_strings(&["Reference list (text)", "Annotated (.typ)"]);
+    content.append(&labeled("Collection", &collection));
+    content.append(&labeled("Style", &style));
+    content.append(&labeled("Format", &format));
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        export.connect_clicked(move |_| {
+            let slug = slugs[collection.selected() as usize].clone();
+            let style_name = match style.selected() {
+                0 => "sbl",
+                1 => "chicago-notes",
+                2 => "chicago-author-date",
+                _ => "apa",
+            };
+            let annotated = format.selected() == 1;
+
+            // Render synchronously (fast for a collection).
+            let rendered = {
+                let s = state.borrow();
+                let library = match s.library.as_ref() {
+                    Some(l) => l,
+                    None => return,
+                };
+                let csl = match fond_bib::resolve_style(style_name) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        toast(&widgets, &format!("Style error: {e}"));
+                        return;
+                    }
+                };
+                if annotated {
+                    library.annotated_bibliography_typ(&slug, &csl)
+                } else {
+                    library
+                        .bibliography_for_collection(&slug, &csl, fond_bib::BufWriteFormat::Plain)
+                        .map(|entries| {
+                            entries
+                                .iter()
+                                .map(|r| r.text.clone())
+                                .collect::<Vec<_>>()
+                                .join("\n\n")
+                        })
+                }
+            };
+            let content = match rendered {
+                Ok(c) => c,
+                Err(e) => {
+                    toast(&widgets, &format!("Render failed: {e}"));
+                    return;
+                }
+            };
+
+            let default_name = format!("{slug}.{}", if annotated { "typ" } else { "txt" });
+            let save = gtk4::FileDialog::builder()
+                .title("Save bibliography")
+                .initial_name(&default_name)
+                .build();
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let parent = widgets.window.clone();
+            save.save(Some(&parent), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        match std::fs::write(&path, &content) {
+                            Ok(()) => {
+                                toast(&widgets, &format!("Exported to {}", path.display()));
+                                dialog.close();
+                            }
+                            Err(e) => toast(&widgets, &format!("Could not write file: {e}")),
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    dialog.present();
+}
+
+/// Re-render the detail pane for the currently selected row (after an edit).
+fn refresh_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if let Some(row) = widgets.listbox.selected_row() {
+        let idx = row.index();
+        if idx >= 0 {
+            show_detail(state, widgets, idx as usize);
+        }
+    }
+}
+
+/// Open an attachment blob in the system PDF viewer. The blob is content-addressed with no
+/// extension, so copy it to a cache file named after the original filename first.
+fn open_pdf(window: &adw::ApplicationWindow, blob: &std::path::Path, filename: &str) {
+    let cache = glib::user_cache_dir().join("kartoteka").join("open");
+    if std::fs::create_dir_all(&cache).is_err() {
+        return;
+    }
+    let target = cache.join(filename);
+    if std::fs::copy(blob, &target).is_err() {
+        return;
+    }
+    let launcher = gtk4::FileLauncher::new(Some(&gio::File::for_path(&target)));
+    launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
+}
+
+/// Edit an entry's note: tags, read status, rating, and prose. Writes `notes/<key>.md`.
+fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    let note = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            return;
+        };
+        library.load_note(key).ok().flatten().unwrap_or_default()
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Edit note"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(540, 560);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let tags = gtk4::Entry::builder()
+        .text(note.frontmatter.tags.join(", "))
+        .placeholder_text("comma, separated, tags")
+        .build();
+    content.append(&labeled("Tags", &tags));
+
+    let meta_row = gtk4::Box::new(Orientation::Horizontal, 12);
+    let status = gtk4::DropDown::from_strings(&["(none)", "unread", "reading", "read"]);
+    status.set_selected(match note.frontmatter.read_status {
+        None => 0,
+        Some(fond_bib::ReadStatus::Unread) => 1,
+        Some(fond_bib::ReadStatus::Reading) => 2,
+        Some(fond_bib::ReadStatus::Read) => 3,
+    });
+    let rating = gtk4::DropDown::from_strings(&["(none)", "1", "2", "3", "4", "5"]);
+    rating.set_selected(note.frontmatter.rating.map(|r| r as u32).unwrap_or(0));
+    meta_row.append(&labeled("Status", &status));
+    meta_row.append(&labeled("Rating", &rating));
+    content.append(&meta_row);
+
+    let body = gtk4::TextView::builder()
+        .wrap_mode(gtk4::WrapMode::WordChar)
+        .left_margin(8)
+        .right_margin(8)
+        .top_margin(8)
+        .bottom_margin(8)
+        .build();
+    body.buffer().set_text(&note.body);
+    let body_scroll = gtk4::ScrolledWindow::new();
+    body_scroll.set_child(Some(&body));
+    body_scroll.set_vexpand(true);
+    body_scroll.add_css_class("card");
+    content.append(&labeled("Note", &body_scroll));
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let key = key.to_string();
+        save.connect_clicked(move |_| {
+            let mut updated = note.clone();
+            updated.frontmatter.tags = tags
+                .text()
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            updated.frontmatter.read_status = match status.selected() {
+                1 => Some(fond_bib::ReadStatus::Unread),
+                2 => Some(fond_bib::ReadStatus::Reading),
+                3 => Some(fond_bib::ReadStatus::Read),
+                _ => None,
+            };
+            updated.frontmatter.rating = match rating.selected() {
+                n @ 1..=5 => Some(n as u8),
+                _ => None,
+            };
+            let buffer = body.buffer();
+            updated.body = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .to_string();
+            if updated.frontmatter.date_added.is_none() {
+                updated.frontmatter.date_added = glib::DateTime::now_local()
+                    .ok()
+                    .and_then(|d| d.format("%Y-%m-%d").ok())
+                    .map(|s| s.to_string());
+            }
+
+            let result = {
+                let s = state.borrow();
+                match s.library.as_ref() {
+                    Some(library) => library.write_note(&key, &updated),
+                    None => return,
+                }
+            };
+            match result {
+                Ok(_) => {
+                    toast(&widgets, "Note saved");
+                    dialog.close();
+                    refresh_detail(&state, &widgets);
+                }
+                Err(e) => toast(&widgets, &format!("Could not save note: {e}")),
+            }
+        });
+    }
+
+    dialog.present();
 }
 
 fn clear_box(b: &gtk4::Box) {
