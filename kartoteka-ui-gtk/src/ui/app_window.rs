@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use gtk4::{gio, glib, Orientation};
+use gtk4::{gdk, gio, glib, Orientation};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
@@ -47,6 +47,7 @@ struct Widgets {
     window: adw::ApplicationWindow,
     toasts: adw::ToastOverlay,
     subtitle: adw::WindowTitle,
+    status_label: gtk4::Label,
     listbox: gtk4::ListBox,
     detail: gtk4::Box,
 }
@@ -126,14 +127,40 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
 
     toolbar_view.set_content(Some(&paned));
 
+    // Status bar (house style): a status message on the left, a version → changelog
+    // button on the right.
+    let statusbar = gtk4::Box::new(Orientation::Horizontal, 6);
+    statusbar.add_css_class("toolbar");
+    let status_label = gtk4::Label::new(Some("No library open"));
+    status_label.add_css_class("dim-label");
+    status_label.set_halign(gtk4::Align::Start);
+    status_label.set_xalign(0.0);
+    status_label.set_hexpand(true);
+    status_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+    let version_button = gtk4::Button::builder()
+        .label(concat!("v", env!("CARGO_PKG_VERSION")))
+        .tooltip_text("View changelog")
+        .build();
+    version_button.add_css_class("flat");
+    version_button.add_css_class("caption");
+    statusbar.append(&status_label);
+    statusbar.append(&version_button);
+    toolbar_view.add_bottom_bar(&statusbar);
+
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&toolbar_view));
     window.set_content(Some(&toasts));
+
+    {
+        let window = window.clone();
+        version_button.connect_clicked(move |_| show_changelog(&window));
+    }
 
     let widgets = Rc::new(Widgets {
         window: window.clone(),
         toasts,
         subtitle: title,
+        status_label,
         listbox: listbox.clone(),
         detail,
     });
@@ -212,6 +239,40 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         add_button.connect_clicked(move |_| show_acquire_dialog(&state, &widgets));
     }
 
+    // Drag a PDF onto the window to add it.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let drop = gtk4::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        drop.connect_drop(move |_, value, _, _| {
+            let Ok(files) = value.get::<gdk::FileList>() else {
+                return false;
+            };
+            if state.borrow().library.is_none() {
+                toast(&widgets, "Open a library first");
+                return false;
+            }
+            let mut handled = false;
+            for file in files.files() {
+                if let Some(path) = file.path() {
+                    if path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("pdf"))
+                        == Some(true)
+                    {
+                        import_pdf(&state, &widgets, path);
+                        handled = true;
+                    } else {
+                        toast(&widgets, "Only PDF files can be dropped");
+                    }
+                }
+            }
+            handled
+        });
+        window.add_controller(drop);
+    }
+
     // Hamburger actions (win.acquire / win.reindex / win.theme / win.about).
     add_window_actions(&window, &state, &widgets, &config);
 
@@ -240,8 +301,13 @@ fn build_menu() -> gio::Menu {
     let actions = gio::Menu::new();
     actions.append(Some("Acquire…"), Some("win.acquire"));
     actions.append(Some("Add PDF…"), Some("win.add-pdf"));
-    actions.append(Some("Reindex search"), Some("win.reindex"));
+    actions.append(Some("Import…"), Some("win.import"));
     menu.append_section(None, &actions);
+
+    let library = gio::Menu::new();
+    library.append(Some("Back up (git commit)…"), Some("win.backup"));
+    library.append(Some("Reindex search"), Some("win.reindex"));
+    menu.append_section(None, &library);
 
     let theme = gio::Menu::new();
     theme.append(Some("System"), Some("win.theme::system"));
@@ -274,6 +340,20 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("add-pdf", None);
         action.connect_activate(move |_, _| show_add_pdf(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("import", None);
+        action.connect_activate(move |_, _| show_import_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("backup", None);
+        action.connect_activate(move |_, _| show_backup_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -333,6 +413,38 @@ fn reindex(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         Ok(_) => toast(widgets, "Search index rebuilt"),
         Err(e) => toast(widgets, &format!("Reindex failed: {e}")),
     }
+}
+
+/// Show the changelog (embedded at compile time) in a scrollable window.
+fn show_changelog(window: &adw::ApplicationWindow) {
+    const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
+
+    let win = adw::Window::builder()
+        .transient_for(window)
+        .title("Changelog")
+        .default_width(660)
+        .default_height(580)
+        .build();
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+
+    let text = gtk4::TextView::builder()
+        .editable(false)
+        .cursor_visible(false)
+        .wrap_mode(gtk4::WrapMode::WordChar)
+        .left_margin(16)
+        .right_margin(16)
+        .top_margin(12)
+        .bottom_margin(12)
+        .build();
+    text.buffer().set_text(CHANGELOG);
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_child(Some(&text));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+
+    win.set_content(Some(&view));
+    win.present();
 }
 
 fn show_about(window: &adw::ApplicationWindow) {
@@ -441,6 +553,293 @@ fn identify_pdf(path: &std::path::Path) -> Result<(bool, String, Option<u32>), S
     }
 
     Err("could not identify the PDF (no DOI in text, no embedded title)".to_string())
+}
+
+/// A row with a caption, a value label, and a "Choose…" button that opens a file picker
+/// and writes the chosen path into `slot` (updating the label and calling `on_change`).
+fn file_pick_row(
+    window: &adw::ApplicationWindow,
+    caption: &str,
+    button_label: &str,
+    slot: Rc<RefCell<Option<PathBuf>>>,
+    on_change: Rc<dyn Fn()>,
+) -> gtk4::Box {
+    let row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let name = gtk4::Label::new(Some(caption));
+    name.set_xalign(0.0);
+    name.set_width_chars(14);
+    name.set_halign(gtk4::Align::Start);
+    let value = gtk4::Label::new(Some("none"));
+    value.add_css_class("dim-label");
+    value.set_xalign(0.0);
+    value.set_hexpand(true);
+    value.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+    let button = gtk4::Button::with_label(button_label);
+
+    {
+        let window = window.clone();
+        let value = value.clone();
+        button.connect_clicked(move |_| {
+            let dialog = gtk4::FileDialog::builder().title("Choose file").build();
+            let value = value.clone();
+            let slot = slot.clone();
+            let on_change = on_change.clone();
+            dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        value.set_text(
+                            path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("selected"),
+                        );
+                        *slot.borrow_mut() = Some(path);
+                        on_change();
+                    }
+                }
+            });
+        });
+    }
+
+    row.append(&name);
+    row.append(&value);
+    row.append(&button);
+    row
+}
+
+/// Import from a BetterBibTeX `.bib` (required) and optionally a Zotero `zotero.sqlite`.
+/// The import runs on a worker thread (a `Library` is just a path, so it is `Send`).
+#[allow(deprecated)]
+fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Import"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(500, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let import = gtk4::Button::with_label("Import");
+    import.add_css_class("suggested-action");
+    import.set_sensitive(false);
+    header.pack_start(&cancel);
+    header.pack_end(&import);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 12);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let bib_path: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+    let zotero_path: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+
+    let enable_import: Rc<dyn Fn()> = {
+        let import = import.clone();
+        let bib_path = bib_path.clone();
+        Rc::new(move || import.set_sensitive(bib_path.borrow().is_some()))
+    };
+    let noop: Rc<dyn Fn()> = Rc::new(|| {});
+
+    content.append(&file_pick_row(
+        &widgets.window,
+        "BibTeX (.bib)",
+        "Choose…",
+        bib_path.clone(),
+        enable_import.clone(),
+    ));
+    content.append(&file_pick_row(
+        &widgets.window,
+        "Zotero (optional)",
+        "Choose…",
+        zotero_path.clone(),
+        noop,
+    ));
+
+    let overwrite_row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let overwrite_label = gtk4::Label::new(Some("Overwrite existing keys"));
+    overwrite_label.set_xalign(0.0);
+    overwrite_label.set_hexpand(true);
+    overwrite_label.set_halign(gtk4::Align::Start);
+    let overwrite = gtk4::Switch::new();
+    overwrite.set_halign(gtk4::Align::End);
+    overwrite_row.append(&overwrite_label);
+    overwrite_row.append(&overwrite);
+    content.append(&overwrite_row);
+
+    let spinner = gtk4::Spinner::new();
+    content.append(&spinner);
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let import = import.clone();
+        let spinner = spinner.clone();
+        import.connect_clicked(move |import| {
+            let Some(bib) = bib_path.borrow().clone() else {
+                return;
+            };
+            let source = match std::fs::read_to_string(&bib) {
+                Ok(s) => s,
+                Err(e) => {
+                    toast(&widgets, &format!("Could not read .bib: {e}"));
+                    return;
+                }
+            };
+            let opts = fond_bib::ImportOptions {
+                overwrite: overwrite.is_active(),
+                copy_attachments: true,
+                attachment_base: bib.parent().map(|p| p.to_path_buf()),
+                zotero_db: zotero_path.borrow().clone(),
+            };
+            let library = state.borrow().library.clone().expect("library open");
+
+            import.set_sensitive(false);
+            spinner.start();
+
+            let (sender, receiver) = glib::MainContext::channel::<
+                Result<fond_bib::ImportReport, String>,
+            >(glib::Priority::DEFAULT);
+            std::thread::spawn(move || {
+                let _ = sender.send(
+                    library
+                        .import_bibtex(&source, &opts)
+                        .map_err(|e| e.to_string()),
+                );
+            });
+
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let import = import.clone();
+            let spinner = spinner.clone();
+            receiver.attach(None, move |result| {
+                spinner.stop();
+                match result {
+                    Ok(report) => {
+                        let mut msg = format!("Imported {} entries", report.imported.len());
+                        if !report.collections_created.is_empty() {
+                            msg.push_str(&format!(
+                                ", {} collections",
+                                report.collections_created.len()
+                            ));
+                        }
+                        if !report.skipped_key_collisions.is_empty() {
+                            msg.push_str(&format!(
+                                ", {} skipped",
+                                report.skipped_key_collisions.len()
+                            ));
+                        }
+                        toast(&widgets, &msg);
+                        dialog.close();
+                        reload_current(&state, &widgets);
+                    }
+                    Err(e) => {
+                        toast(&widgets, &format!("Import failed: {e}"));
+                        import.set_sensitive(true);
+                    }
+                }
+                glib::ControlFlow::Break
+            });
+        });
+    }
+
+    dialog.present();
+}
+
+/// Commit the library to git (a local snapshot backup). Initialises the repo if needed.
+/// Attachments and `.kartoteka/` are gitignored, so only the plain records are committed.
+fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let root = state
+        .borrow()
+        .library
+        .as_ref()
+        .map(|l| l.root().to_path_buf());
+    let Some(root) = root else {
+        toast(widgets, "Open a library first");
+        return;
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Back up library"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(440, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let commit = gtk4::Button::with_label("Commit");
+    commit.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&commit);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    let default_msg = glib::DateTime::now_local()
+        .ok()
+        .and_then(|d| d.format("Backup %Y-%m-%d %H:%M").ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "Backup".to_string());
+    let entry = gtk4::Entry::builder()
+        .text(&default_msg)
+        .activates_default(true)
+        .build();
+    content.append(&entry);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let entry = entry.clone();
+        commit.connect_clicked(move |_| {
+            let message = entry.text().to_string();
+            let vault = fond_vault::Vault::open(&root).or_else(|_| fond_vault::Vault::init(&root));
+            let result = vault.and_then(|v| {
+                let identity = fond_vault::Identity::from_git_config()?;
+                v.stage_all()?;
+                v.commit(&message, &identity)
+            });
+            match result {
+                Ok(oid) => toast(
+                    &widgets,
+                    &format!("Committed {}", &oid[..oid.len().min(10)]),
+                ),
+                Err(e) => toast(&widgets, &format!("Backup failed: {e}")),
+            }
+            dialog.close();
+        });
+    }
+
+    dialog.present();
 }
 
 fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
@@ -663,6 +1062,7 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
             .and_then(|n| n.to_str())
             .unwrap_or("library")
     ));
+    widgets.status_label.set_text(&path.display().to_string());
     refresh_list(state, widgets);
 }
 

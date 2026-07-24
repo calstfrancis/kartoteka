@@ -30,6 +30,13 @@ top of it, with a flatpak packaging scaffold. Detailed per-milestone notes are b
   status (present/missing + size/pages), annotation count, and note prose.
 - **Add PDF…** (menu) — drop a PDF in: identify it (DOI-sniff or embedded metadata) on a
   worker thread, create the entry, and attach the PDF. Needs PDFium at runtime.
+- **Drag-and-drop** a PDF onto the window to add it (same identify-and-attach flow).
+- **Import…** (menu) — import a BetterBibTeX `.bib` and, optionally, a Zotero
+  `zotero.sqlite` (collections + notes), with an overwrite toggle; runs on a worker thread.
+- **Back up (git commit)…** (menu) — commit the library to git (local snapshot; init if
+  needed). Attachments and `.kartoteka/` are gitignored, so only the plain records commit.
+- **Status bar** (house style) — the library path on the left and a `v{version}` button on
+  the right that opens the embedded **changelog**.
 - **Flatpak packaging** — manifest, desktop entry, AppStream metainfo, placeholder icon,
   and `dev-build.sh`/`publish-flatpak.sh` under `packaging/` (bundles PDFium; see
   `packaging/PACKAGING.md`). Not yet validated against a real flatpak-builder run.

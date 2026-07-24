@@ -1545,6 +1545,7 @@ dependencies = [
  "fond-bib",
  "fond-doc",
  "fond-index",
+ "fond-vault",
  "glib",
  "gtk4",
  "libadwaita",
