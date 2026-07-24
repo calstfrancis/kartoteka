@@ -44,6 +44,12 @@ struct AppState {
     /// Full-text index over the current library (rebuilt on open); `None` if unavailable.
     index: Option<fond_index::SearchIndex>,
     key_to_index: HashMap<String, usize>,
+    /// Collection slugs, in display order (mirrors the collections list).
+    collections: Vec<String>,
+    /// Active collection filter (slug), or `None` for "All entries".
+    collection_filter: Option<String>,
+    /// Saved searches (name → query), loaded from config.
+    saved_searches: Vec<(String, String)>,
 }
 
 struct Widgets {
@@ -53,6 +59,8 @@ struct Widgets {
     status_label: gtk4::Label,
     listbox: gtk4::ListBox,
     detail: gtk4::Box,
+    collections_listbox: gtk4::ListBox,
+    search: gtk4::SearchEntry,
 }
 
 pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
@@ -93,9 +101,36 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
 
     toolbar_view.add_top_bar(&header);
 
+    // Collections pane (leftmost): "All entries" + one row per collection, with a + to
+    // create a new one.
+    let collections_box = gtk4::Box::new(Orientation::Vertical, 0);
+    collections_box.set_width_request(190);
+    let coll_header = gtk4::Box::new(Orientation::Horizontal, 4);
+    coll_header.set_margin_top(6);
+    coll_header.set_margin_bottom(2);
+    coll_header.set_margin_start(10);
+    coll_header.set_margin_end(6);
+    let coll_title = gtk4::Label::new(Some("Collections"));
+    coll_title.add_css_class("dim-label");
+    coll_title.add_css_class("caption-heading");
+    coll_title.set_hexpand(true);
+    coll_title.set_xalign(0.0);
+    let coll_add = gtk4::Button::from_icon_name("list-add-symbolic");
+    coll_add.add_css_class("flat");
+    coll_add.set_tooltip_text(Some("New collection"));
+    coll_header.append(&coll_title);
+    coll_header.append(&coll_add);
+    let collections_listbox = gtk4::ListBox::new();
+    collections_listbox.add_css_class("navigation-sidebar");
+    let coll_scroll = gtk4::ScrolledWindow::new();
+    coll_scroll.set_child(Some(&collections_listbox));
+    coll_scroll.set_vexpand(true);
+    collections_box.append(&coll_header);
+    collections_box.append(&coll_scroll);
+
     // Sidebar: search entry over a scrolled list.
     let sidebar = gtk4::Box::new(Orientation::Vertical, 0);
-    sidebar.set_width_request(320);
+    sidebar.set_width_request(300);
     let search = gtk4::SearchEntry::new();
     search.set_placeholder_text(Some("Search — author: title: tag: type: year:"));
     search.set_margin_top(6);
@@ -122,11 +157,17 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     detail_scroll.set_hexpand(true);
     detail_scroll.set_vexpand(true);
 
+    let inner_paned = gtk4::Paned::new(Orientation::Horizontal);
+    inner_paned.set_start_child(Some(&sidebar));
+    inner_paned.set_end_child(Some(&detail_scroll));
+    inner_paned.set_resize_start_child(false);
+    inner_paned.set_position(300);
+
     let paned = gtk4::Paned::new(Orientation::Horizontal);
-    paned.set_start_child(Some(&sidebar));
-    paned.set_end_child(Some(&detail_scroll));
+    paned.set_start_child(Some(&collections_box));
+    paned.set_end_child(Some(&inner_paned));
     paned.set_resize_start_child(false);
-    paned.set_position(320);
+    paned.set_position(190);
 
     toolbar_view.set_content(Some(&paned));
 
@@ -166,7 +207,48 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         status_label,
         listbox: listbox.clone(),
         detail,
+        collections_listbox: collections_listbox.clone(),
+        search: search.clone(),
     });
+
+    // Collection selection → set the filter and refresh the list.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        collections_listbox.connect_row_selected(move |_, row| {
+            let Some(row) = row else { return };
+            let idx = row.index();
+            if idx < 0 {
+                return;
+            }
+            let idx = idx as usize;
+            let (n_coll, saved) = {
+                let s = state.borrow();
+                (s.collections.len(), s.saved_searches.clone())
+            };
+            if idx == 0 {
+                // All entries.
+                state.borrow_mut().collection_filter = None;
+                widgets.search.set_text("");
+                refresh_list(&state, &widgets);
+            } else if idx <= n_coll {
+                let slug = state.borrow().collections.get(idx - 1).cloned();
+                state.borrow_mut().collection_filter = slug;
+                widgets.search.set_text("");
+                refresh_list(&state, &widgets);
+            } else if let Some((_, query)) = saved.get(idx - n_coll - 1) {
+                // Saved search: clear collection filter, run the query.
+                state.borrow_mut().collection_filter = None;
+                widgets.search.set_text(query); // triggers refresh via search_changed
+            }
+        });
+    }
+    // New collection.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        coll_add.connect_clicked(move |_| new_collection_dialog(&state, &widgets));
+    }
 
     // --- wiring ---
 
@@ -309,6 +391,7 @@ fn build_menu() -> gio::Menu {
     menu.append_section(None, &actions);
 
     let library = gio::Menu::new();
+    library.append(Some("Save current search…"), Some("win.save-search"));
     library.append(Some("Back up (git commit)…"), Some("win.backup"));
     library.append(Some("Sign in to GitHub…"), Some("win.github-signin"));
     library.append(Some("Back up to WebDAV…"), Some("win.webdav-backup"));
@@ -360,6 +443,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("import", None);
         action.connect_activate(move |_, _| show_import_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("save-search", None);
+        action.connect_activate(move |_, _| save_search_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -1401,6 +1491,7 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
         }
     };
 
+    let saved_searches = load_saved_searches(&path);
     {
         let mut s = state.borrow_mut();
         s.library = Some(library);
@@ -1408,6 +1499,8 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
         s.key_to_index = key_to_index;
         s.index = index;
         s.query.clear();
+        s.collection_filter = None;
+        s.saved_searches = saved_searches;
     }
     widgets.subtitle.set_subtitle(&format!(
         "{} — {count} entries",
@@ -1416,7 +1509,336 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
             .unwrap_or("library")
     ));
     widgets.status_label.set_text(&path.display().to_string());
+    refresh_collections(state, widgets);
     refresh_list(state, widgets);
+}
+
+/// Saved searches are stored per library under `.kartoteka/saved-searches.json`.
+fn load_saved_searches(root: &std::path::Path) -> Vec<(String, String)> {
+    let path = root.join(".kartoteka").join("saved-searches.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_saved_searches(state: &Rc<RefCell<AppState>>) {
+    let s = state.borrow();
+    let Some(root) = s.library.as_ref().map(|l| l.root().to_path_buf()) else {
+        return;
+    };
+    let dir = root.join(".kartoteka");
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(json) = serde_json::to_string_pretty(&s.saved_searches) {
+        let _ = std::fs::write(dir.join("saved-searches.json"), json);
+    }
+}
+
+/// Rebuild the collections list: "All entries", each collection, then saved searches.
+fn refresh_collections(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let slugs = state
+        .borrow()
+        .library
+        .as_ref()
+        .and_then(|l| l.collection_slugs().ok())
+        .unwrap_or_default();
+
+    // Display name per slug.
+    let mut rows: Vec<(String, String)> = Vec::new(); // (slug, display name)
+    {
+        let s = state.borrow();
+        if let Some(lib) = s.library.as_ref() {
+            for slug in &slugs {
+                let name = lib
+                    .load_collection(slug)
+                    .map(|c| c.name)
+                    .unwrap_or_else(|_| slug.clone());
+                rows.push((slug.clone(), name));
+            }
+        }
+    }
+    state.borrow_mut().collections = rows.iter().map(|(s, _)| s.clone()).collect();
+
+    let lb = &widgets.collections_listbox;
+    while let Some(child) = lb.first_child() {
+        lb.remove(&child);
+    }
+    lb.append(&collection_row("All entries", "view-list-symbolic"));
+    for (_, name) in &rows {
+        lb.append(&collection_row(name, "folder-symbolic"));
+    }
+    for (name, _) in &state.borrow().saved_searches {
+        lb.append(&collection_row(name, "folder-saved-search-symbolic"));
+    }
+    // Select "All entries" without triggering a reload loop.
+    if let Some(first) = lb.row_at_index(0) {
+        lb.select_row(Some(&first));
+    }
+}
+
+fn collection_row(label: &str, icon: &str) -> gtk4::ListBoxRow {
+    let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
+    hbox.set_margin_top(5);
+    hbox.set_margin_bottom(5);
+    hbox.set_margin_start(8);
+    hbox.set_margin_end(8);
+    let image = gtk4::Image::from_icon_name(icon);
+    let text = gtk4::Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    hbox.append(&image);
+    hbox.append(&text);
+    let row = gtk4::ListBoxRow::new();
+    row.set_child(Some(&hbox));
+    row
+}
+
+fn open_uri(window: &adw::ApplicationWindow, uri: &str) {
+    let launcher = gtk4::UriLauncher::new(uri);
+    launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Toggle an entry's membership in each collection via checkboxes.
+fn membership_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    let slugs = state
+        .borrow()
+        .library
+        .as_ref()
+        .and_then(|l| l.collection_slugs().ok())
+        .unwrap_or_default();
+    if slugs.is_empty() {
+        toast(
+            widgets,
+            "No collections yet — create one with the + above the list",
+        );
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Collections"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(360, -1);
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 6);
+    content.set_margin_top(14);
+    content.set_margin_bottom(14);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+
+    let mut checks: Vec<(String, gtk4::CheckButton)> = Vec::new();
+    {
+        let s = state.borrow();
+        let lib = s.library.as_ref().unwrap();
+        for slug in &slugs {
+            let coll = lib.load_collection(slug).unwrap_or_default();
+            let check = gtk4::CheckButton::with_label(if coll.name.is_empty() {
+                slug
+            } else {
+                &coll.name
+            });
+            check.set_active(coll.keys.iter().any(|k| k == key));
+            content.append(&check);
+            checks.push((slug.clone(), check));
+        }
+    }
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let key = key.to_string();
+        save.connect_clicked(move |_| {
+            {
+                let s = state.borrow();
+                let lib = s.library.as_ref().unwrap();
+                for (slug, check) in &checks {
+                    let mut coll = match lib.load_collection(slug) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let present = coll.keys.iter().any(|k| k == &key);
+                    if check.is_active() && !present {
+                        coll.keys.push(key.clone());
+                        let _ = lib.save_collection(slug, &coll);
+                    } else if !check.is_active() && present {
+                        coll.keys.retain(|k| k != &key);
+                        let _ = lib.save_collection(slug, &coll);
+                    }
+                }
+            }
+            toast(&widgets, "Collections updated");
+            dialog.close();
+            refresh_list(&state, &widgets);
+        });
+    }
+    dialog.present();
+}
+
+/// Save the current search query as a named saved search (a virtual collection).
+fn save_search_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let query = state.borrow().query.trim().to_string();
+    if query.is_empty() {
+        toast(widgets, "Type a search first, then save it");
+        return;
+    }
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Save search"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(380, -1);
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+    let content = gtk4::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    let hint = gtk4::Label::new(Some(&format!("Query: {query}")));
+    hint.add_css_class("dim-label");
+    hint.set_xalign(0.0);
+    hint.set_wrap(true);
+    let entry = gtk4::Entry::builder()
+        .placeholder_text("Name for this saved search")
+        .activates_default(true)
+        .build();
+    content.append(&entry);
+    content.append(&hint);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        save.connect_clicked(move |_| {
+            let name = entry.text().trim().to_string();
+            if name.is_empty() {
+                return;
+            }
+            state
+                .borrow_mut()
+                .saved_searches
+                .push((name, query.clone()));
+            save_saved_searches(&state);
+            toast(&widgets, "Saved search added");
+            dialog.close();
+            refresh_collections(&state, &widgets);
+        });
+    }
+    dialog.present();
+}
+
+/// Prompt for a name and create a new (empty) collection.
+fn new_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("New collection"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(380, -1);
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let create = gtk4::Button::with_label("Create");
+    create.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&create);
+    view.add_top_bar(&header);
+    let content = gtk4::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    let entry = gtk4::Entry::builder()
+        .placeholder_text("Collection name")
+        .activates_default(true)
+        .build();
+    content.append(&entry);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        create.connect_clicked(move |_| {
+            let name = entry.text().trim().to_string();
+            if name.is_empty() {
+                return;
+            }
+            let slug = fond_bib::zotero::slugify(&name);
+            let result = {
+                let s = state.borrow();
+                let lib = s.library.as_ref().expect("library open");
+                lib.save_collection(
+                    &slug,
+                    &fond_bib::Collection {
+                        name: name.clone(),
+                        description: None,
+                        keys: Vec::new(),
+                    },
+                )
+            };
+            match result {
+                Ok(_) => {
+                    toast(&widgets, &format!("Created collection “{name}”"));
+                    dialog.close();
+                    refresh_collections(&state, &widgets);
+                }
+                Err(e) => toast(&widgets, &format!("Could not create: {e}")),
+            }
+        });
+    }
+    dialog.present();
 }
 
 fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
@@ -1426,14 +1848,32 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     {
         let mut s = state.borrow_mut();
         let query = s.query.trim().to_string();
+
+        // Base set: entries in the active collection (in collection order), or all.
+        let base: Vec<usize> = match &s.collection_filter {
+            None => (0..s.entries.len()).collect(),
+            Some(slug) => s
+                .library
+                .as_ref()
+                .and_then(|lib| lib.load_collection(slug).ok())
+                .map(|coll| {
+                    coll.keys
+                        .iter()
+                        .filter_map(|k| s.key_to_index.get(k).copied())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+
         let visible: Vec<usize> = if query.is_empty() {
-            (0..s.entries.len()).collect()
+            base
         } else {
-            let index_hits = s
+            let base_set: std::collections::HashSet<usize> = base.iter().copied().collect();
+            let matched: Vec<usize> = match s
                 .index
                 .as_ref()
-                .and_then(|idx| idx.search(&query, 1000).ok());
-            match index_hits {
+                .and_then(|idx| idx.search(&query, 2000).ok())
+            {
                 Some(hits) => hits
                     .iter()
                     .filter_map(|h| s.key_to_index.get(&h.key).copied())
@@ -1451,7 +1891,11 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                         .map(|(i, _)| i)
                         .collect()
                 }
-            }
+            };
+            matched
+                .into_iter()
+                .filter(|i| base_set.contains(i))
+                .collect()
         };
         s.visible = visible;
     }
@@ -1590,6 +2034,50 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         open_button.connect_clicked(move |_| open_pdf(&window, &path, &filename));
         actions.append(&open_button);
     }
+    let collect_button = gtk4::Button::with_label("Collections…");
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        collect_button.connect_clicked(move |_| membership_dialog(&state, &widgets, &key));
+    }
+    actions.append(&collect_button);
+    // "Locate" menu: open DOI / on the web (feature 10).
+    let locate = gtk4::MenuButton::builder().label("Locate").build();
+    {
+        let doi = library
+            .load_entry(&key)
+            .ok()
+            .and_then(|p| p.entry.doi().map(|d| d.to_string()));
+        let title_q = summary.title.clone();
+        let menu = gio::Menu::new();
+        if doi.is_some() {
+            menu.append(Some("Open DOI"), Some("locate.doi"));
+        }
+        menu.append(Some("Google Scholar"), Some("locate.scholar"));
+        let group = gio::SimpleActionGroup::new();
+        if let Some(doi) = doi {
+            let a = gio::SimpleAction::new("doi", None);
+            let window = widgets.window.clone();
+            a.connect_activate(move |_, _| open_uri(&window, &format!("https://doi.org/{doi}")));
+            group.add_action(&a);
+        }
+        {
+            let a = gio::SimpleAction::new("scholar", None);
+            let window = widgets.window.clone();
+            a.connect_activate(move |_, _| {
+                let q = urlencode(&title_q);
+                open_uri(
+                    &window,
+                    &format!("https://scholar.google.com/scholar?q={q}"),
+                );
+            });
+            group.add_action(&a);
+        }
+        locate.insert_action_group("locate", Some(&group));
+        locate.set_menu_model(Some(&menu));
+    }
+    actions.append(&locate);
     b.append(&actions);
 
     let fields = gtk4::Box::new(Orientation::Vertical, 4);

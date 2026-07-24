@@ -250,6 +250,24 @@ impl Library {
         Collection::parse(&text, &path)
     }
 
+    /// Write a collection to `collections/<slug>.yml`.
+    pub fn save_collection(&self, slug: &str, collection: &Collection) -> Result<PathBuf> {
+        let path = self.collection_path(slug);
+        ensure_parent(&path)?;
+        fs::write(&path, collection.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    /// Delete a collection file. Missing is not an error.
+    pub fn delete_collection(&self, slug: &str) -> Result<()> {
+        let path = self.collection_path(slug);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(BibError::io(&path, e)),
+        }
+    }
+
     /// Add one or more entries from a Hayagriva YAML snippet. Keys in the snippet are
     /// treated as placeholders: each entry gets a freshly generated, collision-free key.
     /// Writes `entries/<key>.yml` for each, regenerates `library.yml`, and returns the
