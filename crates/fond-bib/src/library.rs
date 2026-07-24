@@ -2,7 +2,7 @@
 //! and writes plain files under a library root (see `docs/DATA-MODEL.md`). Derived state
 //! (`library.yml` aside, which is regenerated here) is not this module's concern.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -292,6 +292,156 @@ impl Library {
         })?;
         let entries: Vec<_> = library.iter().cloned().collect();
         self.add_entries(&entries)
+    }
+
+    /// Every tag used across the library, with how many entries carry it, sorted by name.
+    pub fn all_tags(&self) -> Result<Vec<(String, usize)>> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for key in self.keys_sorted()? {
+            if let Some(note) = self.load_note(&key)? {
+                for tag in note.frontmatter.tags {
+                    *counts.entry(tag).or_default() += 1;
+                }
+            }
+        }
+        let mut tags: Vec<(String, usize)> = counts.into_iter().collect();
+        tags.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(tags)
+    }
+
+    /// Rename `old` to `new` across all notes (merging if `new` already exists). An empty
+    /// `new` deletes the tag. Returns the number of notes changed.
+    pub fn rename_tag(&self, old: &str, new: &str) -> Result<usize> {
+        let mut changed = 0;
+        for key in self.keys_sorted()? {
+            let Some(mut note) = self.load_note(&key)? else {
+                continue;
+            };
+            if !note.frontmatter.tags.iter().any(|t| t == old) {
+                continue;
+            }
+            let mut seen = HashSet::new();
+            note.frontmatter.tags = note
+                .frontmatter
+                .tags
+                .into_iter()
+                .map(|t| if t == old { new.to_string() } else { t })
+                .filter(|t| !t.is_empty() && seen.insert(t.clone()))
+                .collect();
+            self.write_note(&key, &note)?;
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
+    /// Find groups of entries that look like duplicates, matched by DOI, else ISBN, else
+    /// folded title + year. Returns each group of 2+ keys (singletons excluded).
+    pub fn find_duplicates(&self) -> Result<Vec<Vec<String>>> {
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+        for key in self.keys_sorted()? {
+            let parsed = self.load_entry(&key)?;
+            let e = &parsed.entry;
+            let bucket = if let Some(doi) = e.doi() {
+                format!("doi:{}", crate::zotero::normalize_doi(doi))
+            } else if let Some(isbn) = e.isbn() {
+                format!("isbn:{}", isbn.replace(['-', ' '], ""))
+            } else if let Some(title) = entry::title_string(e) {
+                let folded = crate::key::ascii_fold(&title);
+                if folded.is_empty() {
+                    continue;
+                }
+                let year = entry::year(e).map(|y| y.to_string()).unwrap_or_default();
+                format!("ty:{folded}:{year}")
+            } else {
+                continue;
+            };
+            groups.entry(bucket).or_default().push(key);
+        }
+        let mut dups: Vec<Vec<String>> = groups.into_values().filter(|g| g.len() > 1).collect();
+        dups.sort();
+        Ok(dups)
+    }
+
+    /// Merge a duplicate group into `into`: fold the others' tags, attachments,
+    /// annotations, and note prose into the target; delete the others' files; and replace
+    /// them in every collection. `into` must be one of `keys`. Regenerates `library.yml`.
+    pub fn merge_group(&self, keys: &[String], into: &str) -> Result<()> {
+        let others: Vec<&String> = keys.iter().filter(|k| k.as_str() != into).collect();
+
+        let mut note = self.load_note(into)?.unwrap_or_default();
+        let mut annots = self
+            .load_annotations(into)?
+            .unwrap_or_else(|| AnnotationSidecar::new(into));
+
+        for other in &others {
+            if let Some(other_note) = self.load_note(other)? {
+                for tag in other_note.frontmatter.tags {
+                    if !note.frontmatter.tags.contains(&tag) {
+                        note.frontmatter.tags.push(tag);
+                    }
+                }
+                for att in other_note.frontmatter.attachments {
+                    if !note
+                        .frontmatter
+                        .attachments
+                        .iter()
+                        .any(|a| a.hash == att.hash)
+                    {
+                        note.frontmatter.attachments.push(att);
+                    }
+                }
+                let body = other_note.body.trim();
+                if !body.is_empty() {
+                    if !note.body.trim().is_empty() {
+                        note.body.push_str("\n\n");
+                    }
+                    note.body.push_str(body);
+                    note.body.push('\n');
+                }
+            }
+            if let Some(sidecar) = self.load_annotations(other)? {
+                for a in sidecar.annotations {
+                    annots.upsert(a);
+                }
+            }
+        }
+
+        self.write_note(into, &note)?;
+        if !annots.annotations.is_empty() {
+            annots.key = into.to_string();
+            self.write_annotations(&annots)?;
+        }
+
+        for other in &others {
+            let _ = fs::remove_file(self.entry_path(other));
+            let _ = fs::remove_file(self.note_path(other));
+            let _ = fs::remove_file(self.annot_path(other));
+        }
+
+        // Replace merged keys in every collection (deduped, order preserved).
+        for slug in self.collection_slugs()? {
+            let mut coll = self.load_collection(&slug)?;
+            let before = coll.keys.clone();
+            let mut seen = HashSet::new();
+            coll.keys = coll
+                .keys
+                .into_iter()
+                .map(|k| {
+                    if others.iter().any(|o| o.as_str() == k) {
+                        into.to_string()
+                    } else {
+                        k
+                    }
+                })
+                .filter(|k| seen.insert(k.clone()))
+                .collect();
+            if coll.keys != before {
+                self.save_collection(&slug, &coll)?;
+            }
+        }
+
+        self.regenerate_library_yml()?;
+        Ok(())
     }
 
     /// Add entries with freshly generated, collision-free citation keys. Writes each

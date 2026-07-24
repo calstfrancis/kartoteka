@@ -151,3 +151,36 @@ fn existing_keys_reads_from_filenames() {
     assert!(keys.contains("cone1970black"));
     assert_eq!(keys.len(), 2);
 }
+
+#[test]
+fn finds_and_merges_duplicates() {
+    let (_dir, lib) = temp_library();
+    // Two entries with the same DOI → a duplicate group.
+    fs::write(
+        lib.entry_path("cone1970a"),
+        "cone1970a:\n  type: article\n  title: Black Theology\n  author: Cone, James\n  date: 1970\n  serial-number:\n    doi: 10.1/cone\n",
+    )
+    .unwrap();
+    fs::write(
+        lib.entry_path("cone1970b"),
+        "cone1970b:\n  type: article\n  title: Black Theology and Black Power\n  author: Cone, James H.\n  date: 1970\n  serial-number:\n    doi: 10.1/CONE\n",
+    )
+    .unwrap();
+    fs::write(
+        lib.note_path("cone1970b"),
+        "---\ntags: [christology]\n---\nnote from b\n",
+    )
+    .unwrap();
+
+    let dups = lib.find_duplicates().unwrap();
+    assert_eq!(dups.len(), 1);
+    assert_eq!(dups[0].len(), 2);
+
+    lib.merge_group(&dups[0], "cone1970a").unwrap();
+    assert!(lib.entry_path("cone1970a").exists());
+    assert!(!lib.entry_path("cone1970b").exists());
+    // b's tag folded into a's note.
+    let note = lib.load_note("cone1970a").unwrap().unwrap();
+    assert!(note.frontmatter.tags.contains(&"christology".to_string()));
+    assert!(note.body.contains("note from b"));
+}

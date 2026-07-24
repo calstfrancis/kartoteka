@@ -388,6 +388,8 @@ fn build_menu() -> gio::Menu {
     actions.append(Some("Add PDF…"), Some("win.add-pdf"));
     actions.append(Some("Import…"), Some("win.import"));
     actions.append(Some("Export bibliography…"), Some("win.export-bib"));
+    actions.append(Some("Find duplicates…"), Some("win.duplicates"));
+    actions.append(Some("Manage tags…"), Some("win.tags"));
     menu.append_section(None, &actions);
 
     let library = gio::Menu::new();
@@ -436,6 +438,20 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("export-bib", None);
         action.connect_activate(move |_, _| show_export_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("duplicates", None);
+        action.connect_activate(move |_, _| show_duplicates_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("tags", None);
+        action.connect_activate(move |_, _| show_tags_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -1591,6 +1607,174 @@ fn collection_row(label: &str, icon: &str) -> gtk4::ListBoxRow {
     let row = gtk4::ListBoxRow::new();
     row.set_child(Some(&hbox));
     row
+}
+
+/// List duplicate groups (matched by DOI/ISBN/title+year) with a Merge button each.
+fn show_duplicates_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let groups = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        library.find_duplicates().unwrap_or_default()
+    };
+    if groups.is_empty() {
+        toast(widgets, "No duplicates found");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(&format!("Duplicates ({})", groups.len())));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(520, 520);
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+
+    let list = gtk4::Box::new(Orientation::Vertical, 12);
+    list.set_margin_top(14);
+    list.set_margin_bottom(14);
+    list.set_margin_start(16);
+    list.set_margin_end(16);
+
+    for group in &groups {
+        let card = gtk4::Box::new(Orientation::Vertical, 4);
+        card.add_css_class("card");
+        card.set_margin_top(2);
+        let inner = gtk4::Box::new(Orientation::Vertical, 4);
+        inner.set_margin_top(8);
+        inner.set_margin_bottom(8);
+        inner.set_margin_start(10);
+        inner.set_margin_end(10);
+        {
+            let s = state.borrow();
+            let lib = s.library.as_ref().unwrap();
+            for key in group {
+                let title = lib
+                    .load_entry(key)
+                    .ok()
+                    .and_then(|p| bibentry::title_string(&p.entry))
+                    .unwrap_or_default();
+                let lbl = gtk4::Label::new(Some(&format!("{title}  ·  {key}")));
+                lbl.set_xalign(0.0);
+                lbl.set_wrap(true);
+                inner.append(&lbl);
+            }
+        }
+        let merge = gtk4::Button::with_label(&format!("Merge into {}", group[0]));
+        merge.add_css_class("suggested-action");
+        merge.set_halign(gtk4::Align::Start);
+        merge.set_margin_top(4);
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let group = group.clone();
+            merge.connect_clicked(move |btn| {
+                let result = {
+                    let s = state.borrow();
+                    s.library
+                        .as_ref()
+                        .map(|lib| lib.merge_group(&group, &group[0]))
+                };
+                match result {
+                    Some(Ok(())) => {
+                        toast(&widgets, &format!("Merged into {}", group[0]));
+                        btn.set_sensitive(false);
+                        btn.set_label("Merged");
+                        reload_current(&state, &widgets);
+                    }
+                    Some(Err(e)) => toast(&widgets, &format!("Merge failed: {e}")),
+                    None => {}
+                }
+                let _ = &dialog;
+            });
+        }
+        inner.append(&merge);
+        card.append(&inner);
+        list.append(&card);
+    }
+
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_child(Some(&list));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+    dialog.present();
+}
+
+/// Manage tags library-wide: rename (merge) or delete each tag across all notes.
+fn show_tags_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let tags = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        library.all_tags().unwrap_or_default()
+    };
+    if tags.is_empty() {
+        toast(widgets, "No tags in this library yet");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(&format!("Tags ({})", tags.len())));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, 520);
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+
+    let list = gtk4::Box::new(Orientation::Vertical, 6);
+    list.set_margin_top(14);
+    list.set_margin_bottom(14);
+    list.set_margin_start(16);
+    list.set_margin_end(16);
+
+    for (tag, count) in &tags {
+        let row = gtk4::Box::new(Orientation::Horizontal, 8);
+        let entry = gtk4::Entry::builder().text(tag).hexpand(true).build();
+        let count_label = gtk4::Label::new(Some(&format!("{count}")));
+        count_label.add_css_class("dim-label");
+        let apply = gtk4::Button::from_icon_name("emblem-ok-symbolic");
+        apply.set_tooltip_text(Some("Rename / merge (empty = delete)"));
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let original = tag.clone();
+            let entry = entry.clone();
+            apply.connect_clicked(move |_| {
+                let new = entry.text().trim().to_string();
+                let result = {
+                    let s = state.borrow();
+                    s.library
+                        .as_ref()
+                        .map(|lib| lib.rename_tag(&original, &new))
+                };
+                match result {
+                    Some(Ok(n)) => {
+                        toast(&widgets, &format!("Updated {n} entries"));
+                        reload_current(&state, &widgets);
+                    }
+                    Some(Err(e)) => toast(&widgets, &format!("Failed: {e}")),
+                    None => {}
+                }
+            });
+        }
+        row.append(&entry);
+        row.append(&count_label);
+        row.append(&apply);
+        list.append(&row);
+    }
+
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_child(Some(&list));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+    dialog.present();
 }
 
 fn open_uri(window: &adw::ApplicationWindow, uri: &str) {
