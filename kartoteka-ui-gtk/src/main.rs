@@ -6,6 +6,7 @@ mod github;
 mod secret_store;
 mod ui;
 mod webdav;
+mod webmeta;
 
 use gtk4::prelude::*;
 use libadwaita as adw;

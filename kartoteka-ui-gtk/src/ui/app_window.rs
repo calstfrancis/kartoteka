@@ -453,6 +453,7 @@ fn build_menu() -> gio::Menu {
     actions.append(Some("Acquire…"), Some("win.acquire"));
     actions.append(Some("Add PDF…"), Some("win.add-pdf"));
     actions.append(Some("Add folder of PDFs…"), Some("win.add-folder"));
+    actions.append(Some("Add from URL…"), Some("win.add-url"));
     actions.append(Some("Import…"), Some("win.import"));
     actions.append(Some("Export bibliography…"), Some("win.export-bib"));
     actions.append(Some("Find duplicates…"), Some("win.duplicates"));
@@ -522,6 +523,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("add-folder", None);
         action.connect_activate(move |_, _| show_add_folder(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("add-url", None);
+        action.connect_activate(move |_, _| show_add_url_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -995,6 +1003,194 @@ fn unpaywall_download(doi: &str, email: &str) -> Result<(Vec<u8>, String), Strin
     }
     let filename = format!("{}.pdf", doi.replace('/', "_"));
     Ok((bytes, filename))
+}
+
+/// "Add from URL": paste a web page URL, scrape its citation `<meta>` tags into an entry,
+/// and grab a linked PDF if the page advertises one.
+fn show_add_url_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Add from URL"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let add = gtk4::Button::with_label("Add");
+    add.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&add);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    let url = gtk4::Entry::builder()
+        .placeholder_text("https://…")
+        .activates_default(true)
+        .build();
+    content.append(&labeled("Page URL", &url));
+    let hint = gtk4::Label::new(Some(
+        "Reads citation metadata (Highwire / Dublin Core / Open Graph) and attaches a linked PDF when one is offered.",
+    ));
+    hint.add_css_class("dim-label");
+    hint.add_css_class("caption");
+    hint.set_wrap(true);
+    hint.set_xalign(0.0);
+    content.append(&hint);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let url = url.clone();
+        add.connect_clicked(move |_| {
+            let u = url.text().trim().to_string();
+            if !(u.starts_with("http://") || u.starts_with("https://")) {
+                toast(&widgets, "Enter a full http(s) URL");
+                return;
+            }
+            add_from_url(&state, &widgets, u);
+            dialog.close();
+        });
+    }
+    dialog.present();
+    url.grab_focus();
+}
+
+/// Scrape result: the entry YAML plus an optional downloaded PDF `(bytes, filename)`.
+type ScrapeResult = Result<(String, Option<(Vec<u8>, String)>), String>;
+
+/// Fetch `url`, scrape its citation metadata on a worker thread, then create the entry and
+/// attach any PDF the page advertised. All network I/O is off the main thread.
+#[allow(deprecated)]
+fn add_from_url(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, url: String) {
+    toast(widgets, "Fetching page…");
+
+    let (sender, receiver) = glib::MainContext::channel::<ScrapeResult>(glib::Priority::DEFAULT);
+    std::thread::spawn(move || {
+        let _ = sender.send(scrape_url(&url));
+    });
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok((yaml, pdf)) => {
+                let added = {
+                    let s = state.borrow();
+                    s.library
+                        .as_ref()
+                        .expect("library open")
+                        .add_from_yaml(&yaml)
+                };
+                match added {
+                    Ok(keys) if !keys.is_empty() => {
+                        let key = keys[0].clone();
+                        if let Some((bytes, filename)) = pdf {
+                            let tmp = std::env::temp_dir().join(&filename);
+                            let attached = std::fs::write(&tmp, &bytes)
+                                .map_err(|e| e.to_string())
+                                .and_then(|_| {
+                                    let s = state.borrow();
+                                    s.library
+                                        .as_ref()
+                                        .expect("library open")
+                                        .store_attachment(&key, &tmp, None)
+                                        .map_err(|e| e.to_string())
+                                });
+                            let _ = std::fs::remove_file(&tmp);
+                            match attached {
+                                Ok(_) => toast(&widgets, &format!("Added {key} with its PDF")),
+                                Err(e) => {
+                                    toast(&widgets, &format!("Added {key}, attach failed: {e}"))
+                                }
+                            }
+                        } else {
+                            toast(&widgets, &format!("Added {key}"));
+                        }
+                        reload_current(&state, &widgets);
+                    }
+                    Ok(_) => toast(&widgets, "The page produced no entry"),
+                    Err(e) => toast(&widgets, &format!("Could not add entry: {e}")),
+                }
+            }
+            Err(e) => toast(&widgets, &format!("Add from URL failed: {e}")),
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// Worker body for [`add_from_url`]: fetch the HTML, scrape metadata into an entry YAML, and
+/// download a linked PDF (verifying the `%PDF-` magic) if one is advertised.
+fn scrape_url(url: &str) -> ScrapeResult {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Kartoteka")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let html = client
+        .get(url)
+        .send()
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .text()
+        .map_err(|e| e.to_string())?;
+
+    let meta = crate::webmeta::WebMeta::from_html(&html);
+    if !meta.is_usable() {
+        return Err("no citation metadata found on that page".to_string());
+    }
+    let yaml = build_entry_yaml(
+        &meta.entry_type,
+        &meta.title,
+        &meta.authors.join("; "),
+        &meta.year,
+        &meta.container,
+        &meta.publisher,
+        &meta.doi,
+        &meta.isbn,
+        url,
+    );
+
+    let pdf = if meta.pdf_url.is_empty() {
+        None
+    } else {
+        let pdf_url = crate::webmeta::resolve_url(url, &meta.pdf_url);
+        client
+            .get(&pdf_url)
+            .send()
+            .ok()
+            .and_then(|r| r.error_for_status().ok())
+            .and_then(|r| r.bytes().ok())
+            .map(|b| b.to_vec())
+            .filter(|b| b.len() >= 5 && &b[..5] == b"%PDF-")
+            .map(|bytes| {
+                let name = if !meta.doi.is_empty() {
+                    format!("{}.pdf", meta.doi.replace('/', "_"))
+                } else {
+                    "download.pdf".to_string()
+                };
+                (bytes, name)
+            })
+    };
+    Ok((yaml, pdf))
 }
 
 /// The item types the manual "New item" form offers: (display label, Hayagriva `type`).
