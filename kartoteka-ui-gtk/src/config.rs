@@ -14,6 +14,12 @@ pub struct Config {
     /// Colour scheme: "system" (default), "light", or "dark".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// WebDAV backup target (base collection URL), e.g. `https://host/remote.php/dav/…`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav_url: Option<String>,
+    /// WebDAV username (the password is kept in the system keyring).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav_username: Option<String>,
 }
 
 fn config_dir() -> PathBuf {

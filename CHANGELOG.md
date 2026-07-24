@@ -35,6 +35,14 @@ top of it, with a flatpak packaging scaffold. Detailed per-milestone notes are b
   `zotero.sqlite` (collections + notes), with an overwrite toggle; runs on a worker thread.
 - **Back up (git commit)…** (menu) — commit the library to git (local snapshot; init if
   needed). Attachments and `.kartoteka/` are gitignored, so only the plain records commit.
+- **GitHub remote push** — **Sign in to GitHub…** via the OAuth device flow (token in the
+  system keyring); the backup dialog can push to GitHub after commit, creating the repo and
+  remote on first push. In-process via libgit2 with the token as HTTPS credentials (no
+  shelling out to `git`). Requires a Kartoteka GitHub OAuth App client id (placeholder in
+  `github.rs`).
+- **Back up to WebDAV…** (menu) — one-way mirror of the whole library (records + attachment
+  blobs, skipping `.kartoteka/`) to a WebDAV server (Nextcloud, pCloud, …). URL/username in
+  config, password in the keyring; uploads on a worker thread.
 - **Status bar** (house style) — the library path on the left and a `v{version}` button on
   the right that opens the embedded **changelog**.
 - **Flatpak packaging** — manifest, desktop entry, AppStream metainfo, placeholder icon,

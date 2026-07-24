@@ -24,3 +24,19 @@ pub fn delete_github_token() {
         let _ = e.delete_password();
     }
 }
+
+const WEBDAV_USERNAME: &str = "webdav_password";
+
+fn webdav_entry() -> Result<keyring::Entry, keyring::Error> {
+    keyring::Entry::new(SERVICE, WEBDAV_USERNAME)
+}
+
+pub fn save_webdav_password(password: &str) -> Result<(), String> {
+    webdav_entry()
+        .and_then(|e| e.set_password(password))
+        .map_err(|e| e.to_string())
+}
+
+pub fn load_webdav_password() -> Option<String> {
+    webdav_entry().ok()?.get_password().ok()
+}

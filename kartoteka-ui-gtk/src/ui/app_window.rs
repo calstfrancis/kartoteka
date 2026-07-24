@@ -16,7 +16,7 @@ use libadwaita::prelude::*;
 use fond_bib::{entry as bibentry, Library};
 
 use crate::config::Config;
-use crate::{github, secret_store};
+use crate::{github, secret_store, webdav};
 
 /// Which kind of identifier the acquire dialog is looking up.
 #[derive(Clone, Copy)]
@@ -310,6 +310,7 @@ fn build_menu() -> gio::Menu {
     let library = gio::Menu::new();
     library.append(Some("Back up (git commit)…"), Some("win.backup"));
     library.append(Some("Sign in to GitHub…"), Some("win.github-signin"));
+    library.append(Some("Back up to WebDAV…"), Some("win.webdav-backup"));
     library.append(Some("Reindex search"), Some("win.reindex"));
     menu.append_section(None, &library);
 
@@ -364,6 +365,14 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("github-signin", None);
         action.connect_activate(move |_, _| show_github_signin(&widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let action = gio::SimpleAction::new("webdav-backup", None);
+        action.connect_activate(move |_, _| show_webdav_dialog(&state, &widgets, &config));
         window.add_action(&action);
     }
     {
@@ -1032,6 +1041,140 @@ fn push_to_github(widgets: &Rc<Widgets>, root: PathBuf) {
         }
         glib::ControlFlow::Break
     });
+}
+
+/// Configure and run a one-way WebDAV backup of the library. Credentials are saved (URL +
+/// username in config, password in the keyring); the upload runs on a worker thread.
+#[allow(deprecated)]
+fn show_webdav_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+) {
+    let root = state
+        .borrow()
+        .library
+        .as_ref()
+        .map(|l| l.root().to_path_buf());
+    let Some(root) = root else {
+        toast(widgets, "Open a library first");
+        return;
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Back up to WebDAV"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(480, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let back_up = gtk4::Button::with_label("Back up");
+    back_up.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&back_up);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let url = gtk4::Entry::builder()
+        .placeholder_text("https://host/remote.php/dav/files/you/Kartoteka")
+        .text(config.borrow().webdav_url.clone().unwrap_or_default())
+        .build();
+    let username = gtk4::Entry::builder()
+        .placeholder_text("username")
+        .text(config.borrow().webdav_username.clone().unwrap_or_default())
+        .build();
+    let password = gtk4::PasswordEntry::builder().show_peek_icon(true).build();
+    password.set_text(&secret_store::load_webdav_password().unwrap_or_default());
+
+    content.append(&labeled("WebDAV URL", &url));
+    content.append(&labeled("Username", &username));
+    content.append(&labeled("Password", &password));
+    let spinner = gtk4::Spinner::new();
+    content.append(&spinner);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let dialog = dialog.clone();
+        let back_up = back_up.clone();
+        let spinner = spinner.clone();
+        back_up.connect_clicked(move |back_up| {
+            let base = url.text().trim().to_string();
+            let user = username.text().trim().to_string();
+            let pass = password.text().to_string();
+            if base.is_empty() {
+                toast(&widgets, "Enter a WebDAV URL");
+                return;
+            }
+
+            // Persist settings (password to keyring).
+            {
+                let mut c = config.borrow_mut();
+                c.webdav_url = Some(base.clone());
+                c.webdav_username = Some(user.clone());
+                c.save();
+            }
+            let _ = secret_store::save_webdav_password(&pass);
+
+            back_up.set_sensitive(false);
+            spinner.start();
+
+            let root = root.clone();
+            let (sender, receiver) =
+                glib::MainContext::channel::<Result<usize, String>>(glib::Priority::DEFAULT);
+            std::thread::spawn(move || {
+                let _ = sender.send(webdav::upload_library(&base, &user, &pass, &root));
+            });
+
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let back_up = back_up.clone();
+            let spinner = spinner.clone();
+            receiver.attach(None, move |result| {
+                spinner.stop();
+                match result {
+                    Ok(n) => {
+                        toast(&widgets, &format!("Backed up {n} files to WebDAV"));
+                        dialog.close();
+                    }
+                    Err(e) => {
+                        toast(&widgets, &format!("WebDAV backup failed: {e}"));
+                        back_up.set_sensitive(true);
+                    }
+                }
+                glib::ControlFlow::Break
+            });
+        });
+    }
+
+    dialog.present();
+}
+
+/// A vertical caption + widget pair.
+fn labeled(caption: &str, widget: &impl IsA<gtk4::Widget>) -> gtk4::Box {
+    let row = gtk4::Box::new(Orientation::Vertical, 4);
+    let label = gtk4::Label::new(Some(caption));
+    label.add_css_class("dim-label");
+    label.set_xalign(0.0);
+    label.set_halign(gtk4::Align::Start);
+    row.append(&label);
+    row.append(widget);
+    row
 }
 
 fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {

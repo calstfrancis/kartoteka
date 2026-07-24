@@ -26,3 +26,4 @@ directories = { workspace = true }
 reqwest = { workspace = true }
 keyring = { workspace = true }
 thiserror = { workspace = true }
+walkdir = { workspace = true }
