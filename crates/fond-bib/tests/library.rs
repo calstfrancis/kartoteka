@@ -184,3 +184,31 @@ fn finds_and_merges_duplicates() {
     assert!(note.frontmatter.tags.contains(&"christology".to_string()));
     assert!(note.body.contains("note from b"));
 }
+
+#[test]
+fn set_related_is_symmetric() {
+    let (_dir, lib) = temp_library();
+    for k in ["a", "b", "c"] {
+        fs::write(
+            lib.entry_path(k),
+            format!("{k}:\n  type: book\n  title: Title {k}\n"),
+        )
+        .unwrap();
+    }
+
+    // Link a → {b, c}: both should link back to a.
+    lib.set_related("a", &["b".into(), "c".into()]).unwrap();
+    assert_eq!(lib.related("a").unwrap(), vec!["b", "c"]);
+    assert_eq!(lib.related("b").unwrap(), vec!["a"]);
+    assert_eq!(lib.related("c").unwrap(), vec!["a"]);
+
+    // Drop c from a's list: c must lose a, b keeps it.
+    lib.set_related("a", &["b".into()]).unwrap();
+    assert_eq!(lib.related("a").unwrap(), vec!["b"]);
+    assert_eq!(lib.related("b").unwrap(), vec!["a"]);
+    assert!(lib.related("c").unwrap().is_empty());
+
+    // Self-links are ignored.
+    lib.set_related("a", &["a".into(), "b".into()]).unwrap();
+    assert_eq!(lib.related("a").unwrap(), vec!["b"]);
+}

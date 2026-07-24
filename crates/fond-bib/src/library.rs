@@ -226,6 +226,54 @@ impl Library {
         }
     }
 
+    /// The related-entry keys recorded on `key`'s note (empty if none / no note).
+    pub fn related(&self, key: &str) -> Result<Vec<String>> {
+        Ok(self
+            .load_note(key)?
+            .map(|n| n.frontmatter.related)
+            .unwrap_or_default())
+    }
+
+    /// Set `key`'s related list to `targets`, keeping links symmetric: every target gains
+    /// `key` in its own note, and any entry previously linked but no longer in `targets`
+    /// loses it. Self-links are ignored. Writes only the notes that actually change.
+    pub fn set_related(&self, key: &str, targets: &[String]) -> Result<()> {
+        let old: HashSet<String> = self.related(key)?.into_iter().collect();
+        let new: HashSet<String> = targets
+            .iter()
+            .filter(|t| t.as_str() != key)
+            .cloned()
+            .collect();
+
+        // Write key's own list (sorted for stable diffs).
+        let mut own = self.load_note(key)?.unwrap_or_default();
+        let mut list: Vec<String> = new.iter().cloned().collect();
+        list.sort();
+        own.frontmatter.related = list;
+        self.write_note(key, &own)?;
+
+        // Add key to newly linked targets.
+        for t in new.difference(&old) {
+            let mut note = self.load_note(t)?.unwrap_or_default();
+            if !note.frontmatter.related.iter().any(|k| k == key) {
+                note.frontmatter.related.push(key.to_string());
+                note.frontmatter.related.sort();
+                self.write_note(t, &note)?;
+            }
+        }
+        // Remove key from dropped targets.
+        for t in old.difference(&new) {
+            if let Some(mut note) = self.load_note(t)? {
+                let before = note.frontmatter.related.len();
+                note.frontmatter.related.retain(|k| k != key);
+                if note.frontmatter.related.len() != before {
+                    self.write_note(t, &note)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Load an entry's annotation sidecar if one exists.
     pub fn load_annotations(&self, key: &str) -> Result<Option<AnnotationSidecar>> {
         let path = self.annot_path(key);

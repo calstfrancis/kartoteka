@@ -46,6 +46,9 @@ pub struct NoteFrontmatter {
     pub date_read: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// Citation keys of related entries (symmetric — see `Library::set_related`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<String>,
 }
 
 /// A parsed note: frontmatter plus the Markdown body prose.

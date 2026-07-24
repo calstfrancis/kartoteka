@@ -1945,6 +1945,42 @@ fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     }
 }
 
+/// Select the entry with citation key `key` in the list, revealing it first (clearing the
+/// search and collection filter) if it is currently filtered out. No-op with a toast if the
+/// key is not in the library.
+fn select_key(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    let visible_pos = |state: &Rc<RefCell<AppState>>| -> Option<usize> {
+        let s = state.borrow();
+        s.visible.iter().position(|&i| s.entries[i].key == key)
+    };
+
+    if let Some(pos) = visible_pos(state) {
+        if let Some(row) = widgets.listbox.row_at_index(pos as i32) {
+            widgets.listbox.select_row(Some(&row));
+        }
+        return;
+    }
+
+    if !state.borrow().key_to_index.contains_key(key) {
+        toast(widgets, "That entry is not in this library");
+        return;
+    }
+
+    // Filtered out — reset the view so it becomes visible.
+    {
+        let mut s = state.borrow_mut();
+        s.collection_filter = None;
+        s.query.clear();
+    }
+    widgets.search.set_text("");
+    refresh_list(state, widgets);
+    if let Some(pos) = visible_pos(state) {
+        if let Some(row) = widgets.listbox.row_at_index(pos as i32) {
+            widgets.listbox.select_row(Some(&row));
+        }
+    }
+}
+
 /// Modal dialog to acquire a reference by DOI / arXiv / ISBN. The network lookup runs on a
 /// worker thread; the result is applied on the main thread so the UI never blocks.
 // The glib main-context channel is deprecated in favour of async-channel; it remains the
@@ -2525,6 +2561,160 @@ fn membership_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: 
     dialog.present();
 }
 
+/// Choose which other entries are "related" to `key`. A searchable, checkable list of every
+/// other entry; on Save the links are written symmetrically via `Library::set_related`.
+fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    // (key, display label, sub) for every entry except this one; plus the current links.
+    let (rows, current): (
+        Vec<(String, String, String)>,
+        std::collections::HashSet<String>,
+    ) = {
+        let s = state.borrow();
+        let Some(lib) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        let current: std::collections::HashSet<String> =
+            lib.related(key).unwrap_or_default().into_iter().collect();
+        let rows = s
+            .entries
+            .iter()
+            .filter(|e| e.key != key)
+            .map(|e| {
+                let label = if e.title.is_empty() {
+                    e.key.clone()
+                } else {
+                    e.title.clone()
+                };
+                let sub = match (e.author.is_empty(), e.year.is_empty()) {
+                    (false, false) => format!("{} · {}", e.author, e.year),
+                    (false, true) => e.author.clone(),
+                    (true, false) => e.year.clone(),
+                    (true, true) => e.key.clone(),
+                };
+                (e.key.clone(), label, sub)
+            })
+            .collect();
+        (rows, current)
+    };
+
+    if rows.is_empty() {
+        toast(widgets, "No other entries to relate to");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Related items"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(440, 480);
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    let search = gtk4::SearchEntry::new();
+    search.set_placeholder_text(Some("Filter entries"));
+    search.set_width_chars(28);
+    header.set_title_widget(Some(&search));
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let listbox = gtk4::ListBox::new();
+    listbox.set_selection_mode(gtk4::SelectionMode::None);
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_child(Some(&listbox));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+
+    // Build every row up front (checkbox state survives filtering, which only toggles row
+    // visibility). Each entry keeps its (key, check, row, haystack) for filter + save.
+    struct RelRow {
+        key: String,
+        check: gtk4::CheckButton,
+        row: gtk4::ListBoxRow,
+        hay: String,
+    }
+    let rel_rows: Rc<Vec<RelRow>> = Rc::new(
+        rows.into_iter()
+            .map(|(k, label, sub)| {
+                let check = gtk4::CheckButton::new();
+                check.set_active(current.contains(&k));
+                let text = gtk4::Box::new(Orientation::Vertical, 0);
+                let t = gtk4::Label::new(Some(&label));
+                t.set_halign(gtk4::Align::Start);
+                t.set_xalign(0.0);
+                t.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                let m = gtk4::Label::new(Some(&sub));
+                m.set_halign(gtk4::Align::Start);
+                m.set_xalign(0.0);
+                m.add_css_class("dim-label");
+                m.add_css_class("caption");
+                text.append(&t);
+                text.append(&m);
+                let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
+                hbox.set_margin_top(4);
+                hbox.set_margin_bottom(4);
+                hbox.set_margin_start(8);
+                hbox.set_margin_end(8);
+                hbox.append(&check);
+                hbox.append(&text);
+                let row = gtk4::ListBoxRow::new();
+                row.set_child(Some(&hbox));
+                row.set_activatable(false);
+                listbox.append(&row);
+                let hay = format!("{label} {sub} {k}").to_lowercase();
+                RelRow {
+                    key: k,
+                    check,
+                    row,
+                    hay,
+                }
+            })
+            .collect(),
+    );
+
+    {
+        let rel_rows = rel_rows.clone();
+        search.connect_search_changed(move |e| {
+            let q = e.text().to_lowercase();
+            for r in rel_rows.iter() {
+                r.row.set_visible(q.is_empty() || r.hay.contains(&q));
+            }
+        });
+    }
+
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let key = key.to_string();
+        let rel_rows = rel_rows.clone();
+        save.connect_clicked(move |_| {
+            let targets: Vec<String> = rel_rows
+                .iter()
+                .filter(|r| r.check.is_active())
+                .map(|r| r.key.clone())
+                .collect();
+            let result = {
+                let s = state.borrow();
+                s.library.as_ref().unwrap().set_related(&key, &targets)
+            };
+            match result {
+                Ok(()) => {
+                    toast(&widgets, "Related items updated");
+                    dialog.close();
+                    reload_current(&state, &widgets);
+                }
+                Err(e) => toast(&widgets, &format!("Could not update: {e}")),
+            }
+        });
+    }
+
+    dialog.present();
+    search.grab_focus();
+}
+
 /// Save the current search query as a named saved search (a virtual collection).
 fn save_search_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let query = state.borrow().query.trim().to_string();
@@ -2908,6 +3098,14 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         collect_button.connect_clicked(move |_| membership_dialog(&state, &widgets, &key));
     }
     actions.append(&collect_button);
+    let related_button = gtk4::Button::with_label("Related…");
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        related_button.connect_clicked(move |_| related_dialog(&state, &widgets, &key));
+    }
+    actions.append(&related_button);
     // "Locate" menu: open DOI / on the web (feature 10).
     let locate = gtk4::MenuButton::builder().label("Locate").build();
     {
@@ -3003,6 +3201,49 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         }
     }
     b.append(&fields);
+
+    // Related items: a wrapped row of link buttons that navigate to the linked entry.
+    let related = note
+        .as_ref()
+        .map(|n| n.frontmatter.related.clone())
+        .unwrap_or_default();
+    if !related.is_empty() {
+        let label = gtk4::Label::new(Some("Related"));
+        label.add_css_class("caption-heading");
+        label.add_css_class("dim-label");
+        label.set_xalign(0.0);
+        label.set_halign(gtk4::Align::Start);
+        label.set_margin_top(6);
+        b.append(&label);
+        let flow = gtk4::FlowBox::new();
+        flow.set_selection_mode(gtk4::SelectionMode::None);
+        flow.set_max_children_per_line(20);
+        flow.set_column_spacing(4);
+        flow.set_row_spacing(4);
+        for rk in &related {
+            let display = s
+                .key_to_index
+                .get(rk)
+                .map(|&i| {
+                    let e = &s.entries[i];
+                    if e.title.is_empty() {
+                        e.key.clone()
+                    } else {
+                        e.title.clone()
+                    }
+                })
+                .unwrap_or_else(|| rk.clone());
+            let link = gtk4::Button::with_label(&display);
+            link.add_css_class("flat");
+            link.set_tooltip_text(Some(rk));
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let rk = rk.clone();
+            link.connect_clicked(move |_| select_key(&state, &widgets, &rk));
+            flow.insert(&link, -1);
+        }
+        b.append(&flow);
+    }
 
     // Note prose.
     if !note_body.is_empty() {
