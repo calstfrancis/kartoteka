@@ -14,7 +14,7 @@ The GTK frontend (`kartoteka-gtk`) ships as a flatpak to the personal repo at
 ## Before the first build: generate `cargo-sources.json`
 
 flatpak-builder runs offline, so cargo dependencies must be vendored. Regenerate this
-file whenever `Cargo.lock` changes. The generator needs `aiohttp` and `toml`; on
+file whenever `Cargo.lock` changes. The generator needs `aiohttp` and `tomlkit`; on
 externally-managed Python (openSUSE Tumbleweed) use a throwaway venv:
 
 ```sh
@@ -23,7 +23,7 @@ curl -o /tmp/flatpak-cargo-generator.py \
   https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
 
 python3 -m venv /tmp/fcg-venv
-/tmp/fcg-venv/bin/pip install aiohttp toml
+/tmp/fcg-venv/bin/pip install aiohttp tomlkit
 /tmp/fcg-venv/bin/python /tmp/flatpak-cargo-generator.py Cargo.lock -o packaging/cargo-sources.json
 ```
 
