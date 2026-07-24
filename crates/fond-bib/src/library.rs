@@ -146,6 +146,7 @@ impl Library {
     pub fn write_entry(&self, entry: &hayagriva::Entry) -> Result<PathBuf> {
         let path = self.entry_path(entry.key());
         let text = entry::serialize_entry(entry)?;
+        ensure_parent(&path)?;
         fs::write(&path, text).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
@@ -153,6 +154,7 @@ impl Library {
     /// Write a note to `notes/<key>.md`.
     pub fn write_note(&self, key: &str, note: &Note) -> Result<PathBuf> {
         let path = self.note_path(key);
+        ensure_parent(&path)?;
         fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
@@ -237,6 +239,7 @@ impl Library {
     /// Write an entry's annotation sidecar.
     pub fn write_annotations(&self, sidecar: &AnnotationSidecar) -> Result<PathBuf> {
         let path = self.annot_path(&sidecar.key);
+        ensure_parent(&path)?;
         fs::write(&path, sidecar.to_json()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
@@ -289,6 +292,7 @@ impl Library {
 
             let text = entry::serialize_entry_as(e, &assigned_key)?;
             let path = self.entry_path(&assigned_key);
+            ensure_parent(&path)?;
             fs::write(&path, text).map_err(|e| BibError::io(&path, e))?;
             assigned.push(assigned_key);
         }
@@ -439,6 +443,15 @@ impl Library {
 
 /// Strip a `blake3:` (or any `algo:`) prefix from a content hash, leaving the bare hex
 /// used as the on-disk blob filename.
+/// Ensure the directory that will hold `path` exists (so writes into a freshly opened or
+/// partially-populated library don't fail with "no such file or directory").
+fn ensure_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| BibError::io(parent, e))?;
+    }
+    Ok(())
+}
+
 fn strip_hash_prefix(hash: &str) -> &str {
     hash.split_once(':').map(|(_, hex)| hex).unwrap_or(hash)
 }
