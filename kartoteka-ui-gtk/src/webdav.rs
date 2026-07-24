@@ -152,3 +152,28 @@ fn encode_segment(seg: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn encodes_only_reserved_characters() {
+        assert_eq!(encode_segment("cone1970black.yml"), "cone1970black.yml");
+        assert_eq!(encode_segment("a b"), "a%20b");
+        assert_eq!(encode_segment("x/y"), "x%2Fy");
+    }
+
+    #[test]
+    fn rel_url_joins_and_trims() {
+        assert_eq!(
+            rel_url("https://host/dav", Path::new("entries/key.yml")),
+            "https://host/dav/entries/key.yml"
+        );
+        assert_eq!(
+            rel_url("https://host/dav", Path::new("library.yml")),
+            "https://host/dav/library.yml"
+        );
+    }
+}
