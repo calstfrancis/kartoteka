@@ -386,6 +386,7 @@ fn build_menu() -> gio::Menu {
     let actions = gio::Menu::new();
     actions.append(Some("Acquire…"), Some("win.acquire"));
     actions.append(Some("Add PDF…"), Some("win.add-pdf"));
+    actions.append(Some("Add folder of PDFs…"), Some("win.add-folder"));
     actions.append(Some("Import…"), Some("win.import"));
     actions.append(Some("Export bibliography…"), Some("win.export-bib"));
     actions.append(Some("Find duplicates…"), Some("win.duplicates"));
@@ -431,6 +432,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("add-pdf", None);
         action.connect_activate(move |_, _| show_add_pdf(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("add-folder", None);
+        action.connect_activate(move |_, _| show_add_folder(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -692,6 +700,218 @@ fn identify_pdf(path: &std::path::Path) -> Result<(bool, String, Option<u32>), S
     }
 
     Err("could not identify the PDF (no DOI in text, no embedded title)".to_string())
+}
+
+/// Progress messages streamed from the bulk-import worker to the UI.
+enum FolderProgress {
+    Step {
+        done: usize,
+        total: usize,
+        name: String,
+    },
+    Done {
+        added: usize,
+        failed: usize,
+    },
+}
+
+/// Pick a folder and import every PDF under it (recursively).
+fn show_add_folder(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+    let dialog = gtk4::FileDialog::builder()
+        .title("Add folder of PDFs")
+        .build();
+    let parent = widgets.window.clone();
+    let state = state.clone();
+    let widgets = widgets.clone();
+    dialog.select_folder(Some(&parent), gio::Cancellable::NONE, move |result| {
+        if let Ok(folder) = result {
+            if let Some(path) = folder.path() {
+                import_pdf_folder(&state, &widgets, path);
+            }
+        }
+    });
+}
+
+/// Walk `folder` for `*.pdf` files and identify+add+attach each on one worker thread. The
+/// whole batch runs on a cloned `Library` (cheap, `Send`), so entries and blobs are written
+/// off the main thread; progress is streamed back for toasts, then the list reloads.
+#[allow(deprecated)]
+fn import_pdf_folder(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, folder: PathBuf) {
+    let library = match state.borrow().library.as_ref() {
+        Some(lib) => lib.clone(),
+        None => return,
+    };
+
+    let pdfs: Vec<PathBuf> = walkdir::WalkDir::new(&folder)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case("pdf"))
+        })
+        .collect();
+
+    if pdfs.is_empty() {
+        toast(widgets, "No PDFs found in that folder");
+        return;
+    }
+    toast(widgets, &format!("Importing {} PDFs…", pdfs.len()));
+
+    let (sender, receiver) = glib::MainContext::channel::<FolderProgress>(glib::Priority::DEFAULT);
+    std::thread::spawn(move || {
+        let total = pdfs.len();
+        let (mut added, mut failed) = (0usize, 0usize);
+        for (i, path) in pdfs.iter().enumerate() {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            let _ = sender.send(FolderProgress::Step {
+                done: i,
+                total,
+                name,
+            });
+            let ok = identify_pdf(path).and_then(|(is_bibtex, payload, pages)| {
+                let keys = if is_bibtex {
+                    library.add_bibtex(&payload)
+                } else {
+                    library.add_from_yaml(&payload)
+                }
+                .map_err(|e| e.to_string())?;
+                let key = keys.into_iter().next().ok_or("no entry produced")?;
+                library
+                    .store_attachment(&key, path, pages)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            });
+            match ok {
+                Ok(()) => added += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        let _ = sender.send(FolderProgress::Done { added, failed });
+    });
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    receiver.attach(None, move |msg| match msg {
+        FolderProgress::Step { done, total, name } => {
+            toast(&widgets, &format!("[{}/{}] {name}", done + 1, total));
+            glib::ControlFlow::Continue
+        }
+        FolderProgress::Done { added, failed } => {
+            let note = if failed == 0 {
+                format!("Imported {added} PDFs")
+            } else {
+                format!("Imported {added} PDFs, {failed} could not be identified")
+            };
+            toast(&widgets, &note);
+            reload_current(&state, &widgets);
+            glib::ControlFlow::Break
+        }
+    });
+}
+
+/// Look up an open-access PDF for a DOI via Unpaywall, download it, and attach it to `key`.
+/// The lookup and download run on a worker thread; the attach then happens on the main
+/// thread via the open library. `email` is required by the Unpaywall API.
+#[allow(deprecated)]
+fn find_pdf_unpaywall(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str, doi: &str) {
+    toast(widgets, "Looking for an open-access PDF…");
+    let email = fond_vault::Identity::from_git_config()
+        .map(|id| id.email)
+        .unwrap_or_else(|_| "anonymous@kartoteka.app".to_string());
+    let doi = doi.to_string();
+
+    // Ok(bytes, filename) on success.
+    let (sender, receiver) =
+        glib::MainContext::channel::<Result<(Vec<u8>, String), String>>(glib::Priority::DEFAULT);
+    std::thread::spawn(move || {
+        let _ = sender.send(unpaywall_download(&doi, &email));
+    });
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let key = key.to_string();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok((bytes, filename)) => {
+                // Write to a temp file so store_attachment can hash+copy it.
+                let tmp = std::env::temp_dir().join(&filename);
+                let attached = std::fs::write(&tmp, &bytes)
+                    .map_err(|e| e.to_string())
+                    .and_then(|_| {
+                        let s = state.borrow();
+                        let library = s.library.as_ref().expect("library open");
+                        library
+                            .store_attachment(&key, &tmp, None)
+                            .map_err(|e| e.to_string())
+                    });
+                let _ = std::fs::remove_file(&tmp);
+                match attached {
+                    Ok(_) => {
+                        toast(&widgets, "Attached an open-access PDF");
+                        reload_current(&state, &widgets);
+                    }
+                    Err(e) => toast(&widgets, &format!("Download ok, attach failed: {e}")),
+                }
+            }
+            Err(e) => toast(&widgets, &format!("No open-access PDF found: {e}")),
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// Query Unpaywall for a DOI's best OA location and download the PDF bytes.
+fn unpaywall_download(doi: &str, email: &str) -> Result<(Vec<u8>, String), String> {
+    let api = format!(
+        "https://api.unpaywall.org/v2/{}?email={}",
+        urlencode(doi),
+        urlencode(email)
+    );
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Kartoteka")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = client
+        .get(&api)
+        .send()
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .map_err(|e| e.to_string())?;
+
+    let url = json
+        .get("best_oa_location")
+        .and_then(|l| l.get("url_for_pdf"))
+        .and_then(|u| u.as_str())
+        .filter(|u| !u.is_empty())
+        .ok_or("no open-access PDF is listed for this DOI")?;
+
+    let bytes = client
+        .get(url)
+        .send()
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .map_err(|e| e.to_string())?
+        .to_vec();
+
+    if bytes.len() < 5 || &bytes[..5] != b"%PDF-" {
+        return Err("the linked file was not a PDF".to_string());
+    }
+    let filename = format!("{}.pdf", doi.replace('/', "_"));
+    Ok((bytes, filename))
 }
 
 /// A row with a caption, a value label, and a "Choose…" button that opens a file picker
@@ -2201,6 +2421,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         })
     });
 
+    let doi = library
+        .load_entry(&key)
+        .ok()
+        .and_then(|p| p.entry.doi().map(|d| d.to_string()));
+
     // Action row: edit note, open PDF.
     let actions = gtk4::Box::new(Orientation::Horizontal, 8);
     actions.set_margin_top(6);
@@ -2217,6 +2442,15 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         let window = widgets.window.clone();
         open_button.connect_clicked(move |_| open_pdf(&window, &path, &filename));
         actions.append(&open_button);
+    } else if let Some(doi) = doi.clone() {
+        // No PDF yet, but we have a DOI — offer an Unpaywall lookup.
+        let find_button = gtk4::Button::with_label("Find PDF");
+        find_button.set_tooltip_text(Some("Search Unpaywall for an open-access PDF"));
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        find_button.connect_clicked(move |_| find_pdf_unpaywall(&state, &widgets, &key, &doi));
+        actions.append(&find_button);
     }
     let collect_button = gtk4::Button::with_label("Collections…");
     {
@@ -2229,10 +2463,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     // "Locate" menu: open DOI / on the web (feature 10).
     let locate = gtk4::MenuButton::builder().label("Locate").build();
     {
-        let doi = library
-            .load_entry(&key)
-            .ok()
-            .and_then(|p| p.entry.doi().map(|d| d.to_string()));
+        let doi = doi.clone();
         let title_q = summary.title.clone();
         let menu = gio::Menu::new();
         if doi.is_some() {
