@@ -14,9 +14,11 @@ finish-args:
   # The library and its attachments live in the user's home; the file chooser is
   # portal-based, but we still need read/write to the chosen library directory.
   - --filesystem=home
-  # DOI / arXiv / ISBN acquisition.
+  # DOI / arXiv / ISBN acquisition, GitHub push, WebDAV backup.
   - --share=network
   - --talk-name=org.freedesktop.portal.Desktop
+  # System keyring for the GitHub OAuth token and WebDAV password.
+  - --talk-name=org.freedesktop.secrets
   # PDFium is bundled into /app/lib; point the app at it explicitly.
   - --env=PDFIUM_LIB_PATH=/app/lib
 

@@ -12,10 +12,8 @@ use serde::Deserialize;
 use thiserror::Error;
 
 /// Client ID for Kartoteka's GitHub OAuth App (Device Flow enabled). Client IDs are not
-/// secret. **This is a placeholder** — register a "Kartoteka" GitHub OAuth App with device
-/// flow enabled and paste its client id here. (You may temporarily reuse another Fond app's
-/// client id for testing, but the GitHub approval screen will then show that app's name.)
-pub const CLIENT_ID: &str = "REPLACE_WITH_KARTOTEKA_OAUTH_APP_CLIENT_ID";
+/// secret — safe to bake into the binary.
+pub const CLIENT_ID: &str = "Ov23ctQNufYLGyUhrJA6";
 
 const USER_AGENT: &str = "Kartoteka (https://github.com/calstfrancis/kartoteka)";
 
