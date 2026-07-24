@@ -1,0 +1,57 @@
+app-id: io.github.calstfrancis.Kartoteka
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: kartoteka-gtk
+
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # The library and its attachments live in the user's home; the file chooser is
+  # portal-based, but we still need read/write to the chosen library directory.
+  - --filesystem=home
+  # DOI / arXiv / ISBN acquisition.
+  - --share=network
+  - --talk-name=org.freedesktop.portal.Desktop
+  # PDFium is bundled into /app/lib; point the app at it explicitly.
+  - --env=PDFIUM_LIB_PATH=/app/lib
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/kartoteka/cargo
+    CARGO_NET_OFFLINE: 'true'
+
+modules:
+  - name: kartoteka
+    buildsystem: simple
+    sources:
+      - type: git
+        url: https://github.com/calstfrancis/kartoteka.git
+        branch: main
+      # Vendored cargo dependencies. Regenerate with flatpak-cargo-generator whenever
+      # Cargo.lock changes (see packaging/PACKAGING.md).
+      - cargo-sources.json
+      # PDFium native library (BSD-3-Clause). Pinned; never vendored into the git repo.
+      - type: archive
+        url: https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7961/pdfium-linux-x64.tgz
+        sha256: 019665c8877d46fe65f625f80fd714ab07aac68554b0636acf2a2adf9288adb2
+        dest: pdfium
+      - type: file
+        path: io.github.calstfrancis.Kartoteka.metainfo.xml
+    build-commands:
+      - mkdir -p cargo
+      - printf '[source.vendored-sources]\ndirectory = "/run/build/kartoteka/cargo/vendor"\n\n[source.crates-io]\nreplace-with = "vendored-sources"\n' > cargo/config
+      - cargo --offline build --release -p kartoteka-ui-gtk
+      - install -Dm755 target/release/kartoteka-gtk /app/bin/kartoteka-gtk
+      - strip /app/bin/kartoteka-gtk
+      # Bundle PDFium (BSD-3).
+      - install -Dm755 pdfium/lib/libpdfium.so /app/lib/libpdfium.so
+      # Desktop entry, icon, AppStream metainfo.
+      - install -Dm644 packaging/io.github.calstfrancis.Kartoteka.desktop /app/share/applications/io.github.calstfrancis.Kartoteka.desktop
+      - install -Dm644 packaging/kartoteka.svg /app/share/icons/hicolor/scalable/apps/io.github.calstfrancis.Kartoteka.svg
+      - install -Dm644 io.github.calstfrancis.Kartoteka.metainfo.xml /app/share/metainfo/io.github.calstfrancis.Kartoteka.metainfo.xml

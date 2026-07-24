@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Kartoteka
+GenericName=Reference Manager
+Comment=Plain-file reference manager and PDF library
+Exec=kartoteka-gtk
+Icon=io.github.calstfrancis.Kartoteka
+Terminal=false
+Type=Application
+Categories=Office;Database;
+Keywords=bibliography;citation;reference;zotero;typst;pdf;
+StartupNotify=true

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Placeholder icon: a card-catalogue drawer. Replace with final artwork before release. -->
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="drawer" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b6ee1"/>
+      <stop offset="1" stop-color="#3b4aa0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- index cards peeking above the drawer -->
+  <rect x="34" y="20" width="60" height="34" rx="4" fill="#f6f5f0"/>
+  <rect x="40" y="14" width="48" height="34" rx="4" fill="#fffdf8"/>
+  <line x1="48" y1="26" x2="80" y2="26" stroke="#c9c4b4" stroke-width="3" stroke-linecap="round"/>
+  <line x1="48" y1="34" x2="72" y2="34" stroke="#d8d3c4" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- drawer body -->
+  <rect x="24" y="52" width="80" height="58" rx="8" fill="url(#drawer)"/>
+  <rect x="24" y="52" width="80" height="20" rx="8" fill="#ffffff" opacity="0.10"/>
+
+  <!-- drawer pull -->
+  <circle cx="64" cy="86" r="9" fill="#fffdf8"/>
+  <circle cx="64" cy="86" r="4" fill="#3b4aa0"/>
+</svg>

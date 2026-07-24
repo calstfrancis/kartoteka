@@ -17,6 +17,15 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 - **Acquire dialog** (headerbar `+`) — add a reference by **DOI / arXiv / ISBN**; the
   network lookup runs on a worker thread (UI stays responsive) and the entry is added and
   the list refreshed on completion.
+- **Field-scoped search** — the sidebar search now queries the `fond-index` tantivy index
+  (`author:`/`title:`/`tag:`/`type:`/`year:`, relevance-ranked), with a substring fallback.
+- **Structured detail pane** — title, byline, Type/Key/DOI/ISBN/Tags rows, PDF attachment
+  status (present/missing + size/pages), annotation count, and note prose.
+- **Add PDF…** (menu) — drop a PDF in: identify it (DOI-sniff or embedded metadata) on a
+  worker thread, create the entry, and attach the PDF. Needs PDFium at runtime.
+- **Flatpak packaging** — manifest, desktop entry, AppStream metainfo, placeholder icon,
+  and `dev-build.sh`/`publish-flatpak.sh` under `packaging/` (bundles PDFium; see
+  `packaging/PACKAGING.md`). Not yet validated against a real flatpak-builder run.
 
 ## [0.1.0-dev1] — 2026-07-23 — First development build
 

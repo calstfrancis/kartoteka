@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.calstfrancis.Kartoteka</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-Proprietary</project_license>
+
+  <name>Kartoteka</name>
+  <summary>Plain-file reference manager and PDF library</summary>
+
+  <description>
+    <p>
+      Kartoteka is a reference manager and PDF library for scholarly writing in Typst — a
+      Zotero alternative whose source of truth is plain, git-friendly files. Bibliographic
+      records are Hayagriva YAML on disk; notes are Markdown; nothing is locked in an opaque
+      database.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>A plain-file library you can edit in a text editor and version with git.</li>
+      <li>A Typst-ready <code>library.yml</code> regenerated on every change.</li>
+      <li>Import from Zotero (BetterBibTeX and the Zotero SQLite store).</li>
+      <li>Full-text search over metadata, notes, annotations, and PDF text.</li>
+      <li>Bibliography output in SBL and Chicago styles, and annotated Typst.</li>
+      <li>Acquire references by DOI, arXiv, or ISBN; drop a PDF in to populate an entry.</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.calstfrancis.Kartoteka.desktop</launchable>
+
+  <provides>
+    <binary>kartoteka-gtk</binary>
+  </provides>
+
+  <categories>
+    <category>Office</category>
+    <category>Database</category>
+  </categories>
+
+  <content_rating type="oars-1.1" />
+
+  <developer id="io.github.calstfrancis">
+    <name>Cal St Francis</name>
+  </developer>
+
+  <url type="homepage">https://github.com/calstfrancis/kartoteka</url>
+
+  <!-- Release entries are added at actual release time, never for dev builds. -->
+  <releases>
+  </releases>
+</component>
