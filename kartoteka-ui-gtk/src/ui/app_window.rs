@@ -448,6 +448,7 @@ fn build_menu() -> gio::Menu {
     let menu = gio::Menu::new();
 
     let actions = gio::Menu::new();
+    actions.append(Some("Cite…"), Some("win.cite"));
     actions.append(Some("New item…"), Some("win.new-item"));
     actions.append(Some("Acquire…"), Some("win.acquire"));
     actions.append(Some("Add PDF…"), Some("win.add-pdf"));
@@ -498,6 +499,16 @@ fn add_window_actions(
         let action = gio::SimpleAction::new("new-item", None);
         action.connect_activate(move |_, _| show_new_item_dialog(&state, &widgets));
         window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("cite", None);
+        action.connect_activate(move |_, _| show_cite_picker(&state, &widgets));
+        window.add_action(&action);
+    }
+    if let Some(app) = window.application() {
+        app.set_accels_for_action("win.cite", &["<Primary>k"]);
     }
     {
         let state = state.clone();
@@ -1070,6 +1081,145 @@ fn build_entry_yaml(
         out.push_str(&format!("    title: {}\n", yaml_quote(container.trim())));
     }
     out
+}
+
+/// Copy a Typst citation (`@key`) for `key` to the clipboard.
+fn copy_citation(widgets: &Rc<Widgets>, key: &str) {
+    let citation = format!("@{key}");
+    widgets.window.clipboard().set_text(&citation);
+    toast(widgets, &format!("Copied {citation}"));
+}
+
+/// Cite-while-you-write picker (Ctrl+K): search the library and copy a Typst `@key`
+/// citation to the clipboard, ready to paste into a document. Row-activate or Enter copies
+/// the highlighted entry; the dialog stays open so several citations can be grabbed in turn.
+fn show_cite_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let entries: Vec<(String, String, String)> = {
+        let s = state.borrow();
+        if s.library.is_none() {
+            toast(widgets, "Open a library first");
+            return;
+        }
+        s.entries
+            .iter()
+            .map(|e| {
+                let label = if e.title.is_empty() {
+                    e.key.clone()
+                } else {
+                    e.title.clone()
+                };
+                let sub = match (e.author.is_empty(), e.year.is_empty()) {
+                    (false, false) => format!("{} · {}", e.author, e.year),
+                    (false, true) => e.author.clone(),
+                    (true, false) => e.year.clone(),
+                    (true, true) => e.key.clone(),
+                };
+                (e.key.clone(), label, sub)
+            })
+            .collect()
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Cite"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, 460);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    let search = gtk4::SearchEntry::new();
+    search.set_placeholder_text(Some("Search to cite (@key → clipboard)"));
+    search.set_width_chars(32);
+    header.set_title_widget(Some(&search));
+    view.add_top_bar(&header);
+
+    let listbox = gtk4::ListBox::new();
+    listbox.set_selection_mode(gtk4::SelectionMode::Single);
+    listbox.add_css_class("navigation-sidebar");
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_child(Some(&listbox));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+
+    // Each row carries its citation key via widget data, so the filter can rebuild rows
+    // freely and activation always knows which key to copy.
+    let entries = Rc::new(entries);
+    let rebuild = {
+        let listbox = listbox.clone();
+        let entries = entries.clone();
+        Rc::new(move |query: &str| {
+            while let Some(child) = listbox.first_child() {
+                listbox.remove(&child);
+            }
+            let q = query.to_lowercase();
+            for (key, label, sub) in entries.iter() {
+                if !q.is_empty()
+                    && !label.to_lowercase().contains(&q)
+                    && !sub.to_lowercase().contains(&q)
+                    && !key.to_lowercase().contains(&q)
+                {
+                    continue;
+                }
+                let vbox = gtk4::Box::new(Orientation::Vertical, 2);
+                vbox.set_margin_top(6);
+                vbox.set_margin_bottom(6);
+                vbox.set_margin_start(8);
+                vbox.set_margin_end(8);
+                let title = gtk4::Label::new(Some(label));
+                title.set_halign(gtk4::Align::Start);
+                title.set_xalign(0.0);
+                title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                title.add_css_class("heading");
+                let meta = gtk4::Label::new(Some(sub));
+                meta.set_halign(gtk4::Align::Start);
+                meta.set_xalign(0.0);
+                meta.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                meta.add_css_class("dim-label");
+                meta.add_css_class("caption");
+                vbox.append(&title);
+                vbox.append(&meta);
+                let row = gtk4::ListBoxRow::new();
+                row.set_child(Some(&vbox));
+                unsafe { row.set_data("cite-key", key.clone()) };
+                listbox.append(&row);
+            }
+            if let Some(first) = listbox.row_at_index(0) {
+                listbox.select_row(Some(&first));
+            }
+        })
+    };
+    rebuild("");
+
+    {
+        let rebuild = rebuild.clone();
+        search.connect_search_changed(move |e| rebuild(&e.text()));
+    }
+
+    // Enter in the search box activates the selected row.
+    {
+        let listbox = listbox.clone();
+        search.connect_activate(move |_| {
+            if let Some(row) = listbox.selected_row() {
+                row.activate();
+            }
+        });
+    }
+
+    // Row-activate copies the citation.
+    {
+        let widgets = widgets.clone();
+        listbox.connect_row_activated(move |_, row| {
+            let key = unsafe { row.data::<String>("cite-key") };
+            if let Some(key) = key {
+                let key = unsafe { key.as_ref() };
+                copy_citation(&widgets, key);
+            }
+        });
+    }
+
+    dialog.present();
+    search.grab_focus();
 }
 
 /// Manual entry form: pick a type and fill the common fields, then create the entry.
@@ -2727,6 +2877,14 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         edit_button.connect_clicked(move |_| show_note_editor(&state, &widgets, &key));
     }
     actions.append(&edit_button);
+    let cite_button = gtk4::Button::with_label("Cite");
+    cite_button.set_tooltip_text(Some("Copy the Typst citation (@key)"));
+    {
+        let widgets = widgets.clone();
+        let key = key.clone();
+        cite_button.connect_clicked(move |_| copy_citation(&widgets, &key));
+    }
+    actions.append(&cite_button);
     if let Some((path, filename)) = present_pdf {
         let open_button = gtk4::Button::with_label("Open PDF");
         let window = widgets.window.clone();
