@@ -1543,6 +1543,7 @@ version = "0.1.0-dev1"
 dependencies = [
  "directories",
  "fond-bib",
+ "fond-doc",
  "fond-index",
  "glib",
  "gtk4",

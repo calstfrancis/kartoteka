@@ -239,6 +239,7 @@ fn build_menu() -> gio::Menu {
 
     let actions = gio::Menu::new();
     actions.append(Some("Acquire…"), Some("win.acquire"));
+    actions.append(Some("Add PDF…"), Some("win.add-pdf"));
     actions.append(Some("Reindex search"), Some("win.reindex"));
     menu.append_section(None, &actions);
 
@@ -266,6 +267,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("acquire", None);
         action.connect_activate(move |_, _| show_acquire_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("add-pdf", None);
+        action.connect_activate(move |_, _| show_add_pdf(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -336,6 +344,103 @@ fn show_about(window: &adw::ApplicationWindow) {
         .modal(true)
         .build();
     about.present();
+}
+
+/// Pick a PDF, identify it (DOI sniff or embedded metadata), create the entry, and attach
+/// the PDF. Identification and any network lookup run on a worker thread.
+fn show_add_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+    let dialog = gtk4::FileDialog::builder().title("Add PDF").build();
+    let parent = widgets.window.clone();
+    let state = state.clone();
+    let widgets = widgets.clone();
+    dialog.open(Some(&parent), gio::Cancellable::NONE, move |result| {
+        if let Ok(file) = result {
+            if let Some(path) = file.path() {
+                import_pdf(&state, &widgets, path);
+            }
+        }
+    });
+}
+
+#[allow(deprecated)]
+fn import_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBuf) {
+    toast(widgets, "Reading PDF…");
+
+    // (is_bibtex, payload, pages) on success.
+    let (sender, receiver) = glib::MainContext::channel::<
+        Result<(bool, String, Option<u32>), String>,
+    >(glib::Priority::DEFAULT);
+    let worker_path = path.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(identify_pdf(&worker_path));
+    });
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok((is_bibtex, payload, pages)) => {
+                let added = {
+                    let s = state.borrow();
+                    let library = s.library.as_ref().expect("library open");
+                    if is_bibtex {
+                        library.add_bibtex(&payload)
+                    } else {
+                        library.add_from_yaml(&payload)
+                    }
+                };
+                match added {
+                    Ok(keys) if !keys.is_empty() => {
+                        let key = keys[0].clone();
+                        let attached = {
+                            let s = state.borrow();
+                            let library = s.library.as_ref().expect("library open");
+                            library.store_attachment(&key, &path, pages)
+                        };
+                        match attached {
+                            Ok(_) => toast(&widgets, &format!("Added {key} with its PDF")),
+                            Err(e) => {
+                                toast(&widgets, &format!("Added {key}, but attach failed: {e}"))
+                            }
+                        }
+                        reload_current(&state, &widgets);
+                    }
+                    Ok(_) => toast(&widgets, "The record produced no entry"),
+                    Err(e) => toast(&widgets, &format!("Could not add entry: {e}")),
+                }
+            }
+            Err(e) => toast(&widgets, &format!("PDF import failed: {e}")),
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// Worker-thread identification: sniff a DOI from the PDF text, else build a minimal entry
+/// from embedded metadata. Returns `(is_bibtex, payload, page_count)`.
+fn identify_pdf(path: &std::path::Path) -> Result<(bool, String, Option<u32>), String> {
+    let pdfium = fond_doc::bind_pdfium().map_err(|e| format!("PDFium unavailable: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let pages = fond_doc::page_count(&pdfium, &bytes).ok().map(|n| n as u32);
+
+    if let Ok(text) = fond_doc::extract_text(&pdfium, &bytes) {
+        if let Some(doi) = fond_doc::find_doi(&text.full_text()) {
+            let bibtex = fond_bib::acquire::fetch_doi_bibtex(&doi).map_err(|e| e.to_string())?;
+            return Ok((true, bibtex, pages));
+        }
+    }
+
+    let meta = fond_doc::extract_metadata(&pdfium, &bytes).map_err(|e| e.to_string())?;
+    if let Some(title) = meta.title {
+        let yaml = fond_bib::acquire::minimal_book_yaml(&title, meta.author.as_deref())
+            .map_err(|e| e.to_string())?;
+        return Ok((false, yaml, pages));
+    }
+
+    Err("could not identify the PDF (no DOI in text, no embedded title)".to_string())
 }
 
 fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
