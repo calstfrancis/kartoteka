@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.1.0-dev2] — 2026-07-24 — Development build
+## [0.1.0-dev3] — 2026-07-24 — Development build
 
 The full headless roadmap (Milestones 1–5 plus cross-cutting search) is implemented — the
 plain-file vault, Zotero migration (BibTeX + SQLite), CSL bibliography output (SBL/Chicago)
@@ -26,8 +26,16 @@ top of it, with a flatpak packaging scaffold. Detailed per-milestone notes are b
   the list refreshed on completion.
 - **Field-scoped search** — the sidebar search now queries the `fond-index` tantivy index
   (`author:`/`title:`/`tag:`/`type:`/`year:`, relevance-ranked), with a substring fallback.
-- **Structured detail pane** — title, byline, Type/Key/DOI/ISBN/Tags rows, PDF attachment
-  status (present/missing + size/pages), annotation count, and note prose.
+- **Structured detail pane** — title, byline, Type/Key/DOI/ISBN/Tags/Status/Rating rows, PDF
+  attachment status (present/missing + size/pages), annotation count, and note prose, with
+  **Edit note** and **Open PDF** buttons.
+- **Edit note dialog** — edit tags, read status, rating, and prose, written to
+  `notes/<key>.md`.
+- **Open PDF** — open an entry's attachment in the system viewer.
+- **Export bibliography…** (menu) — pick a collection + CSL style + format (reference list
+  or annotated `.typ`) and save to a file.
+- The search index now opens an existing index on library open rather than rebuilding it
+  every launch (rebuild on demand via **Reindex search**).
 - **Add PDF…** (menu) — drop a PDF in: identify it (DOI-sniff or embedded metadata) on a
   worker thread, create the entry, and attach the PDF. Needs PDFium at runtime.
 - **Drag-and-drop** a PDF onto the window to add it (same identify-and-attach flow).
