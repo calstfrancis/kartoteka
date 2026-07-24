@@ -34,6 +34,17 @@ struct EntrySummary {
     title: String,
 }
 
+/// How the visible list is ordered. `Default` keeps load order (by key) for an empty query
+/// and relevance rank for a search; the others sort the visible set.
+#[derive(Default, Clone, Copy, PartialEq)]
+enum SortBy {
+    #[default]
+    Default,
+    Title,
+    Author,
+    Year,
+}
+
 #[derive(Default)]
 struct AppState {
     library: Option<Library>,
@@ -50,6 +61,9 @@ struct AppState {
     collection_filter: Option<String>,
     /// Saved searches (name → query), loaded from config.
     saved_searches: Vec<(String, String)>,
+    /// Column the list is sorted by, and direction (`true` = descending).
+    sort_by: SortBy,
+    sort_desc: bool,
 }
 
 struct Widgets {
@@ -137,6 +151,20 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     search.set_margin_bottom(6);
     search.set_margin_start(6);
     search.set_margin_end(6);
+    // Sort control: a "Sort by" dropdown and an ascending/descending toggle.
+    let sort_row = gtk4::Box::new(Orientation::Horizontal, 6);
+    sort_row.set_margin_start(6);
+    sort_row.set_margin_end(6);
+    sort_row.set_margin_bottom(6);
+    let sort_drop = gtk4::DropDown::from_strings(&["Default", "Title", "Author", "Year"]);
+    sort_drop.set_hexpand(true);
+    sort_drop.set_tooltip_text(Some("Sort the list"));
+    let sort_dir = gtk4::ToggleButton::new();
+    sort_dir.set_icon_name("view-sort-descending-symbolic");
+    sort_dir.set_tooltip_text(Some("Descending order"));
+    sort_row.append(&sort_drop);
+    sort_row.append(&sort_dir);
+
     let listbox = gtk4::ListBox::new();
     listbox.set_selection_mode(gtk4::SelectionMode::Single);
     listbox.add_css_class("navigation-sidebar");
@@ -144,6 +172,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     list_scroll.set_child(Some(&listbox));
     list_scroll.set_vexpand(true);
     sidebar.append(&search);
+    sidebar.append(&sort_row);
     sidebar.append(&list_scroll);
 
     // Detail pane: a vertical box of field rows, rebuilt on selection.
@@ -272,6 +301,41 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         let widgets = widgets.clone();
         search.connect_search_changed(move |entry| {
             state.borrow_mut().query = entry.text().to_string();
+            refresh_list(&state, &widgets);
+        });
+    }
+
+    // Sort column.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        sort_drop.connect_selected_notify(move |drop| {
+            state.borrow_mut().sort_by = match drop.selected() {
+                1 => SortBy::Title,
+                2 => SortBy::Author,
+                3 => SortBy::Year,
+                _ => SortBy::Default,
+            };
+            refresh_list(&state, &widgets);
+        });
+    }
+    // Sort direction.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        sort_dir.connect_toggled(move |btn| {
+            let desc = btn.is_active();
+            btn.set_icon_name(if desc {
+                "view-sort-descending-symbolic"
+            } else {
+                "view-sort-ascending-symbolic"
+            });
+            btn.set_tooltip_text(Some(if desc {
+                "Descending order"
+            } else {
+                "Ascending order"
+            }));
+            state.borrow_mut().sort_desc = desc;
             refresh_list(&state, &widgets);
         });
     }
@@ -2505,6 +2569,29 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 .collect()
         };
         s.visible = visible;
+
+        // Apply the chosen sort over the visible set. `Default` leaves load/relevance order.
+        let sort_by = s.sort_by;
+        let desc = s.sort_desc;
+        if sort_by != SortBy::Default {
+            let st = &mut *s;
+            let entries = &st.entries;
+            st.visible.sort_by(|&a, &b| {
+                let key = |i: usize| -> String {
+                    let e = &entries[i];
+                    match sort_by {
+                        SortBy::Title => e.title.to_lowercase(),
+                        SortBy::Author => e.author.to_lowercase(),
+                        SortBy::Year => e.year.clone(),
+                        SortBy::Default => String::new(),
+                    }
+                };
+                key(a).cmp(&key(b))
+            });
+            if desc {
+                st.visible.reverse();
+            }
+        }
     }
 
     // Rebuild rows.
