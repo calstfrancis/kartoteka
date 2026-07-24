@@ -2,9 +2,16 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased] — GUI: GTK4/libadwaita frontend
+## [0.1.0-dev2] — 2026-07-24 — Development build
 
-### Added
+The full headless roadmap (Milestones 1–5 plus cross-cutting search) is implemented — the
+plain-file vault, Zotero migration (BibTeX + SQLite), CSL bibliography output (SBL/Chicago)
+and annotated Typst, tantivy search over metadata/notes/annotations/PDF text, PDF text
+extraction and embedded annotation import/export via PDFium, and acquisition
+(DOI/arXiv/ISBN + drop-a-PDF-in). A GTK4/libadwaita **GUI** (`kartoteka-gtk`) now sits on
+top of it, with a flatpak packaging scaffold. Detailed per-milestone notes are below.
+
+### Added since dev1 — GTK GUI
 
 - **`kartoteka-ui-gtk`** — the Linux GTK4/libadwaita frontend crate (binary `kartoteka-gtk`),
   a thin shell over `fond-bib`/`fond-index`. Open a library (remembered across launches),
@@ -27,14 +34,7 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
   and `dev-build.sh`/`publish-flatpak.sh` under `packaging/` (bundles PDFium; see
   `packaging/PACKAGING.md`). Not yet validated against a real flatpak-builder run.
 
-## [0.1.0-dev1] — 2026-07-23 — First development build
-
-The first end-to-end development build of the headless `kartoteka` CLI. The full roadmap
-(Milestones 1–5 plus cross-cutting search) is implemented: the plain-file vault, Zotero
-migration (BibTeX + SQLite), CSL bibliography output (SBL/Chicago) and annotated Typst,
-tantivy search over metadata/notes/annotations/PDF text, PDF text extraction and embedded
-annotation import/export via PDFium, and acquisition (DOI/arXiv/ISBN + drop-a-PDF-in). No
-GUI yet — the GTK and Tauri frontends remain deferred. See the per-milestone notes below.
+## Milestone detail (headless core)
 
 ## [Unreleased] — Milestone 5 (acquisition) — complete
 
