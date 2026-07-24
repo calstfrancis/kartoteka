@@ -1,6 +1,6 @@
 [package]
 name = "kartoteka-cli"
-version = "0.1.0-dev3"
+version = "0.1.0-dev4"
 description = "Kartoteka — headless reference manager and PDF library (proprietary)"
 license = "LicenseRef-Proprietary"
 edition.workspace = true

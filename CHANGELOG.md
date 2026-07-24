@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.1.0-dev3] — 2026-07-24 — Development build
+## [0.1.0-dev4] — 2026-07-24 — Development build
 
 The full headless roadmap (Milestones 1–5 plus cross-cutting search) is implemented — the
 plain-file vault, Zotero migration (BibTeX + SQLite), CSL bibliography output (SBL/Chicago)
