@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use pdfium_render::prelude::{PdfDocumentMetadataTagType, Pdfium};
+use pdfium_render::prelude::{PdfDocumentMetadataTagType, PdfRenderConfig, Pdfium, Pixels};
 
 use crate::error::{DocError, Result};
 
@@ -85,6 +85,35 @@ pub fn extract_metadata(pdfium: &Pdfium, bytes: &[u8]) -> Result<PdfMeta> {
         title: field(PdfDocumentMetadataTagType::Title),
         author: field(PdfDocumentMetadataTagType::Author),
         page_count: document.pages().len(),
+    })
+}
+
+/// A single PDF page rasterized to RGBA8 pixels (for an in-app viewer).
+#[derive(Debug, Clone)]
+pub struct RenderedPage {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major RGBA8, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
+/// Render page `index` (0-based) of a PDF to RGBA8 pixels at `target_width` px wide, the
+/// height following the page's aspect ratio. Uses PDFium's raw bitmap (no `image` feature).
+pub fn render_page(
+    pdfium: &Pdfium,
+    bytes: &[u8],
+    index: u16,
+    target_width: u32,
+) -> Result<RenderedPage> {
+    let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+    let pages = document.pages();
+    let page = pages.get(index)?;
+    let config = PdfRenderConfig::new().set_target_width(target_width.max(1) as Pixels);
+    let bitmap = page.render_with_config(&config)?;
+    Ok(RenderedPage {
+        width: bitmap.width() as u32,
+        height: bitmap.height() as u32,
+        rgba: bitmap.as_rgba_bytes(),
     })
 }
 

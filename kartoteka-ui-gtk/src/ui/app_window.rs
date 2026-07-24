@@ -3272,7 +3272,16 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     }
     actions.append(&cite_button);
     if let Some((path, filename)) = present_pdf {
-        let open_button = gtk4::Button::with_label("Open PDF");
+        let read_button = gtk4::Button::with_label("Read");
+        read_button.set_tooltip_text(Some("Open the built-in PDF reader"));
+        {
+            let window = widgets.window.clone();
+            let path = path.clone();
+            let title = title_text.to_string();
+            read_button.connect_clicked(move |_| show_pdf_reader(&window, &path, &title));
+        }
+        actions.append(&read_button);
+        let open_button = gtk4::Button::with_label("Open externally");
         let window = widgets.window.clone();
         open_button.connect_clicked(move |_| open_pdf(&window, &path, &filename));
         actions.append(&open_button);
@@ -3623,6 +3632,175 @@ fn open_pdf(window: &adw::ApplicationWindow, blob: &std::path::Path, filename: &
     }
     let launcher = gtk4::FileLauncher::new(Some(&gio::File::for_path(&target)));
     launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
+}
+
+/// Live state of an open PDF reader window.
+struct ReaderState {
+    pdfium: fond_doc::Pdfium,
+    bytes: Vec<u8>,
+    page: u16,
+    count: u16,
+    /// Render width in px = `BASE_WIDTH * zoom`.
+    zoom: f64,
+}
+
+const READER_BASE_WIDTH: f64 = 820.0;
+
+/// A built-in PDF reader: renders pages with PDFium to RGBA textures, with page navigation
+/// and zoom. No Poppler (GPL) — pure PDFium (BSD), the same binding used for text extraction.
+fn show_pdf_reader(window: &adw::ApplicationWindow, blob: &std::path::Path, title: &str) {
+    let bytes = match std::fs::read(blob) {
+        Ok(b) => b,
+        Err(e) => {
+            gtk4::AlertDialog::builder()
+                .message("Could not open PDF")
+                .detail(e.to_string())
+                .build()
+                .show(Some(window));
+            return;
+        }
+    };
+    let pdfium = match fond_doc::bind_pdfium() {
+        Ok(p) => p,
+        Err(e) => {
+            gtk4::AlertDialog::builder()
+                .message("PDF reader unavailable")
+                .detail(format!("PDFium could not be loaded: {e}"))
+                .build()
+                .show(Some(window));
+            return;
+        }
+    };
+    let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(1).max(1);
+
+    let reader = Rc::new(RefCell::new(ReaderState {
+        pdfium,
+        bytes,
+        page: 0,
+        count,
+        zoom: 1.0,
+    }));
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(title));
+    dialog.set_transient_for(Some(window));
+    dialog.set_default_size(900, 820);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+
+    let prev = gtk4::Button::from_icon_name("go-previous-symbolic");
+    prev.set_tooltip_text(Some("Previous page"));
+    let next = gtk4::Button::from_icon_name("go-next-symbolic");
+    next.set_tooltip_text(Some("Next page"));
+    let page_label = gtk4::Label::new(None);
+    page_label.add_css_class("dim-label");
+    let nav = gtk4::Box::new(Orientation::Horizontal, 6);
+    nav.append(&prev);
+    nav.append(&page_label);
+    nav.append(&next);
+    header.set_title_widget(Some(&nav));
+
+    let zoom_out = gtk4::Button::from_icon_name("zoom-out-symbolic");
+    zoom_out.set_tooltip_text(Some("Zoom out"));
+    let zoom_in = gtk4::Button::from_icon_name("zoom-in-symbolic");
+    zoom_in.set_tooltip_text(Some("Zoom in"));
+    header.pack_end(&zoom_in);
+    header.pack_end(&zoom_out);
+    view.add_top_bar(&header);
+
+    let picture = gtk4::Picture::new();
+    picture.set_halign(gtk4::Align::Center);
+    picture.set_valign(gtk4::Align::Start);
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_child(Some(&picture));
+    scroll.set_vexpand(true);
+    scroll.set_hexpand(true);
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+
+    // Render the current page into the Picture and refresh the page label.
+    let render = {
+        let reader = reader.clone();
+        let picture = picture.clone();
+        let page_label = page_label.clone();
+        let prev = prev.clone();
+        let next = next.clone();
+        Rc::new(move || {
+            let r = reader.borrow();
+            let width = (READER_BASE_WIDTH * r.zoom) as u32;
+            match fond_doc::render_page(&r.pdfium, &r.bytes, r.page, width) {
+                Ok(rp) => {
+                    let data = glib::Bytes::from(&rp.rgba);
+                    let texture = gdk::MemoryTexture::new(
+                        rp.width as i32,
+                        rp.height as i32,
+                        gdk::MemoryFormat::R8g8b8a8,
+                        &data,
+                        (rp.width * 4) as usize,
+                    );
+                    picture.set_paintable(Some(&texture));
+                    picture.set_size_request(rp.width as i32, rp.height as i32);
+                }
+                Err(_) => picture.set_paintable(gdk::Paintable::NONE),
+            }
+            page_label.set_text(&format!("Page {} of {}", r.page + 1, r.count));
+            prev.set_sensitive(r.page > 0);
+            next.set_sensitive(r.page + 1 < r.count);
+        })
+    };
+    render();
+
+    {
+        let reader = reader.clone();
+        let render = render.clone();
+        prev.connect_clicked(move |_| {
+            {
+                let mut r = reader.borrow_mut();
+                if r.page > 0 {
+                    r.page -= 1;
+                }
+            }
+            render();
+        });
+    }
+    {
+        let reader = reader.clone();
+        let render = render.clone();
+        next.connect_clicked(move |_| {
+            {
+                let mut r = reader.borrow_mut();
+                if r.page + 1 < r.count {
+                    r.page += 1;
+                }
+            }
+            render();
+        });
+    }
+    {
+        let reader = reader.clone();
+        let render = render.clone();
+        zoom_in.connect_clicked(move |_| {
+            {
+                let mut r = reader.borrow_mut();
+                r.zoom = (r.zoom * 1.25).min(4.0);
+            }
+            render();
+        });
+    }
+    {
+        let reader = reader.clone();
+        let render = render.clone();
+        zoom_out.connect_clicked(move |_| {
+            {
+                let mut r = reader.borrow_mut();
+                r.zoom = (r.zoom / 1.25).max(0.35);
+            }
+            render();
+        });
+    }
+
+    dialog.present();
 }
 
 /// Edit an entry's note: tags, read status, rating, and prose. Writes `notes/<key>.md`.
