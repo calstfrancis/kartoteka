@@ -11,6 +11,31 @@ extraction and embedded annotation import/export via PDFium, and acquisition
 (DOI/arXiv/ISBN + drop-a-PDF-in). A GTK4/libadwaita **GUI** (`kartoteka-gtk`) now sits on
 top of it, with a flatpak packaging scaffold. Detailed per-milestone notes are below.
 
+### Added — Zotero-parity pass (GUI)
+
+A batch of features bringing the GUI toward Zotero's everyday workflow:
+
+- **Collections sidebar** — a leftmost pane with "All entries" and one row per collection;
+  filter the list by collection, create collections, and set an entry's membership.
+- **In-app PDF reader** — a **Read** button opens a built-in reader that rasterizes pages
+  with PDFium (`fond-doc::render_page` → `gdk::MemoryTexture`), with page navigation and
+  zoom. No Poppler (GPL) — pure PDFium (BSD). The system viewer remains as *Open externally*.
+- **Add from URL** — scrape a web page's citation `<meta>` tags (Highwire `citation_*`,
+  Dublin Core, Open Graph) into an entry and attach a linked PDF when the page offers one.
+- **Duplicate detection & merge** — *Find duplicates…* groups entries by DOI / ISBN /
+  folded title+year and merges a group into one, folding tags, attachments, annotations,
+  and note prose and rewriting collection membership.
+- **Bulk PDF import** — *Add folder of PDFs…* recursively identifies and attaches every PDF
+  under a folder, and **Find PDF** locates an open-access PDF for a DOI via Unpaywall.
+- **Tag manager** — *Manage tags…* renames or deletes any tag library-wide.
+- **Sortable list** — sort by Title / Author / Year with an ascending/descending toggle.
+- **Manual New item** — a form covering 13 Hayagriva item types with the common fields.
+- **Cite-while-you-write** — *Cite…* (Ctrl+K) searches the library and copies a Typst `@key`
+  citation to the clipboard; the detail pane also has a **Cite** button.
+- **Related items** — link entries to each other (symmetric links stored in note
+  frontmatter), navigable from clickable links in the detail pane; plus a **Locate** menu
+  (open DOI / Google Scholar).
+
 ### Added since dev1 — GTK GUI
 
 - **`kartoteka-ui-gtk`** — the Linux GTK4/libadwaita frontend crate (binary `kartoteka-gtk`),
