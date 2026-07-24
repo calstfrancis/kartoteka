@@ -384,6 +384,7 @@ fn build_menu() -> gio::Menu {
     let menu = gio::Menu::new();
 
     let actions = gio::Menu::new();
+    actions.append(Some("New item…"), Some("win.new-item"));
     actions.append(Some("Acquire…"), Some("win.acquire"));
     actions.append(Some("Add PDF…"), Some("win.add-pdf"));
     actions.append(Some("Add folder of PDFs…"), Some("win.add-folder"));
@@ -425,6 +426,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("acquire", None);
         action.connect_activate(move |_, _| show_acquire_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("new-item", None);
+        action.connect_activate(move |_, _| show_new_item_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -912,6 +920,201 @@ fn unpaywall_download(doi: &str, email: &str) -> Result<(Vec<u8>, String), Strin
     }
     let filename = format!("{}.pdf", doi.replace('/', "_"));
     Ok((bytes, filename))
+}
+
+/// The item types the manual "New item" form offers: (display label, Hayagriva `type`).
+const ITEM_TYPES: &[(&str, &str)] = &[
+    ("Book", "book"),
+    ("Journal article", "article"),
+    ("Book chapter", "chapter"),
+    ("Conference paper", "conference"),
+    ("Report", "report"),
+    ("Thesis", "thesis"),
+    ("Manuscript", "manuscript"),
+    ("Web page", "web"),
+    ("Blog post", "blog"),
+    ("Newspaper article", "newspaper"),
+    ("Anthology", "anthology"),
+    ("Periodical", "periodical"),
+    ("Miscellaneous", "misc"),
+];
+
+/// Quote and escape a scalar for a double-quoted YAML value.
+fn yaml_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Build a one-entry Hayagriva YAML snippet from the manual form. The placeholder key is
+/// replaced with a generated one by `add_from_yaml`. `authors` is split on `;`/newlines.
+#[allow(clippy::too_many_arguments)]
+fn build_entry_yaml(
+    ty: &str,
+    title: &str,
+    authors: &str,
+    year: &str,
+    container: &str,
+    publisher: &str,
+    doi: &str,
+    isbn: &str,
+    url: &str,
+) -> String {
+    let mut out = String::from("new-item:\n");
+    out.push_str(&format!("  type: {ty}\n"));
+    if !title.trim().is_empty() {
+        out.push_str(&format!("  title: {}\n", yaml_quote(title.trim())));
+    }
+    let names: Vec<&str> = authors
+        .split([';', '\n'])
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if !names.is_empty() {
+        out.push_str("  author:\n");
+        for name in names {
+            out.push_str(&format!("    - {}\n", yaml_quote(name)));
+        }
+    }
+    if !year.trim().is_empty() {
+        // Hayagriva accepts a bare year as a date.
+        out.push_str(&format!("  date: {}\n", year.trim()));
+    }
+    if !publisher.trim().is_empty() {
+        out.push_str(&format!("  publisher: {}\n", yaml_quote(publisher.trim())));
+    }
+    if !url.trim().is_empty() {
+        out.push_str(&format!("  url: {}\n", yaml_quote(url.trim())));
+    }
+    let doi = doi.trim();
+    let isbn = isbn.trim();
+    if !doi.is_empty() || !isbn.is_empty() {
+        out.push_str("  serial-number:\n");
+        if !doi.is_empty() {
+            out.push_str(&format!("    doi: {}\n", yaml_quote(doi)));
+        }
+        if !isbn.is_empty() {
+            out.push_str(&format!("    isbn: {}\n", yaml_quote(isbn)));
+        }
+    }
+    if !container.trim().is_empty() {
+        let parent_ty = match ty {
+            "chapter" | "anthology" => "anthology",
+            "conference" => "proceedings",
+            _ => "periodical",
+        };
+        out.push_str("  parent:\n");
+        out.push_str(&format!("    type: {parent_ty}\n"));
+        out.push_str(&format!("    title: {}\n", yaml_quote(container.trim())));
+    }
+    out
+}
+
+/// Manual entry form: pick a type and fill the common fields, then create the entry.
+fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("New item"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(480, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let create = gtk4::Button::with_label("Create");
+    create.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&create);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+
+    let type_labels: Vec<&str> = ITEM_TYPES.iter().map(|(label, _)| *label).collect();
+    let type_drop = gtk4::DropDown::from_strings(&type_labels);
+    let title = gtk4::Entry::new();
+    let authors = gtk4::Entry::builder()
+        .placeholder_text("Last, First; Last, First")
+        .build();
+    let year = gtk4::Entry::new();
+    let container = gtk4::Entry::builder()
+        .placeholder_text("Journal / book title")
+        .build();
+    let publisher = gtk4::Entry::new();
+    let doi = gtk4::Entry::new();
+    let isbn = gtk4::Entry::new();
+    let url = gtk4::Entry::new();
+
+    content.append(&labeled("Type", &type_drop));
+    content.append(&labeled("Title", &title));
+    content.append(&labeled("Author(s)", &authors));
+    content.append(&labeled("Year", &year));
+    content.append(&labeled("Container", &container));
+    content.append(&labeled("Publisher", &publisher));
+    content.append(&labeled("DOI", &doi));
+    content.append(&labeled("ISBN", &isbn));
+    content.append(&labeled("URL", &url));
+
+    let scroller = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .max_content_height(560)
+        .propagate_natural_height(true)
+        .child(&content)
+        .build();
+    view.set_content(Some(&scroller));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        create.connect_clicked(move |_| {
+            if title.text().trim().is_empty() {
+                toast(&widgets, "A title is required");
+                return;
+            }
+            let ty = ITEM_TYPES[type_drop.selected() as usize].1;
+            let yaml = build_entry_yaml(
+                ty,
+                &title.text(),
+                &authors.text(),
+                &year.text(),
+                &container.text(),
+                &publisher.text(),
+                &doi.text(),
+                &isbn.text(),
+                &url.text(),
+            );
+            let added = {
+                let s = state.borrow();
+                let library = s.library.as_ref().expect("library open");
+                library.add_from_yaml(&yaml)
+            };
+            match added {
+                Ok(keys) if !keys.is_empty() => {
+                    toast(&widgets, &format!("Created {}", keys[0]));
+                    reload_current(&state, &widgets);
+                    dialog.close();
+                }
+                Ok(_) => toast(&widgets, "No entry was created"),
+                Err(e) => toast(&widgets, &format!("Could not create entry: {e}")),
+            }
+        });
+    }
+
+    dialog.present();
 }
 
 /// A row with a caption, a value label, and a "Choose…" button that opens a file picker
