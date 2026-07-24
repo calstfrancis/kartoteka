@@ -115,6 +115,52 @@ impl Vault {
         Ok(oid.to_string())
     }
 
+    /// The URL of a named remote, if it exists.
+    pub fn remote_url(&self, name: &str) -> Option<String> {
+        self.repo
+            .find_remote(name)
+            .ok()
+            .and_then(|r| r.url().map(|s| s.to_string()))
+    }
+
+    /// Create or update a remote to point at `url`.
+    pub fn set_remote(&self, name: &str, url: &str) -> Result<()> {
+        if self.repo.find_remote(name).is_ok() {
+            self.repo.remote_set_url(name, url)?;
+        } else {
+            self.repo.remote(name, url)?;
+        }
+        Ok(())
+    }
+
+    /// Push the current branch to a GitHub remote over HTTPS, authenticating with an OAuth
+    /// token (`x-access-token:<token>`). In-process via libgit2 — never shells out to `git`
+    /// (`docs/ARCHITECTURE.md` §7). The remote's URL must be an `https://github.com/…` URL.
+    pub fn push_github(&self, remote_name: &str, token: &str) -> Result<()> {
+        let branch = self.repo.head()?.shorthand().unwrap_or("main").to_string();
+
+        let mut remote = self.repo.find_remote(remote_name)?;
+
+        let token = token.to_string();
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(move |_url, _username, allowed| {
+            if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                git2::Cred::userpass_plaintext("x-access-token", &token)
+            } else {
+                Err(git2::Error::from_str(
+                    "only token (HTTPS) auth is supported",
+                ))
+            }
+        });
+
+        let mut options = git2::PushOptions::new();
+        options.remote_callbacks(callbacks);
+
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        remote.push(&[refspec.as_str()], Some(&mut options))?;
+        Ok(())
+    }
+
     /// Structured working-tree status.
     pub fn status(&self) -> Result<VaultStatus> {
         let mut opts = StatusOptions::new();

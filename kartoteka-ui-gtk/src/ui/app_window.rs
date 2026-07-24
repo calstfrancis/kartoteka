@@ -5,6 +5,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib, Orientation};
@@ -14,6 +16,7 @@ use libadwaita::prelude::*;
 use fond_bib::{entry as bibentry, Library};
 
 use crate::config::Config;
+use crate::{github, secret_store};
 
 /// Which kind of identifier the acquire dialog is looking up.
 #[derive(Clone, Copy)]
@@ -306,6 +309,7 @@ fn build_menu() -> gio::Menu {
 
     let library = gio::Menu::new();
     library.append(Some("Back up (git commit)…"), Some("win.backup"));
+    library.append(Some("Sign in to GitHub…"), Some("win.github-signin"));
     library.append(Some("Reindex search"), Some("win.reindex"));
     menu.append_section(None, &library);
 
@@ -354,6 +358,12 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("backup", None);
         action.connect_activate(move |_, _| show_backup_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("github-signin", None);
+        action.connect_activate(move |_, _| show_github_signin(&widgets));
         window.add_action(&action);
     }
     {
@@ -809,6 +819,19 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         .activates_default(true)
         .build();
     content.append(&entry);
+
+    let push_row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let push_label = gtk4::Label::new(Some("Push to GitHub after commit"));
+    push_label.set_xalign(0.0);
+    push_label.set_hexpand(true);
+    push_label.set_halign(gtk4::Align::Start);
+    let push_switch = gtk4::Switch::new();
+    push_switch.set_halign(gtk4::Align::End);
+    push_switch.set_active(secret_store::load_github_token().is_some());
+    push_row.append(&push_label);
+    push_row.append(&push_switch);
+    content.append(&push_row);
+
     view.set_content(Some(&content));
     dialog.set_content(Some(&view));
 
@@ -820,6 +843,7 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         let widgets = widgets.clone();
         let dialog = dialog.clone();
         let entry = entry.clone();
+        let push_switch = push_switch.clone();
         commit.connect_clicked(move |_| {
             let message = entry.text().to_string();
             let vault = fond_vault::Vault::open(&root).or_else(|_| fond_vault::Vault::init(&root));
@@ -829,10 +853,15 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 v.commit(&message, &identity)
             });
             match result {
-                Ok(oid) => toast(
-                    &widgets,
-                    &format!("Committed {}", &oid[..oid.len().min(10)]),
-                ),
+                Ok(oid) => {
+                    toast(
+                        &widgets,
+                        &format!("Committed {}", &oid[..oid.len().min(10)]),
+                    );
+                    if push_switch.is_active() {
+                        push_to_github(&widgets, root.clone());
+                    }
+                }
                 Err(e) => toast(&widgets, &format!("Backup failed: {e}")),
             }
             dialog.close();
@@ -840,6 +869,169 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     }
 
     dialog.present();
+}
+
+/// GitHub sign-in via the OAuth device flow. Requests a device code, shows it with a link,
+/// and polls for approval on a worker thread; stores the token in the keyring on success.
+#[allow(deprecated)]
+fn show_github_signin(widgets: &Rc<Widgets>) {
+    if !github::is_configured() {
+        toast(
+            widgets,
+            "GitHub sign-in isn't configured yet (set CLIENT_ID in github.rs)",
+        );
+        return;
+    }
+    toast(widgets, "Contacting GitHub…");
+
+    let (sender, receiver) = glib::MainContext::channel::<Result<github::DeviceCodeResponse, String>>(
+        glib::Priority::DEFAULT,
+    );
+    std::thread::spawn(move || {
+        let _ =
+            sender.send(github::request_device_code(github::CLIENT_ID).map_err(|e| e.to_string()));
+    });
+
+    let widgets = widgets.clone();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok(device) => present_device_dialog(&widgets, device),
+            Err(e) => toast(&widgets, &format!("GitHub error: {e}")),
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+#[allow(deprecated)]
+fn present_device_dialog(widgets: &Rc<Widgets>, device: github::DeviceCodeResponse) {
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Sign in to GitHub"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(420, -1);
+
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+
+    let content = gtk4::Box::new(Orientation::Vertical, 12);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let intro = gtk4::Label::new(Some("Open the page below and enter this code:"));
+    intro.set_wrap(true);
+    intro.set_xalign(0.0);
+
+    let code = gtk4::Label::new(Some(&device.user_code));
+    code.add_css_class("title-1");
+    code.set_selectable(true);
+
+    let link = gtk4::LinkButton::with_label(&device.verification_uri, "Open GitHub");
+
+    let waiting = gtk4::Box::new(Orientation::Horizontal, 8);
+    let spinner = gtk4::Spinner::new();
+    spinner.start();
+    let waiting_label = gtk4::Label::new(Some("Waiting for approval…"));
+    waiting_label.add_css_class("dim-label");
+    waiting.append(&spinner);
+    waiting.append(&waiting_label);
+
+    content.append(&intro);
+    content.append(&code);
+    content.append(&link);
+    content.append(&waiting);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    // Cancel polling when the dialog is closed.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let cancelled = cancelled.clone();
+        dialog.connect_close_request(move |_| {
+            cancelled.store(true, Ordering::Relaxed);
+            glib::Propagation::Proceed
+        });
+    }
+
+    let (sender, receiver) =
+        glib::MainContext::channel::<Result<(String, String), String>>(glib::Priority::DEFAULT);
+    {
+        let cancelled = cancelled.clone();
+        std::thread::spawn(move || {
+            let result = github::poll_for_access_token(github::CLIENT_ID, &device, &cancelled)
+                .and_then(|token| github::fetch_username(&token).map(|user| (token, user)))
+                .map_err(|e| e.to_string());
+            let _ = sender.send(result);
+        });
+    }
+
+    let widgets = widgets.clone();
+    let dialog_for_result = dialog.clone();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok((token, username)) => match secret_store::save_github_token(&token) {
+                Ok(()) => toast(&widgets, &format!("Signed in to GitHub as {username}")),
+                Err(e) => toast(
+                    &widgets,
+                    &format!("Signed in, but couldn't store token: {e}"),
+                ),
+            },
+            Err(e) if e.contains("cancelled") => {}
+            Err(e) => toast(&widgets, &format!("Sign-in failed: {e}")),
+        }
+        dialog_for_result.close();
+        glib::ControlFlow::Break
+    });
+
+    dialog.present();
+}
+
+/// Push the library to GitHub over HTTPS with the stored token, creating the repo + remote
+/// on first push. Runs on a worker thread (a fresh `Vault` is opened there from the path).
+#[allow(deprecated)]
+fn push_to_github(widgets: &Rc<Widgets>, root: PathBuf) {
+    let Some(token) = secret_store::load_github_token() else {
+        toast(
+            widgets,
+            "Sign in to GitHub first (menu → Sign in to GitHub)",
+        );
+        return;
+    };
+    let repo_name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("kartoteka-library")
+        .to_string();
+    toast(widgets, "Pushing to GitHub…");
+
+    let (sender, receiver) =
+        glib::MainContext::channel::<Result<(), String>>(glib::Priority::DEFAULT);
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let vault = fond_vault::Vault::open(&root).map_err(|e| e.to_string())?;
+            if vault.remote_url("origin").is_none() {
+                let clone_url =
+                    github::create_repo(&token, &repo_name, true).map_err(|e| e.to_string())?;
+                vault
+                    .set_remote("origin", &clone_url)
+                    .map_err(|e| e.to_string())?;
+            }
+            vault
+                .push_github("origin", &token)
+                .map_err(|e| e.to_string())
+        })();
+        let _ = sender.send(result);
+    });
+
+    let widgets = widgets.clone();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok(()) => toast(&widgets, "Pushed to GitHub"),
+            Err(e) => toast(&widgets, &format!("Push failed: {e}")),
+        }
+        glib::ControlFlow::Break
+    });
 }
 
 fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {

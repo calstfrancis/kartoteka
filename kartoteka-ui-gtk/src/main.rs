@@ -2,6 +2,8 @@
 //! `fond-*` crates; all library logic lives there (`docs/ARCHITECTURE.md` §4).
 
 mod config;
+mod github;
+mod secret_store;
 mod ui;
 
 use gtk4::prelude::*;
