@@ -50,7 +50,7 @@ modules:
         path: io.github.calstfrancis.Kartoteka.metainfo.xml
     build-commands:
       - mkdir -p cargo
-      - printf '[source.vendored-sources]\ndirectory = "/run/build/kartoteka/cargo/vendor"\n\n[source.crates-io]\nreplace-with = "vendored-sources"\n' > cargo/config
+      - printf '[source.vendored-sources]\ndirectory = "/run/build/kartoteka/cargo/vendor"\n\n[source.crates-io]\nreplace-with = "vendored-sources"\n' > cargo/config.toml
       - cargo --offline build --release -p kartoteka-ui-gtk
       - install -Dm755 target/release/kartoteka-gtk /app/bin/kartoteka-gtk
       - strip /app/bin/kartoteka-gtk
