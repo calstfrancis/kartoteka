@@ -1,6 +1,6 @@
 [package]
 name = "kartoteka-ui-gtk"
-version = "0.1.0-dev5"
+version = "0.1.0-dev6"
 description = "Kartoteka — Linux GTK4/libadwaita frontend (proprietary)"
 license = "LicenseRef-Proprietary"
 edition.workspace = true

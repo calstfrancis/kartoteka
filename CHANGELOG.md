@@ -2,7 +2,12 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased]
+## [0.1.0-dev6] — 2026-07-25 — Development build
+
+The M2 GUI/index surfacing plus the first three M3 knowledge-graph slices at the `fond-bib`
+library layer: node files (`nodes/<slug>.md`), the node-oriented predicate vocabulary, and
+polymorphic relation targets that span notes ∪ nodes. No GUI for nodes yet (that's later in
+the M3 sequence).
 
 ### Added — M3 polymorphic relation targets (`fond-bib`, PR 3 of the sequence)
 
