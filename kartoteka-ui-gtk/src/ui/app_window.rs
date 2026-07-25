@@ -458,6 +458,7 @@ fn build_menu() -> gio::Menu {
     actions.append(Some("Export bibliography…"), Some("win.export-bib"));
     actions.append(Some("Find duplicates…"), Some("win.duplicates"));
     actions.append(Some("Manage tags…"), Some("win.tags"));
+    actions.append(Some("Nodes…"), Some("win.nodes"));
     menu.append_section(None, &actions);
 
     let library = gio::Menu::new();
@@ -551,6 +552,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("tags", None);
         action.connect_activate(move |_, _| show_tags_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("nodes", None);
+        action.connect_activate(move |_, _| show_nodes_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -3999,6 +4007,393 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
                     refresh_detail(&state, &widgets);
                 }
                 Err(e) => toast(&widgets, &format!("Could not save note: {e}")),
+            }
+        });
+    }
+
+    dialog.present();
+}
+
+/// The node-type choices, in dropdown order, paired with their `NodeType`.
+fn node_type_choices() -> [(&'static str, fond_bib::NodeType); 6] {
+    use fond_bib::NodeType::*;
+    [
+        ("Person", Person),
+        ("Concept", Concept),
+        ("School", School),
+        ("Event", Event),
+        ("Place", Place),
+        ("Uncatalogued work", WorkUncataloged),
+    ]
+}
+
+/// The human label for a node type (for list rows).
+fn node_type_label(t: fond_bib::NodeType) -> &'static str {
+    node_type_choices()
+        .iter()
+        .find(|(_, nt)| *nt == t)
+        .map(|(l, _)| *l)
+        .unwrap_or("Concept")
+}
+
+/// Rebuild the search index quietly (no toast) so newly created/edited nodes and entries are
+/// findable. A no-op if no library is open or the rebuild fails (search just stays stale).
+fn rebuild_index_silent(state: &Rc<RefCell<AppState>>) {
+    let rebuilt = {
+        let s = state.borrow();
+        s.library.as_ref().map(|lib| {
+            let dir = lib.root().join(".kartoteka").join("index");
+            fond_index::SearchIndex::rebuild(lib, &dir, |_| None)
+        })
+    };
+    if let Some(Ok(index)) = rebuilt {
+        state.borrow_mut().index = Some(index);
+    }
+}
+
+/// The knowledge-graph node manager: a filterable list of `nodes/` with a `+` to create one;
+/// activating a row opens the node editor. Deletion is intentionally left to vim/git for now
+/// (removing a node needs relation cleanup — a later PR).
+fn show_nodes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Nodes"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(520, 600);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    let new_btn = gtk4::Button::from_icon_name("list-add-symbolic");
+    new_btn.set_tooltip_text(Some("New node"));
+    header.pack_start(&new_btn);
+    view.add_top_bar(&header);
+
+    let outer = gtk4::Box::new(Orientation::Vertical, 0);
+    let search = gtk4::SearchEntry::new();
+    search.set_placeholder_text(Some("Filter nodes"));
+    search.set_margin_top(6);
+    search.set_margin_bottom(6);
+    search.set_margin_start(6);
+    search.set_margin_end(6);
+    let listbox = gtk4::ListBox::new();
+    listbox.add_css_class("navigation-sidebar");
+    listbox.set_selection_mode(gtk4::SelectionMode::Single);
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_child(Some(&listbox));
+    scroll.set_vexpand(true);
+    outer.append(&search);
+    outer.append(&scroll);
+    view.set_content(Some(&outer));
+    dialog.set_content(Some(&view));
+
+    // Slugs currently displayed, in row order — maps a row index back to a node.
+    let shown_slugs = Rc::new(RefCell::new(Vec::<String>::new()));
+
+    let populate: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let listbox = listbox.clone();
+        let search = search.clone();
+        let shown_slugs = shown_slugs.clone();
+        move || {
+            while let Some(child) = listbox.first_child() {
+                listbox.remove(&child);
+            }
+            let filter = search.text().to_lowercase();
+            // Snapshot (slug, frontmatter) under a short borrow, then build rows.
+            let nodes: Vec<(String, fond_bib::NodeFrontmatter)> = {
+                let s = state.borrow();
+                match s.library.as_ref() {
+                    Some(lib) => lib
+                        .node_slugs()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|slug| lib.load_node(&slug).ok().map(|n| (slug, n.frontmatter)))
+                        .collect(),
+                    None => Vec::new(),
+                }
+            };
+
+            let mut shown = Vec::new();
+            for (slug, fm) in nodes {
+                if !filter.is_empty() {
+                    let hay =
+                        format!("{} {} {}", fm.label, slug, fm.aliases.join(" ")).to_lowercase();
+                    if !hay.contains(&filter) {
+                        continue;
+                    }
+                }
+                let row = gtk4::ListBoxRow::new();
+                let b = gtk4::Box::new(Orientation::Vertical, 2);
+                b.set_margin_top(6);
+                b.set_margin_bottom(6);
+                b.set_margin_start(8);
+                b.set_margin_end(8);
+                let title = gtk4::Label::new(Some(&fm.label));
+                title.add_css_class("heading");
+                title.set_xalign(0.0);
+                title.set_halign(gtk4::Align::Start);
+                let sub = gtk4::Label::new(Some(&format!(
+                    "{} · {}",
+                    node_type_label(fm.node_type),
+                    slug
+                )));
+                sub.add_css_class("dim-label");
+                sub.add_css_class("caption");
+                sub.set_xalign(0.0);
+                sub.set_halign(gtk4::Align::Start);
+                b.append(&title);
+                b.append(&sub);
+                row.set_child(Some(&b));
+                listbox.append(&row);
+                shown.push(slug);
+            }
+
+            if shown.is_empty() {
+                let row = gtk4::ListBoxRow::new();
+                row.set_selectable(false);
+                row.set_activatable(false);
+                let l = gtk4::Label::new(Some(if filter.is_empty() {
+                    "No nodes yet — create one with +"
+                } else {
+                    "No matching nodes"
+                }));
+                l.add_css_class("dim-label");
+                l.set_margin_top(12);
+                l.set_margin_bottom(12);
+                row.set_child(Some(&l));
+                listbox.append(&row);
+            }
+            *shown_slugs.borrow_mut() = shown;
+        }
+    });
+
+    // Activate a row (Enter / double-click) to edit that node.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let shown_slugs = shown_slugs.clone();
+        let populate = populate.clone();
+        listbox.connect_row_activated(move |_, row| {
+            let idx = row.index();
+            if idx < 0 {
+                return;
+            }
+            let slug = shown_slugs.borrow().get(idx as usize).cloned();
+            if let Some(slug) = slug {
+                show_node_editor(&state, &widgets, Some(slug), populate.clone());
+            }
+        });
+    }
+    {
+        let populate = populate.clone();
+        search.connect_search_changed(move |_| populate());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let populate = populate.clone();
+        new_btn.connect_clicked(move |_| show_node_editor(&state, &widgets, None, populate.clone()));
+    }
+
+    populate();
+    dialog.present();
+}
+
+/// Create (`slug == None`) or edit an existing node. On save, an existing node keeps its
+/// (stable) slug; a new one gets a collision-free slug derived from the label. Relations are
+/// preserved untouched — they're edited elsewhere. `on_saved` refreshes the caller's list.
+fn show_node_editor(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    slug: Option<String>,
+    on_saved: Rc<dyn Fn()>,
+) {
+    // Load the existing node (edit) or start from defaults (create).
+    let existing = slug.as_ref().and_then(|s| {
+        let st = state.borrow();
+        st.library.as_ref().and_then(|lib| lib.load_node(s).ok())
+    });
+    let fm = existing
+        .as_ref()
+        .map(|n| n.frontmatter.clone())
+        .unwrap_or_default();
+    let body_text = existing.map(|n| n.body).unwrap_or_default();
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(if slug.is_some() {
+        "Edit node"
+    } else {
+        "New node"
+    }));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(540, 600);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let choices = node_type_choices();
+    let type_labels: Vec<&str> = choices.iter().map(|(l, _)| *l).collect();
+    let type_drop = gtk4::DropDown::from_strings(&type_labels);
+    let sel = choices
+        .iter()
+        .position(|(_, t)| *t == fm.node_type)
+        .unwrap_or(1);
+    type_drop.set_selected(sel as u32);
+    content.append(&labeled("Type", &type_drop));
+
+    let label_entry = gtk4::Entry::builder()
+        .text(&fm.label)
+        .placeholder_text("Display name")
+        .build();
+    content.append(&labeled("Label", &label_entry));
+
+    let aliases_entry = gtk4::Entry::builder()
+        .text(fm.aliases.join(", "))
+        .placeholder_text("comma, separated, aliases")
+        .build();
+    content.append(&labeled("Aliases", &aliases_entry));
+
+    let ident_view = gtk4::TextView::builder()
+        .wrap_mode(gtk4::WrapMode::WordChar)
+        .left_margin(8)
+        .right_margin(8)
+        .top_margin(8)
+        .bottom_margin(8)
+        .build();
+    ident_view.set_height_request(90);
+    let ident_text = fm
+        .identifiers
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    ident_view.buffer().set_text(&ident_text);
+    let ident_scroll = gtk4::ScrolledWindow::new();
+    ident_scroll.set_child(Some(&ident_view));
+    ident_scroll.add_css_class("card");
+    content.append(&labeled(
+        "Identifiers (one per line — scheme: value)",
+        &ident_scroll,
+    ));
+
+    let body = gtk4::TextView::builder()
+        .wrap_mode(gtk4::WrapMode::WordChar)
+        .left_margin(8)
+        .right_margin(8)
+        .top_margin(8)
+        .bottom_margin(8)
+        .build();
+    body.buffer().set_text(&body_text);
+    let body_scroll = gtk4::ScrolledWindow::new();
+    body_scroll.set_child(Some(&body));
+    body_scroll.set_vexpand(true);
+    body_scroll.add_css_class("card");
+    content.append(&labeled("Notes", &body_scroll));
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let slug = slug.clone();
+        save.connect_clicked(move |_| {
+            let label = label_entry.text().trim().to_string();
+            if label.is_empty() {
+                toast(&widgets, "A node needs a label");
+                return;
+            }
+            let node_type = choices
+                .get(type_drop.selected() as usize)
+                .map(|(_, t)| *t)
+                .unwrap_or(fond_bib::NodeType::Concept);
+            let aliases: Vec<String> = aliases_entry
+                .text()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let mut identifiers = std::collections::BTreeMap::new();
+            let ibuf = ident_view.buffer();
+            let itext = ibuf
+                .text(&ibuf.start_iter(), &ibuf.end_iter(), false)
+                .to_string();
+            for line in itext.lines() {
+                if let Some((k, v)) = line.split_once(':') {
+                    let (k, v) = (k.trim(), v.trim());
+                    if !k.is_empty() && !v.is_empty() {
+                        identifiers.insert(k.to_string(), v.to_string());
+                    }
+                }
+            }
+            let bbuf = body.buffer();
+            let body_str = bbuf
+                .text(&bbuf.start_iter(), &bbuf.end_iter(), false)
+                .to_string();
+
+            // Preserve any existing relations (edited elsewhere); update the curated fields.
+            let mut new_fm = fm.clone();
+            new_fm.node_type = node_type;
+            new_fm.label = label.clone();
+            new_fm.aliases = aliases;
+            new_fm.identifiers = identifiers;
+            let node = fond_bib::Node {
+                frontmatter: new_fm,
+                body: body_str,
+            };
+
+            // An existing node keeps its slug; a new one gets a fresh collision-free slug.
+            let target_slug = match &slug {
+                Some(s) => s.clone(),
+                None => {
+                    let s = state.borrow();
+                    let Some(lib) = s.library.as_ref() else {
+                        return;
+                    };
+                    let existing: std::collections::HashSet<String> =
+                        lib.node_slugs().unwrap_or_default().into_iter().collect();
+                    fond_bib::key::assign_key(&fond_bib::key::node_slug(&label), &existing)
+                }
+            };
+
+            let result = {
+                let s = state.borrow();
+                s.library.as_ref().map(|lib| lib.write_node(&target_slug, &node))
+            };
+            match result {
+                Some(Ok(_)) => {
+                    rebuild_index_silent(&state);
+                    toast(&widgets, "Node saved");
+                    dialog.close();
+                    on_saved();
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not save node: {e}")),
+                None => {}
             }
         });
     }

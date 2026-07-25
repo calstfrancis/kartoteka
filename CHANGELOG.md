@@ -4,6 +4,17 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [Unreleased]
 
+### Added — M3 node manager GUI (`kartoteka-ui-gtk`, PR 6 of the sequence)
+
+- **Nodes manager** — a new "Nodes…" menu item opens a manager window listing the library's
+  knowledge-graph nodes (label + type · slug), with a live filter and a **+** to create one.
+  Activating a row opens a node editor for `node-type`, `label`, `aliases`, `identifiers`
+  (one `scheme: value` per line), and prose. A new node gets a collision-free slug derived
+  from its label; an existing node keeps its stable slug; relations are preserved untouched
+  (they're edited elsewhere). Saving quietly rebuilds the search index so the node is findable.
+  Deletion is intentionally left to vim/git for now (removing a node needs relation cleanup —
+  a later PR). See `docs/M3-SPEC.md` §6. Verified end-to-end headless.
+
 ### Added — M3 node indexing (`fond-index`, PR 5 of the sequence)
 
 - **Nodes are searchable** — `fond-index` now indexes `nodes/` alongside `entries/` in one

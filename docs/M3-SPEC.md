@@ -1,9 +1,8 @@
 # Kartoteka M3 — Implementation Spec: Knowledge-Graph Nodes
 
-Status: **in progress.** PRs 1–5 (node file type + slug + `nodes/` in `init`; node-oriented
-predicate vocabulary; polymorphic target resolution + relation hosts spanning notes ∪ nodes;
-fsck node checks; `fond-index` node indexing) are **built and tested** — the whole non-GUI
-library layer. PRs 6–8 (all GUI) not yet. See the PR sequence and `docs/STATUS.md`.
+Status: **in progress.** PRs 1–5 (the whole non-GUI library layer) plus PR 6 (GUI node
+list/editor) are **built and tested**. PRs 7–8 (GUI: nodes as relation targets; node detail/
+neighbours + author→node linkage) not yet. See the PR sequence and `docs/STATUS.md`.
 
 > **Naming note.** "M3" here is the **knowledge-base extension track** (M2 = typed relations
 > etc., already built; M3 = this), *not* `ROADMAP.md`'s "Milestone 3" (bibliography output,
@@ -166,8 +165,13 @@ This is the one part that genuinely re-touches M2 code; everything else is addit
 
 Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib vs. GUI):
 
-- **Node list & editor** — a view alongside entries (a sidebar filter "Nodes", or a mode
-  toggle). Create/edit `node-type`, `label`, `aliases`, `identifiers`, prose.
+- ✅ **Node list & editor (PR 6)** — shipped as a **Nodes manager window** (menu → "Nodes…"):
+  a filterable list of nodes with a **+** to create, and a node editor for `node-type`,
+  `label`, `aliases`, `identifiers`, prose. Chosen over a main-pane sidebar filter/mode-toggle
+  to keep it self-contained and avoid touching the shared entry list/detail/search; the deeper
+  main-pane integration is PR 8's node detail view. Relations preserved on edit; new nodes get
+  a collision-free label-derived slug; existing nodes keep their stable slug. No delete yet
+  (needs relation cleanup — deferred).
 - **Nodes as relation targets** — the relations dialog (`relations_dialog`) currently lists
   only entries; add nodes to the pickable targets, and offer node-appropriate predicates
   (§2 context).
@@ -206,7 +210,8 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
 5. ✅ **Done.** `fond-index` indexes nodes into the shared schema with a `kind` discriminator
    (`kind:node`), reusing title/type/note and adding alias/identifier; `SearchHit.kind` added.
    Tests added.
-6. GUI: node list/editor.
+6. ✅ **Done.** GUI: Nodes manager window (menu → "Nodes…") — filterable node list + create/
+   edit editor (type/label/aliases/identifiers/prose). Verified end-to-end headless.
 7. GUI: nodes as relation targets + node-appropriate predicates.
 8. GUI: node detail / neighbours view + author→node linkage.
 
