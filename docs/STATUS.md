@@ -36,19 +36,19 @@ When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
   sidecar, projects/usage). Commit + tag exist on `main`; **not pushed**. Ready for Cal to
   run `./dev-build.sh` in `kartoteka/`.
 
-### Uncommitted working changes (as of this writing)
-Per Cal's "skip commit" instruction, these are in the working tree, **not committed**, under
-a fresh `CHANGELOG.md` `[Unreleased]` section:
+### Committed on top of dev5 (not tagged, not pushed) — commit `5614503`
+The extension-M2 index + GUI surfacing, under `CHANGELOG.md` `[Unreleased]`:
 - `fond-index`: `facet` field (faceted-tag scoping) + `ai` field (AI-text search).
 - GUI detail panel: typed relations displayed grouped by predicate.
 - GUI: the **"Relations…" editing dialog** (typed forward edges via `set_relations`), verified
   end-to-end headless.
-- Docs: `M2-GUI-PLAN.md`, `M3-SPEC.md`, this `STATUS.md`, and the `DATA-MODEL-EXTENSIONS.md`
-  decisions.
+- Docs: `M2-GUI-PLAN.md`, `M3-SPEC.md`, `STATUS.md`, disambiguation banners.
 
-**To commit this batch** (only when Cal says so): stage explicitly (never `git add -A` —
-house rule), and if `Cargo.lock` changed, regenerate `packaging/cargo-sources.json` with the
-flatpak-cargo-generator (venv at `/tmp/fcg-venv`) — see root `CLAUDE.md`.
+This is a plain work commit (not a dev build): no version bump, no tag. The `[Unreleased]`
+CHANGELOG section will fold into the next dev tag when one is prepped.
+
+### Working tree
+Clean as of 2026-07-25. Next dev build would be `v0.1.0-dev6`.
 
 ### Test / quality state
 - Whole workspace: **94 tests passing, 0 clippy warnings** at last run.
