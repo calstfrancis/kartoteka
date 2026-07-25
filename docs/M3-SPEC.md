@@ -1,6 +1,7 @@
 # Kartoteka M3 — Implementation Spec: Knowledge-Graph Nodes
 
-Status: **spec draft, not yet implemented.** Plan-first — no code until signed off.
+Status: **in progress.** PR 1 (node types + parse/to_text + slug helper + `nodes/` in
+`init`) is **built and tested**; PRs 2–8 not yet. See the PR sequence and `docs/STATUS.md`.
 
 > **Naming note.** "M3" here is the **knowledge-base extension track** (M2 = typed relations
 > etc., already built; M3 = this), *not* `ROADMAP.md`'s "Milestone 3" (bibliography output,
@@ -181,8 +182,9 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
 
 ## Suggested PR sequence
 
-1. `node.rs` (types + parse/to_text via shared frontmatter split) + slug helper + round-trip
-   tests. Add `nodes/` to `init`.
+1. ✅ **Done.** `node.rs` (types + parse/to_text via shared frontmatter split) + slug helper
+   + round-trip tests. `nodes/` added to `init` (+ `node_path`/`node_slugs`/`load_node`/
+   `write_node`). `split_frontmatter` factored into `util`.
 2. Predicate vocabulary extension (inverse/label/sort/forward-choices) + tests.
 3. `resolve_target` + `RelationHost` refactor of `set_relations`/reconcile to span notes ∪
    nodes + tests (the load-bearing PR; keep it isolated).
@@ -199,12 +201,15 @@ a later one.
 
 ## Open items for Cal
 
-1. **`node-type` default** — require it, or default (to `concept`) when omitted? (Requiring
-   it is cleaner for a hand-authored file but less forgiving.)
+1. ~~**`node-type` default**~~ — **Resolved in PR 1: defaults to `concept` when omitted**
+   (the forgiving choice, and what lets `NodeFrontmatter` derive `Default`). A missing/blank
+   `label`, by contrast, *is* a hard parse error. Revisit if a required `node-type` is wanted.
 2. **Predicate domain enforcement** — keep the vocabulary fully open (any predicate, any
    target types) with only UI curation, or validate domains in `fsck` (warn on e.g.
    `authored` pointing at another person)? (Recommend open + UI curation, matching M2.)
 3. **Graph view depth** — is a grouped-relations list per node enough for M3, with a visual
    graph deferred, or is the visual graph part of the M3 bar?
-4. **Slug scheme for concepts/events** — kebab of label is obvious; confirm that's wanted
-   rather than anything fancier.
+4. ~~**Slug scheme for concepts/events**~~ — **PR 1 implements kebab-of-label for all types**
+   (`node_slug`: ASCII-fold each whitespace-separated word, join with `-`). The spec's
+   "person → family-name-ish slug" nuance is deferred to the author→node linkage PR (8),
+   where a structured author name is available; the library-layer primitive is kebab-of-label.

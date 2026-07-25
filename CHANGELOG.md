@@ -4,6 +4,23 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [Unreleased]
 
+### Added — M3 knowledge-graph nodes (`fond-bib`, PR 1 of the sequence)
+
+- **Node files (`nodes/<slug>.md`)** — first-class non-work entities (person / concept /
+  school / event / place / uncatalogued work) with a `label`, `aliases`, free-form external
+  `identifiers` (wikidata/viaf/orcid/…), and typed `relations`. Structurally a note (YAML
+  frontmatter + Markdown prose), so the graph is homogeneous: a relation target may be a
+  citation key or a node slug. `fond_bib::Node` (`parse`/`to_text`) round-trips; an omitted
+  `node-type` defaults to `concept`, an unknown one is a parse error, and a missing/blank
+  `label` is rejected. See `docs/M3-SPEC.md` §1.
+- **Node slugs** — `fond_bib::key::node_slug(label)` produces an ASCII-folded kebab-case base
+  slug; collision suffixing reuses `assign_key` as citation keys do.
+- **Library wiring** — `Library::init` now creates `nodes/` alongside the other dirs, plus
+  `node_path` / `node_slugs` / `load_node` / `write_node`. Purely additive: an empty or
+  absent `nodes/` is valid and existing vaults are untouched.
+- Internal: `split_frontmatter` is now a shared helper (`util`) reused by both the note and
+  node parsers rather than copied.
+
 ### Added — M2 search & GUI surfacing
 
 - **Facet indexing** — `fond-index` now indexes faceted tags (`discipline:theology`) into a

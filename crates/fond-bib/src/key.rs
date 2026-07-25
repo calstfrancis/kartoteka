@@ -118,6 +118,28 @@ pub fn generate_base_key(
     }
 }
 
+/// A base (unsuffixed) node slug from a node's `label` (`docs/M3-SPEC.md` §1). ASCII-folded,
+/// lowercase, hyphen-separated words — e.g. `"Augustine of Hippo"` → `"augustine-of-hippo"`,
+/// `"Divine Simplicity"` → `"divine-simplicity"`. Mirrors citation-key discipline (folded,
+/// lowercase, stable once assigned) but keeps word boundaries as hyphens so a multi-word
+/// concept stays legible. A label that folds to nothing yields `"node"` as a last resort.
+///
+/// Collision suffixing reuses [`assign_key`], exactly as citation keys do, so the caller
+/// passes this base plus the set of taken slugs.
+pub fn node_slug(label: &str) -> String {
+    let slug = label
+        .split_whitespace()
+        .map(ascii_fold)
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "node".to_string()
+    } else {
+        slug
+    }
+}
+
 /// Bijective base-25 suffix over `b..z`: 1→"b", 2→"c", … 25→"z", 26→"bb", …
 /// Starts at `b` so a suffixed key is always visually distinct from the bare one.
 fn nth_suffix(mut n: usize) -> String {
@@ -215,6 +237,28 @@ mod tests {
         let k3 = assign_key(base, &existing);
         assert_eq!(k3, "smith2020faithc");
         existing.insert(k3);
+    }
+
+    #[test]
+    fn node_slugs_are_folded_kebab() {
+        assert_eq!(node_slug("Augustine of Hippo"), "augustine-of-hippo");
+        assert_eq!(node_slug("Divine Simplicity"), "divine-simplicity");
+        assert_eq!(node_slug("Gutiérrez"), "gutierrez");
+        // Punctuation is dropped within a word, whitespace becomes a hyphen.
+        assert_eq!(node_slug("  Pseudo-Dionysius  "), "pseudodionysius");
+        // A label that folds to nothing falls back to "node".
+        assert_eq!(node_slug("!!! ??? "), "node");
+    }
+
+    #[test]
+    fn node_slug_collisions_reuse_assign_key() {
+        let mut existing = HashSet::new();
+        let base = node_slug("Origen");
+        let s1 = assign_key(&base, &existing);
+        assert_eq!(s1, "origen");
+        existing.insert(s1);
+        let s2 = assign_key(&base, &existing);
+        assert_eq!(s2, "origenb");
     }
 
     #[test]

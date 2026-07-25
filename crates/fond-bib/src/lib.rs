@@ -16,6 +16,7 @@ pub mod error;
 pub mod import;
 pub mod key;
 pub mod library;
+pub mod node;
 pub mod note;
 pub mod project;
 pub mod relation;
@@ -29,6 +30,7 @@ pub use collection::Collection;
 pub use error::{BibError, Result};
 pub use import::{ImportOptions, ImportReport};
 pub use library::{FsckReport, Library, RelationReconcile, UsageMap};
+pub use node::{Node, NodeFrontmatter, NodeType};
 pub use note::{
     split_facet, Attachment, CitePrefs, Note, NoteFrontmatter, Progress, ReadStatus, Task,
 };

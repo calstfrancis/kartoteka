@@ -14,6 +14,7 @@ use crate::collection::Collection;
 use crate::entry::{self, ParsedEntry};
 use crate::error::{BibError, Result};
 use crate::key;
+use crate::node::Node;
 use crate::note::Attachment;
 use crate::note::Note;
 use crate::project::{self, Project};
@@ -25,6 +26,7 @@ pub const ANNOTS_DIR: &str = "annots";
 pub const COLLECTIONS_DIR: &str = "collections";
 pub const AI_DIR: &str = "ai";
 pub const PROJECTS_DIR: &str = "projects";
+pub const NODES_DIR: &str = "nodes";
 pub const ATTACHMENTS_DIR: &str = "attachments";
 pub const DERIVED_DIR: &str = ".kartoteka";
 pub const LIBRARY_YML: &str = "library.yml";
@@ -62,6 +64,7 @@ impl Library {
             COLLECTIONS_DIR,
             AI_DIR,
             PROJECTS_DIR,
+            NODES_DIR,
         ] {
             let path = root.join(dir);
             fs::create_dir_all(&path).map_err(|e| BibError::io(&path, e))?;
@@ -95,6 +98,10 @@ impl Library {
 
     pub fn ai_path(&self, key: &str) -> PathBuf {
         self.root.join(AI_DIR).join(format!("{key}.yml"))
+    }
+
+    pub fn node_path(&self, slug: &str) -> PathBuf {
+        self.root.join(NODES_DIR).join(format!("{slug}.md"))
     }
 
     pub fn library_yml_path(&self) -> PathBuf {
@@ -135,6 +142,12 @@ impl Library {
         self.dir_stems(COLLECTIONS_DIR, "yml")
     }
 
+    /// Every node slug currently on disk (the `nodes/*.md` filenames), ascending. The
+    /// filename is the authority for slug identity — no database needed.
+    pub fn node_slugs(&self) -> Result<Vec<String>> {
+        self.dir_stems(NODES_DIR, "md")
+    }
+
     /// Read an entry file's raw text.
     pub fn read_entry_raw(&self, key: &str) -> Result<String> {
         let path = self.entry_path(key);
@@ -172,6 +185,23 @@ impl Library {
         let path = self.note_path(key);
         ensure_parent(&path)?;
         fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    /// Load and parse a single node from `nodes/<slug>.md`. Slug/filename agreement is an
+    /// `fsck` concern (a slug is stable even if the `label` is later edited), so this does
+    /// not enforce it — it just reads and parses.
+    pub fn load_node(&self, slug: &str) -> Result<Node> {
+        let path = self.node_path(slug);
+        let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
+        Node::parse(&text, &path)
+    }
+
+    /// Write a node to `nodes/<slug>.md`.
+    pub fn write_node(&self, slug: &str, node: &Node) -> Result<PathBuf> {
+        let path = self.node_path(slug);
+        ensure_parent(&path)?;
+        fs::write(&path, node.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 

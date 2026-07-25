@@ -2,6 +2,34 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Split leading `---`-delimited YAML frontmatter from a Markdown body. Returns
+/// `(yaml, body)` or `None` when there is no frontmatter block. Handles `\n` and `\r\n`
+/// line endings. Shared by the note and node parsers so the split stays byte-identical
+/// across both file types (`docs/M3-SPEC.md` §1).
+pub(crate) fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
+    let rest = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))?;
+    // Find a closing fence line: a line that is exactly "---".
+    let mut search_start = 0;
+    loop {
+        let idx = rest[search_start..].find("---")?;
+        let abs = search_start + idx;
+        let at_line_start = abs == 0 || rest.as_bytes()[abs - 1] == b'\n';
+        let after = &rest[abs + 3..];
+        let closes_line = after.is_empty() || after.starts_with('\n') || after.starts_with("\r\n");
+        if at_line_start && closes_line {
+            let yaml = &rest[..abs];
+            let body = after
+                .strip_prefix('\n')
+                .or_else(|| after.strip_prefix("\r\n"))
+                .unwrap_or(after);
+            return Some((yaml, body));
+        }
+        search_start = abs + 3;
+    }
+}
+
 /// Today's date as an ISO `YYYY-MM-DD` string (UTC). Dependency-free: converts the Unix
 /// day count to a civil date with Howard Hinnant's algorithm, so we don't pull in a date
 /// crate just to stamp `date-added`.

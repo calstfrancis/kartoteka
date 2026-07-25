@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 
 use fond_bib::library::Library;
-use fond_bib::{Predicate, Relation};
+use fond_bib::{Node, NodeType, Predicate, Relation};
 
 /// Seed `keys` as minimal book entries in `lib`.
 fn seed_entries(lib: &Library, keys: &[&str]) {
@@ -40,7 +40,7 @@ fn temp_library() -> (tempfile::TempDir, Library) {
 #[test]
 fn init_creates_layout_and_gitignore() {
     let (dir, _lib) = temp_library();
-    for sub in ["entries", "notes", "annots", "collections"] {
+    for sub in ["entries", "notes", "annots", "collections", "ai", "projects", "nodes"] {
         assert!(dir.path().join(sub).is_dir(), "missing {sub}/");
     }
     let ignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
@@ -429,4 +429,23 @@ fn scan_usage_maps_keys_to_projects() {
     .unwrap();
     let report = lib.fsck().unwrap();
     assert_eq!(report.dangling_project_docs.len(), 1);
+}
+
+#[test]
+fn node_round_trips_through_disk() {
+    let (_dir, lib) = temp_library();
+    let node = Node::parse(
+        "---\nnode-type: person\nlabel: Origen of Alexandria\naliases: [Origen]\nidentifiers:\n  wikidata: Q170472\n---\nThird-century theologian.\n",
+        std::path::Path::new("nodes/origen.md"),
+    )
+    .unwrap();
+
+    lib.write_node("origen", &node).unwrap();
+    assert!(lib.node_path("origen").is_file());
+    assert_eq!(lib.node_slugs().unwrap(), vec!["origen"]);
+
+    let loaded = lib.load_node("origen").unwrap();
+    assert_eq!(loaded, node);
+    assert_eq!(loaded.frontmatter.node_type, NodeType::Person);
+    assert_eq!(loaded.frontmatter.label, "Origen of Alexandria");
 }

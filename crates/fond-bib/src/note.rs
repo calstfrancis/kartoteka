@@ -127,7 +127,7 @@ impl Note {
     /// Parse a `notes/<key>.md` file body. A note with no `---` frontmatter block is valid
     /// (all-frontmatter-default, body = the whole text). `path` is used only for errors.
     pub fn parse(text: &str, path: &Path) -> Result<Note> {
-        let Some((yaml, body)) = split_frontmatter(text) else {
+        let Some((yaml, body)) = crate::util::split_frontmatter(text) else {
             return Ok(Note {
                 frontmatter: NoteFrontmatter::default(),
                 body: text.to_string(),
@@ -161,32 +161,6 @@ impl Note {
                 message: e.to_string(),
             })?;
         Ok(format!("---\n{yaml}---\n{}", self.body))
-    }
-}
-
-/// Split leading `---`-delimited YAML frontmatter from the body. Returns `(yaml, body)`
-/// or `None` when there is no frontmatter block. Handles `\n` and `\r\n` line endings.
-fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
-    let rest = text
-        .strip_prefix("---\n")
-        .or_else(|| text.strip_prefix("---\r\n"))?;
-    // Find a closing fence line: a line that is exactly "---".
-    let mut search_start = 0;
-    loop {
-        let idx = rest[search_start..].find("---")?;
-        let abs = search_start + idx;
-        let at_line_start = abs == 0 || rest.as_bytes()[abs - 1] == b'\n';
-        let after = &rest[abs + 3..];
-        let closes_line = after.is_empty() || after.starts_with('\n') || after.starts_with("\r\n");
-        if at_line_start && closes_line {
-            let yaml = &rest[..abs];
-            let body = after
-                .strip_prefix('\n')
-                .or_else(|| after.strip_prefix("\r\n"))
-                .unwrap_or(after);
-            return Some((yaml, body));
-        }
-        search_start = abs + 3;
     }
 }
 
