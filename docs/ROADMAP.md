@@ -1,5 +1,10 @@
 # Kartoteka — Roadmap
 
+> **These "Milestone 1–5" are the original project brief and are all DONE.** The *newer*
+> knowledge-base work uses a separate "M1/M2/M3" numbering (confusingly) — see `docs/STATUS.md`
+> for the two-track disambiguation and current state. Don't conflate "Milestone 2" (Zotero
+> migration, here) with extension-"M2" (typed relations, `M2-SPEC.md`).
+
 Status: **planning draft, awaiting approval.**
 
 Milestones from the brief, broken into concrete, individually shippable tasks. Each task

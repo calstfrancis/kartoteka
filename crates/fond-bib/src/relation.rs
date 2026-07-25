@@ -69,6 +69,53 @@ impl Predicate {
     pub fn is_self_inverse(self) -> bool {
         self.inverse() == self
     }
+
+    /// The predicates a user picks when *authoring* a forward edge: the "primary direction"
+    /// of each asymmetric pair plus the symmetric `Related`. The inverse halves
+    /// (`CitedBy`, `HasCommentary`, …) are omitted because they are maintained automatically
+    /// on the other endpoint — offering both directions would be redundant and confusing.
+    /// Order is stable (used to build UI dropdowns).
+    pub fn forward_choices() -> [Predicate; 10] {
+        use Predicate::*;
+        [
+            Related,
+            Cites,
+            Critiques,
+            Reviews,
+            CommentaryOn,
+            TranslationOf,
+            EditionOf,
+            Supersedes,
+            RepliesTo,
+            Expands,
+        ]
+    }
+
+    /// A human-readable label for UI display (e.g. `CitedBy` → "Cited by").
+    pub fn label(self) -> &'static str {
+        use Predicate::*;
+        match self {
+            Cites => "Cites",
+            CitedBy => "Cited by",
+            Critiques => "Critiques",
+            CritiquedBy => "Critiqued by",
+            Reviews => "Reviews",
+            ReviewedBy => "Reviewed by",
+            CommentaryOn => "Commentary on",
+            HasCommentary => "Has commentary",
+            TranslationOf => "Translation of",
+            HasTranslation => "Has translation",
+            EditionOf => "Edition of",
+            HasEdition => "Has edition",
+            Supersedes => "Supersedes",
+            SupersededBy => "Superseded by",
+            RepliesTo => "Replies to",
+            RepliedToBy => "Replied to by",
+            Expands => "Expands",
+            ExpandedBy => "Expanded by",
+            Related => "Related",
+        }
+    }
 }
 
 /// One relationship edge as stored in a note's frontmatter (`relations:` list).

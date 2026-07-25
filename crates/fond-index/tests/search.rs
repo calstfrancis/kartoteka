@@ -102,3 +102,35 @@ fn rebuild_from_scratch_after_deletion_is_consistent() {
         "cone1970black"
     );
 }
+
+#[test]
+fn facet_scoping_and_ai_text_are_indexed() {
+    use fond_bib::AiMetadata;
+    let (_dir, lib) = seed();
+
+    // Give the Cone entry a faceted tag and an AI sidecar.
+    fs::write(
+        lib.note_path("cone1970black"),
+        "---\ntags: [christology, \"discipline:theology/systematic\"]\n---\nprose\n",
+    )
+    .unwrap();
+    let mut ai = AiMetadata::new("claude-opus-4-8", "2026-07-25T00:00:00Z");
+    ai.keywords = vec!["soteriology".into()];
+    lib.write_ai("cone1970black", &ai).unwrap();
+
+    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None).unwrap();
+
+    // `facet:discipline` finds the item carrying that facet.
+    assert_eq!(
+        idx.search("facet:discipline", 10).unwrap()[0].key,
+        "cone1970black"
+    );
+    // AI keyword is searchable (free text) and scopable via `ai:`.
+    assert_eq!(idx.search("soteriology", 10).unwrap()[0].key, "cone1970black");
+    assert_eq!(
+        idx.search("ai:soteriology", 10).unwrap()[0].key,
+        "cone1970black"
+    );
+    // The berdyaev entry has no facet, so facet scoping excludes it.
+    assert!(idx.search("facet:discipline", 10).unwrap().len() == 1);
+}

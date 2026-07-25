@@ -1,6 +1,12 @@
 # Kartoteka — Data Model Extensions (proposed M2+)
 
-Status: **scope decisions approved (2026-07-24); ready to spec M2 in detail.**
+> **Naming note.** The "M1/M2/M3" here is the **knowledge-base extension track**, *not*
+> `ROADMAP.md`'s "Milestone 1–5" (the original brief, all done). See `docs/STATUS.md`.
+> This doc is the **master map**: the "Where each brainstorm layer lands" table below places
+> all 23 sections of the original brainstorm. Detailed specs: `M2-SPEC.md` (built),
+> `M3-SPEC.md` (nodes, not built).
+
+Status: **scope decisions approved (2026-07-24). M2 built; M3 spec'd — see `docs/STATUS.md`.**
 
 This extends `DATA-MODEL.md` (the approved M1 on-disk model) to cover the richer
 knowledge-base layers sketched in the feature brainstorm — typed relationships, a
@@ -133,10 +139,11 @@ M1 rejects for `library.yml`. Per-key edges in per-key note files conflict only 
 
 ## 2. Knowledge graph nodes (§9) — a new authoritative file type — **M3**
 
-> **Deferred to M3.** M2 ships typed relations between existing `entries/` only. Nodes are
-> the bigger lift (new file type, target resolver, node UI) and the bigger differentiator,
-> so they get their own milestone. The typed-relation design in §1 is authored to accept a
-> node slug as a `target` from day one, so M3 slots in without a format change.
+> **Deferred to M3 — now spec'd in `docs/M3-SPEC.md`.** M2 ships typed relations between
+> existing `entries/` only. Nodes are the bigger lift (new file type, target resolver, node
+> UI) and the bigger differentiator, so they get their own milestone. The typed-relation
+> design in §1 is authored to accept a node slug as a `target` from day one, so M3 slots in
+> without a format change.
 
 The brainstorm's Augustine → *City of God* → influenced → Aquinas graph needs first-class
 **non-work entities**: people, concepts, schools, events. These are not citation entries

@@ -105,6 +105,17 @@ pub struct NoteFrontmatter {
     pub tasks: Vec<Task>,
 }
 
+/// Split a faceted tag into `(facet, value)`. A tag containing `:` is faceted
+/// (`discipline:theology/systematic` → `(Some("discipline"), "theology/systematic")`); a
+/// plain tag returns `(None, tag)`. Only the first `:` splits, so values may contain `:`.
+/// See `docs/M2-SPEC.md` §2 — facets are a convention over `tags:`, not a schema change.
+pub fn split_facet(tag: &str) -> (Option<&str>, &str) {
+    match tag.split_once(':') {
+        Some((facet, value)) if !facet.is_empty() => (Some(facet), value),
+        _ => (None, tag),
+    }
+}
+
 /// A parsed note: frontmatter plus the Markdown body prose.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Note {
@@ -210,6 +221,17 @@ mod tests {
         assert_eq!(note.body, text);
         // And it round-trips to exactly the same bytes.
         assert_eq!(note.to_text().unwrap(), text);
+    }
+
+    #[test]
+    fn splits_faceted_tags() {
+        assert_eq!(
+            split_facet("discipline:theology/systematic"),
+            (Some("discipline"), "theology/systematic")
+        );
+        assert_eq!(split_facet("christology"), (None, "christology"));
+        // A leading colon is not a facet.
+        assert_eq!(split_facet(":weird"), (None, ":weird"));
     }
 
     #[test]

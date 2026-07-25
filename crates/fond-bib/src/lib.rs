@@ -29,7 +29,9 @@ pub use collection::Collection;
 pub use error::{BibError, Result};
 pub use import::{ImportOptions, ImportReport};
 pub use library::{FsckReport, Library, RelationReconcile, UsageMap};
-pub use note::{Attachment, CitePrefs, Note, NoteFrontmatter, Progress, ReadStatus, Task};
+pub use note::{
+    split_facet, Attachment, CitePrefs, Note, NoteFrontmatter, Progress, ReadStatus, Task,
+};
 pub use project::Project;
 pub use relation::{Predicate, Relation};
 pub use render::{resolve_style, style_from_csl, RenderedEntry};

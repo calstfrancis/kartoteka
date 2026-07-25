@@ -2,9 +2,11 @@
 //! under `.kartoteka/index/` and is fully rebuildable from the authoritative files
 //! (`docs/ARCHITECTURE.md` §1). It only ever *caches* what the files already say.
 //!
-//! Indexed fields: `key`, `type`, `author`, `title`, `year`, `tag`, plus the un-stored bulk
-//! text (`note`, `annotation`, `pdftext`). A bare query searches the text fields; field
-//! scoping works via the field names, e.g. `author:cone tag:christology year:1970`.
+//! Indexed fields: `key`, `type`, `author`, `title`, `year`, `tag`, `facet`, plus the
+//! un-stored bulk text (`note`, `annotation`, `pdftext`, `ai`). A bare query searches the
+//! text fields; field scoping works via the field names, e.g.
+//! `author:cone tag:christology facet:discipline year:1970`. AI-generated text is a
+//! separate `ai:` field so results from it can be filtered/scoped apart from curated text.
 
 use std::path::Path;
 
@@ -34,9 +36,11 @@ struct Fields {
     title: Field,
     year: Field,
     tag: Field,
+    facet: Field,
     note: Field,
     annotation: Field,
     pdftext: Field,
+    ai: Field,
 }
 
 fn build_schema() -> Schema {
@@ -47,9 +51,11 @@ fn build_schema() -> Schema {
     b.add_text_field("title", TEXT | STORED);
     b.add_text_field("year", STRING | STORED);
     b.add_text_field("tag", TEXT | STORED);
+    b.add_text_field("facet", TEXT | STORED);
     b.add_text_field("note", TEXT);
     b.add_text_field("annotation", TEXT);
     b.add_text_field("pdftext", TEXT);
+    b.add_text_field("ai", TEXT);
     b.build()
 }
 
@@ -63,9 +69,11 @@ impl Fields {
             title: f("title"),
             year: f("year"),
             tag: f("tag"),
+            facet: f("facet"),
             note: f("note"),
             annotation: f("annotation"),
             pdftext: f("pdftext"),
+            ai: f("ai"),
         }
     }
 }
@@ -120,10 +128,40 @@ impl SearchIndex {
             let year = entry::year(e).map(|y| y.to_string()).unwrap_or_default();
             let type_ = format!("{:?}", e.entry_type()).to_lowercase();
 
-            let (tags, note_body) = match library.load_note(&key)? {
-                Some(note) => (note.frontmatter.tags.join(" "), note.body),
-                None => (String::new(), String::new()),
+            let (tags, facets, note_body) = match library.load_note(&key)? {
+                Some(note) => {
+                    // Facets: index each faceted tag's name plus its full `name:value` so
+                    // `facet:discipline` scoping finds items that carry that facet.
+                    let facets = note
+                        .frontmatter
+                        .tags
+                        .iter()
+                        .filter_map(|t| {
+                            fond_bib::split_facet(t)
+                                .0
+                                .map(|facet| format!("{facet} {t}"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    (note.frontmatter.tags.join(" "), facets, note.body)
+                }
+                None => (String::new(), String::new(), String::new()),
             };
+
+            // AI-generated text, indexed into its own field so it can be scoped/filtered
+            // apart from curated text (`ai:` in a query).
+            let ai_text = library
+                .load_ai(&key)?
+                .map(|ai| {
+                    let mut parts: Vec<String> = Vec::new();
+                    parts.extend(ai.summary);
+                    parts.extend(ai.keywords);
+                    parts.extend(ai.concepts);
+                    parts.extend(ai.claims);
+                    parts.extend(ai.counterarguments);
+                    parts.join(" ")
+                })
+                .unwrap_or_default();
 
             let annotation = library
                 .load_annotations(&key)?
@@ -146,9 +184,11 @@ impl SearchIndex {
                 fields.title => title,
                 fields.year => year,
                 fields.tag => tags,
+                fields.facet => facets,
                 fields.note => note_body,
                 fields.annotation => annotation,
                 fields.pdftext => pdf,
+                fields.ai => ai_text,
             ))?;
         }
 
@@ -166,9 +206,11 @@ impl SearchIndex {
             self.fields.title,
             self.fields.author,
             self.fields.tag,
+            self.fields.facet,
             self.fields.note,
             self.fields.annotation,
             self.fields.pdftext,
+            self.fields.ai,
         ];
         let parser = QueryParser::for_index(&self.index, default_fields);
         let query = parser

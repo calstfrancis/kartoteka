@@ -1,6 +1,11 @@
 # Kartoteka M2 — Implementation Spec
 
-Status: **spec draft, awaiting approval.** Plan-first — no code lands until this is signed off.
+> **Naming note.** "M2" is the **knowledge-base extension track**, *not* `ROADMAP.md`'s
+> "Milestone 2" (Zotero migration, long done). See `docs/STATUS.md` for the disambiguation
+> and current project state. M3 (knowledge-graph nodes) is spec'd in `docs/M3-SPEC.md`.
+
+Status: **fond-bib + index + GUI implemented (see "Implementation status" below); the leftover
+GUI items are tracked in `M2-GUI-PLAN.md` §4.**
 
 Implements the M2 slice of `DATA-MODEL-EXTENSIONS.md`: typed relations, semantic facets,
 the small frontmatter fields (`progress`/`cite`/`tasks`), the `ai/<key>.yml` sidecar, and
@@ -328,11 +333,21 @@ GUI/index wiring noted). Landed in `crates/fond-bib`:
   `migrate_related_to_relations`, `load_ai`/`write_ai`, project accessors, `scan_usage`/
   `write_usage`, and `fsck` extended (relation reconcile report + dangling project docs).
 
-**Still open (touch other crates / UI, deliberately deferred):**
-- Facet indexing in `fond-index` and facet grouping in the GTK GUI (§2 — the on-disk side
-  needs no schema change, so nothing blocks it).
-- Indexing AI text (flagged AI-origin) and the "promote AI keyword → tag" GUI action.
-- GUI surfaces for typed relations, the derived task view, and "Used in".
+**Also landed (index + read-only GUI):**
+- `fond-index` — `facet` field (faceted-tag scoping via `facet:`) and `ai` field (AI text,
+  scopable via `ai:`); `fond_bib::split_facet` + `Predicate::label()`.
+- GTK detail panel — typed relations displayed grouped by predicate, navigable, legacy
+  `related` folded in.
+
+**Still open (deliberately deferred to a later increment):**
+- **Relation *editing*** — the current "Related…" dialog still writes only untyped
+  `related`; a predicate picker (write via `add_relation`/`set_relations`) is the main
+  remaining GUI rework in the ~3.3k-line `app_window.rs`.
+- **Facet chip grouping** in the entry editor / tag manager (display side; search side done).
+- **"Promote AI keyword → tag"** GUI action.
+- **"Used in"** panel — needs a scan trigger + `usage.json` loader wired into the GUI; the
+  `fond-bib` scan (`write_usage`) is done, the GUI read path is not.
+- **Derived global task view** aggregating note `tasks`.
 
 ## Suggested PR sequence
 

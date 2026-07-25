@@ -2,6 +2,25 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased]
+
+### Added — M2 search & GUI surfacing
+
+- **Facet indexing** — `fond-index` now indexes faceted tags (`discipline:theology`) into a
+  `facet` field, so `facet:discipline` scopes search to items carrying that facet.
+  `fond_bib::split_facet` parses the `facet:value` convention.
+- **AI text search** — AI-sidecar text (summary/keywords/concepts/claims) is indexed into a
+  dedicated `ai` field: searchable in free text and scopable via `ai:` so it can be filtered
+  apart from curated text.
+- **Typed relations in the detail panel** — the GUI now displays an entry's relations
+  grouped by predicate ("Cites", "Critiqued by", …) as navigable links, folding legacy
+  untyped `related` into the "Related" group. `Predicate::label()` provides the display text.
+- **Typed relations editing** — the entry's "Related…" action is now "Relations…": a
+  searchable list where each checked target carries a predicate dropdown
+  (`Predicate::forward_choices()`), writing typed forward edges via `set_relations` (which
+  maintains each target's inverse edge automatically). One predicate per target; a predicate
+  already on disk but outside the authorable set is preserved rather than dropped on save.
+
 ## [0.1.0-dev5] — 2026-07-25 — Development build
 
 The first M2 knowledge-base slice, at the `fond-bib` library layer: typed relationships,

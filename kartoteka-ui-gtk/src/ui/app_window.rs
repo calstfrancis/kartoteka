@@ -2757,21 +2757,46 @@ fn membership_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: 
     dialog.present();
 }
 
-/// Choose which other entries are "related" to `key`. A searchable, checkable list of every
-/// other entry; on Save the links are written symmetrically via `Library::set_related`.
-fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
-    // (key, display label, sub) for every entry except this one; plus the current links.
-    let (rows, current): (
+/// Edit the typed relationships from `key` to other entries. A searchable, checkable list of
+/// every other entry; each checked row carries a predicate dropdown. On Save the chosen
+/// forward edges are written via `Library::set_relations`, which maintains the inverse edge
+/// on each target automatically.
+///
+/// Scope: this dialog models **one predicate per target** (the common case) and manages only
+/// typed `relations` — legacy untyped `related` is lifted separately by
+/// `migrate_related_to_relations`. If a target's current forward edge uses a predicate
+/// outside `Predicate::forward_choices()`, that predicate is added to the option list so
+/// Save round-trips it rather than dropping it.
+fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    use fond_bib::Predicate;
+
+    // Option list for the per-row predicate dropdown: the authorable set, plus any predicate
+    // already present on a current forward edge that isn't in it (data-safety).
+    // `rows` = (key, label, sub) for every entry except this one; `current` = target ->
+    // current forward predicate; `options` = the dropdown's predicate list.
+    type DialogData = (
         Vec<(String, String, String)>,
-        std::collections::HashSet<String>,
-    ) = {
+        std::collections::HashMap<String, Predicate>,
+        Vec<Predicate>,
+    );
+    let (rows, current, options): DialogData = {
         let s = state.borrow();
         let Some(lib) = s.library.as_ref() else {
             toast(widgets, "Open a library first");
             return;
         };
-        let current: std::collections::HashSet<String> =
-            lib.related(key).unwrap_or_default().into_iter().collect();
+        // First forward predicate per target (one-predicate-per-target model).
+        let mut current: std::collections::HashMap<String, Predicate> =
+            std::collections::HashMap::new();
+        for r in lib.forward_relations(key).unwrap_or_default() {
+            current.entry(r.target).or_insert(r.predicate);
+        }
+        let mut options: Vec<Predicate> = Predicate::forward_choices().to_vec();
+        for p in current.values() {
+            if !options.contains(p) {
+                options.push(*p);
+            }
+        }
         let rows = s
             .entries
             .iter()
@@ -2791,7 +2816,7 @@ fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &st
                 (e.key.clone(), label, sub)
             })
             .collect();
-        (rows, current)
+        (rows, current, options)
     };
 
     if rows.is_empty() {
@@ -2800,10 +2825,10 @@ fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &st
     }
 
     let dialog = adw::Window::new();
-    dialog.set_title(Some("Related items"));
+    dialog.set_title(Some("Relations"));
     dialog.set_modal(true);
     dialog.set_transient_for(Some(&widgets.window));
-    dialog.set_default_size(440, 480);
+    dialog.set_default_size(520, 480);
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     let save = gtk4::Button::with_label("Save");
@@ -2823,11 +2848,16 @@ fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &st
     view.set_content(Some(&scroll));
     dialog.set_content(Some(&view));
 
-    // Build every row up front (checkbox state survives filtering, which only toggles row
-    // visibility). Each entry keeps its (key, check, row, haystack) for filter + save.
+    // Shared dropdown model: predicate labels in `options` order.
+    let option_labels: Vec<&str> = options.iter().map(|p| p.label()).collect();
+    let options = Rc::new(options);
+
+    // Build every row up front (checkbox/predicate state survives filtering, which only
+    // toggles row visibility). Each row keeps (key, check, predicate dropdown, row, haystack).
     struct RelRow {
         key: String,
         check: gtk4::CheckButton,
+        predicate: gtk4::DropDown,
         row: gtk4::ListBoxRow,
         hay: String,
     }
@@ -2835,8 +2865,26 @@ fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &st
         rows.into_iter()
             .map(|(k, label, sub)| {
                 let check = gtk4::CheckButton::new();
-                check.set_active(current.contains(&k));
+                let checked = current.contains_key(&k);
+                check.set_active(checked);
+
+                let predicate = gtk4::DropDown::from_strings(&option_labels);
+                predicate.set_valign(gtk4::Align::Center);
+                // Preselect the target's current predicate (default `Related` = index 0).
+                if let Some(p) = current.get(&k) {
+                    if let Some(idx) = options.iter().position(|o| o == p) {
+                        predicate.set_selected(idx as u32);
+                    }
+                }
+                predicate.set_sensitive(checked);
+                // The predicate only matters when the row is checked.
+                {
+                    let predicate = predicate.clone();
+                    check.connect_toggled(move |c| predicate.set_sensitive(c.is_active()));
+                }
+
                 let text = gtk4::Box::new(Orientation::Vertical, 0);
+                text.set_hexpand(true);
                 let t = gtk4::Label::new(Some(&label));
                 t.set_halign(gtk4::Align::Start);
                 t.set_xalign(0.0);
@@ -2855,6 +2903,7 @@ fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &st
                 hbox.set_margin_end(8);
                 hbox.append(&check);
                 hbox.append(&text);
+                hbox.append(&predicate);
                 let row = gtk4::ListBoxRow::new();
                 row.set_child(Some(&hbox));
                 row.set_activatable(false);
@@ -2863,6 +2912,7 @@ fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &st
                 RelRow {
                     key: k,
                     check,
+                    predicate,
                     row,
                     hay,
                 }
@@ -2886,19 +2936,24 @@ fn related_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &st
         let dialog = dialog.clone();
         let key = key.to_string();
         let rel_rows = rel_rows.clone();
+        let options = options.clone();
         save.connect_clicked(move |_| {
-            let targets: Vec<String> = rel_rows
+            let forward: Vec<fond_bib::Relation> = rel_rows
                 .iter()
                 .filter(|r| r.check.is_active())
-                .map(|r| r.key.clone())
+                .map(|r| {
+                    let idx = r.predicate.selected() as usize;
+                    let predicate = options.get(idx).copied().unwrap_or(Predicate::Related);
+                    fond_bib::Relation::forward(predicate, r.key.clone())
+                })
                 .collect();
             let result = {
                 let s = state.borrow();
-                s.library.as_ref().unwrap().set_related(&key, &targets)
+                s.library.as_ref().unwrap().set_relations(&key, &forward)
             };
             match result {
                 Ok(()) => {
-                    toast(&widgets, "Related items updated");
+                    toast(&widgets, "Relations updated");
                     dialog.close();
                     reload_current(&state, &widgets);
                 }
@@ -3303,12 +3358,12 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         collect_button.connect_clicked(move |_| membership_dialog(&state, &widgets, &key));
     }
     actions.append(&collect_button);
-    let related_button = gtk4::Button::with_label("Related…");
+    let related_button = gtk4::Button::with_label("Relations…");
     {
         let state = state.clone();
         let widgets = widgets.clone();
         let key = key.clone();
-        related_button.connect_clicked(move |_| related_dialog(&state, &widgets, &key));
+        related_button.connect_clicked(move |_| relations_dialog(&state, &widgets, &key));
     }
     actions.append(&related_button);
     // "Locate" menu: open DOI / on the web (feature 10).
@@ -3407,47 +3462,66 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     }
     b.append(&fields);
 
-    // Related items: a wrapped row of link buttons that navigate to the linked entry.
-    let related = note
-        .as_ref()
-        .map(|n| n.frontmatter.related.clone())
-        .unwrap_or_default();
-    if !related.is_empty() {
-        let label = gtk4::Label::new(Some("Related"));
-        label.add_css_class("caption-heading");
-        label.add_css_class("dim-label");
-        label.set_xalign(0.0);
-        label.set_halign(gtk4::Align::Start);
-        label.set_margin_top(6);
-        b.append(&label);
-        let flow = gtk4::FlowBox::new();
-        flow.set_selection_mode(gtk4::SelectionMode::None);
-        flow.set_max_children_per_line(20);
-        flow.set_column_spacing(4);
-        flow.set_row_spacing(4);
-        for rk in &related {
-            let display = s
-                .key_to_index
-                .get(rk)
-                .map(|&i| {
-                    let e = &s.entries[i];
-                    if e.title.is_empty() {
-                        e.key.clone()
-                    } else {
-                        e.title.clone()
-                    }
-                })
-                .unwrap_or_else(|| rk.clone());
-            let link = gtk4::Button::with_label(&display);
-            link.add_css_class("flat");
-            link.set_tooltip_text(Some(rk));
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let rk = rk.clone();
-            link.connect_clicked(move |_| select_key(&state, &widgets, &rk));
-            flow.insert(&link, -1);
+    // Relations: typed edges grouped by predicate, each a wrapped row of link buttons that
+    // navigate to the linked entry. Legacy untyped `related` is folded into the "Related"
+    // group so both display together (per docs/M2-SPEC.md open item — one merged view).
+    {
+        use std::collections::BTreeMap;
+        // Group target keys by predicate label. BTreeMap keeps a stable predicate order.
+        let mut groups: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+        if let Some(n) = &note {
+            for r in &n.frontmatter.relations {
+                groups
+                    .entry(r.predicate.label())
+                    .or_default()
+                    .push(r.target.clone());
+            }
+            for rk in &n.frontmatter.related {
+                groups
+                    .entry(fond_bib::Predicate::Related.label())
+                    .or_default()
+                    .push(rk.clone());
+            }
         }
-        b.append(&flow);
+        for (predicate_label, mut targets) in groups {
+            targets.sort();
+            targets.dedup();
+            let label = gtk4::Label::new(Some(predicate_label));
+            label.add_css_class("caption-heading");
+            label.add_css_class("dim-label");
+            label.set_xalign(0.0);
+            label.set_halign(gtk4::Align::Start);
+            label.set_margin_top(6);
+            b.append(&label);
+            let flow = gtk4::FlowBox::new();
+            flow.set_selection_mode(gtk4::SelectionMode::None);
+            flow.set_max_children_per_line(20);
+            flow.set_column_spacing(4);
+            flow.set_row_spacing(4);
+            for rk in &targets {
+                let display = s
+                    .key_to_index
+                    .get(rk)
+                    .map(|&i| {
+                        let e = &s.entries[i];
+                        if e.title.is_empty() {
+                            e.key.clone()
+                        } else {
+                            e.title.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| rk.clone());
+                let link = gtk4::Button::with_label(&display);
+                link.add_css_class("flat");
+                link.set_tooltip_text(Some(rk));
+                let state = state.clone();
+                let widgets = widgets.clone();
+                let rk = rk.clone();
+                link.connect_clicked(move |_| select_key(&state, &widgets, &rk));
+                flow.insert(&link, -1);
+            }
+            b.append(&flow);
+        }
     }
 
     // Note prose.
