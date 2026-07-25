@@ -4,6 +4,17 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [Unreleased]
 
+### Added — M3 node indexing (`fond-index`, PR 5 of the sequence)
+
+- **Nodes are searchable** — `fond-index` now indexes `nodes/` alongside `entries/` in one
+  schema, discriminated by a `kind` field (`entry` / `node`). A node reuses `title` for its
+  `label`, `type` for its `node-type`, and `note` for its body, and adds searchable `alias`
+  and `identifier` text (each identifier's scheme *and* value). So a bare query matches a node
+  by label/alias/identifier/body, `kind:node augustine` scopes to nodes, and `type:person`
+  finds person nodes. `SearchHit` gains a `kind` field; for a node hit `title` is the label
+  and `author`/`year` are empty. `kartoteka search --json` now includes `kind`. See
+  `docs/M3-SPEC.md` §5.
+
 ### Added — M3 fsck node checks (`fond-bib`, PR 4 of the sequence)
 
 - **Node files are fsck-checked** — `fsck` now parses every `nodes/<slug>.md` and flags any

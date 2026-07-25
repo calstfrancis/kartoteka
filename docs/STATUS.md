@@ -22,10 +22,10 @@ the single most confusing thing about the docs:
    - **Extension-M2** = typed relations, facets, small note fields, AI sidecar, projects/usage
      — **built and tested** (see below).
    - **Extension-M3** = knowledge-graph nodes (people/concepts/schools) + author IDs —
-     **PRs 1–4 of 8 built** (node file type + slug helper + `nodes/` in `init`; node-oriented
-     predicate vocabulary + advisory `forward_choices_for`; polymorphic `resolve_target` +
-     relation hosts spanning notes ∪ nodes; fsck node checks); PRs 5–8 still to do
-     (`M3-SPEC.md`).
+     **PRs 1–5 of 8 built** — the whole non-GUI library layer (node file type + slug helper +
+     `nodes/` in `init`; node-oriented predicate vocabulary + advisory `forward_choices_for`;
+     polymorphic `resolve_target` + relation hosts spanning notes ∪ nodes; fsck node checks;
+     `fond-index` node indexing). PRs 6–8 (all GUI) still to do (`M3-SPEC.md`).
 
 When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 "Milestone 2/3" it means the **original brief**. They are unrelated.
@@ -49,18 +49,23 @@ When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
   - `cargo-sources.json` was regenerated (byte-identical — only local crate versions moved).
   **Not pushed.** Ready for Cal to run `./dev-build.sh` in `kartoteka/`.
 
-### Committed on top of dev6 (not tagged, not pushed) — M3 PR 4
+### Committed on top of dev6 (not tagged, not pushed) — M3 PRs 4–5
 - **PR 4** — `fsck` node checks: parse (`unparseable_nodes`) + well-formed-slug filename
   (`malformed_node_slugs`); `reconcile_relations` made corruption-tolerant (skips + reports an
-  unparseable host instead of erroring). Under `CHANGELOG.md` `[Unreleased]`; folds into the
-  next dev tag when one is prepped.
+  unparseable host instead of erroring).
+- **PR 5** — `fond-index` indexes `nodes/` into the shared schema with a `kind` discriminator
+  (`kind:node`, `type:person`), reusing title/type/note + adding alias/identifier;
+  `SearchHit.kind` added; `kartoteka search --json` emits `kind`.
+
+Both under `CHANGELOG.md` `[Unreleased]`; fold into the next dev tag when one is prepped.
 
 ### Working tree
-Clean once PR 4 is committed.
+Clean once PR 5 is committed.
 
 ### Test / quality state
-- Whole workspace: **116 tests passing, 0 clippy warnings** at last run (up from 94 pre-M3;
-  fond-bib carries the node/predicate/relation-host/fsck additions).
+- Whole workspace: **117 tests passing, 0 clippy warnings** at last run (up from 94 pre-M3;
+  fond-bib carries the node/predicate/relation-host/fsck additions, fond-index the node
+  indexing).
 - `cargo test --workspace` and `cargo clippy --workspace` are the gates.
 
 ---
@@ -99,12 +104,12 @@ Next candidates (pick per Cal):
 - **Extension-M2 leftovers** (`M2-GUI-PLAN.md` §4): "Used in" panel (needs GUI scan trigger +
   `usage.json` loader), facet chip grouping in the editor, "promote AI keyword → tag", global
   task view, in-GUI editing of progress/cite/tasks.
-- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **PRs 1–4 done** (node file type +
-  slug + `nodes/`; node-oriented predicates + `forward_choices_for`; polymorphic targets +
-  relation hosts; fsck node checks). Next is **PR 5**: `fond-index` node indexing — index nodes
-  as their own document kind (`label`, `aliases`, `node-type`, `identifiers`, body) with a
-  `kind:node` discriminator; add a `kind` field to the search hit (author/year empty for nodes)
-  rather than a second result type.
+- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **PRs 1–5 done** (the whole non-GUI
+  library layer: node file type; predicates; polymorphic targets + relation hosts; fsck node
+  checks; index node indexing). Remaining PRs 6–8 are **all GUI** (`kartoteka-ui-gtk`): PR 6 —
+  node list/editor view; PR 7 — nodes as relation targets in the relations dialog + node-
+  appropriate predicates (via `forward_choices_for`); PR 8 — node detail/neighbours view +
+  author→node linkage. See `docs/M3-SPEC.md` §6.
 
 ---
 

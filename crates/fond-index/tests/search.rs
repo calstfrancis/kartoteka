@@ -134,3 +134,39 @@ fn facet_scoping_and_ai_text_are_indexed() {
     // The berdyaev entry has no facet, so facet scoping excludes it.
     assert!(idx.search("facet:discipline", 10).unwrap().len() == 1);
 }
+
+#[test]
+fn nodes_are_indexed_and_scopable() {
+    let (_dir, lib) = seed();
+    // A person node with an alias and an external identifier, plus body prose.
+    fs::write(
+        lib.node_path("augustine"),
+        "---\nnode-type: person\nlabel: Augustine of Hippo\naliases: [Aurelius Augustinus]\nidentifiers:\n  wikidata: Q8018\n---\nBishop of Hippo and Doctor of the Church.\n",
+    )
+    .unwrap();
+    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None).unwrap();
+
+    // Free-text on the label finds the node, and the hit is tagged kind=node.
+    let hits = idx.search("augustine", 10).unwrap();
+    let node_hit = hits.iter().find(|h| h.key == "augustine").expect("node hit");
+    assert_eq!(node_hit.kind, "node");
+    assert_eq!(node_hit.title, "Augustine of Hippo");
+    assert!(node_hit.author.is_empty() && node_hit.year.is_empty());
+
+    // `kind:node` restricts to nodes; entries never carry it.
+    let node_only = idx.search("kind:node", 10).unwrap();
+    assert_eq!(node_only.len(), 1);
+    assert_eq!(node_only[0].key, "augustine");
+
+    // Alias, identifier (scheme or value), body prose, and `type:person` all match.
+    assert_eq!(idx.search("Augustinus", 10).unwrap()[0].key, "augustine");
+    assert_eq!(idx.search("Q8018", 10).unwrap()[0].key, "augustine");
+    assert_eq!(idx.search("wikidata", 10).unwrap()[0].key, "augustine");
+    assert_eq!(idx.search("bishop", 10).unwrap()[0].key, "augustine");
+    assert_eq!(idx.search("type:person", 10).unwrap()[0].key, "augustine");
+
+    // Entries are still kind=entry and unaffected.
+    let entry_hits = idx.search("kind:entry", 10).unwrap();
+    assert!(entry_hits.iter().all(|h| h.kind == "entry"));
+    assert!(entry_hits.iter().any(|h| h.key == "cone1970black"));
+}

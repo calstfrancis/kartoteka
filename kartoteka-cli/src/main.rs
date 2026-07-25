@@ -436,7 +436,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                     .iter()
                     .map(|h| {
                         serde_json::json!({
-                            "key": h.key, "score": h.score,
+                            "kind": h.kind, "key": h.key, "score": h.score,
                             "title": h.title, "author": h.author, "year": h.year,
                         })
                     })

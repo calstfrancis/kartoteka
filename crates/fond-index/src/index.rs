@@ -2,15 +2,20 @@
 //! under `.kartoteka/index/` and is fully rebuildable from the authoritative files
 //! (`docs/ARCHITECTURE.md` §1). It only ever *caches* what the files already say.
 //!
-//! Indexed fields: `key`, `type`, `author`, `title`, `year`, `tag`, `facet`, plus the
-//! un-stored bulk text (`note`, `annotation`, `pdftext`, `ai`). A bare query searches the
-//! text fields; field scoping works via the field names, e.g.
+//! Indexed fields: `kind`, `key`, `type`, `author`, `title`, `year`, `tag`, `facet`, plus the
+//! un-stored bulk text (`alias`, `identifier`, `note`, `annotation`, `pdftext`, `ai`). A bare
+//! query searches the text fields; field scoping works via the field names, e.g.
 //! `author:cone tag:christology facet:discipline year:1970`. AI-generated text is a
 //! separate `ai:` field so results from it can be filtered/scoped apart from curated text.
+//!
+//! Both `entries/` and `nodes/` are indexed into one schema, discriminated by `kind`
+//! (`entry` or `node`), so a query can scope to/from nodes (`kind:node augustine`). A node
+//! reuses `title` for its `label`, `type` for its `node-type`, and `note` for its body, and
+//! adds `alias`/`identifier` text; nodes have no author/year (`docs/M3-SPEC.md` §5).
 
 use std::path::Path;
 
-use fond_bib::{entry, Library};
+use fond_bib::{entry, Library, NodeType};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Field, Schema, Value, STORED, STRING, TEXT};
@@ -18,9 +23,11 @@ use tantivy::{doc, Index, IndexWriter, TantivyDocument};
 
 use crate::error::{IndexError, Result};
 
-/// A plain, UI-agnostic search result.
+/// A plain, UI-agnostic search result. `kind` is `"entry"` or `"node"`; for a node hit
+/// `title` carries the node label and `author`/`year` are empty.
 #[derive(Debug, Clone)]
 pub struct SearchHit {
+    pub kind: String,
     pub key: String,
     pub score: f32,
     pub title: String,
@@ -30,6 +37,7 @@ pub struct SearchHit {
 
 #[derive(Clone, Copy)]
 struct Fields {
+    kind: Field,
     key: Field,
     type_: Field,
     author: Field,
@@ -37,6 +45,8 @@ struct Fields {
     year: Field,
     tag: Field,
     facet: Field,
+    alias: Field,
+    identifier: Field,
     note: Field,
     annotation: Field,
     pdftext: Field,
@@ -45,6 +55,7 @@ struct Fields {
 
 fn build_schema() -> Schema {
     let mut b = Schema::builder();
+    b.add_text_field("kind", STRING | STORED);
     b.add_text_field("key", STRING | STORED);
     b.add_text_field("type", STRING | STORED);
     b.add_text_field("author", TEXT | STORED);
@@ -52,6 +63,8 @@ fn build_schema() -> Schema {
     b.add_text_field("year", STRING | STORED);
     b.add_text_field("tag", TEXT | STORED);
     b.add_text_field("facet", TEXT | STORED);
+    b.add_text_field("alias", TEXT);
+    b.add_text_field("identifier", TEXT);
     b.add_text_field("note", TEXT);
     b.add_text_field("annotation", TEXT);
     b.add_text_field("pdftext", TEXT);
@@ -63,6 +76,7 @@ impl Fields {
     fn of(schema: &Schema) -> Fields {
         let f = |name: &str| schema.get_field(name).expect("known field");
         Fields {
+            kind: f("kind"),
             key: f("key"),
             type_: f("type"),
             author: f("author"),
@@ -70,11 +84,25 @@ impl Fields {
             year: f("year"),
             tag: f("tag"),
             facet: f("facet"),
+            alias: f("alias"),
+            identifier: f("identifier"),
             note: f("note"),
             annotation: f("annotation"),
             pdftext: f("pdftext"),
             ai: f("ai"),
         }
+    }
+}
+
+/// The kebab-case string for a node type, matching the on-disk `node-type:` value.
+fn node_type_str(t: NodeType) -> &'static str {
+    match t {
+        NodeType::Person => "person",
+        NodeType::Concept => "concept",
+        NodeType::School => "school",
+        NodeType::Event => "event",
+        NodeType::Place => "place",
+        NodeType::WorkUncataloged => "work-uncataloged",
     }
 }
 
@@ -178,6 +206,7 @@ impl SearchIndex {
             let pdf = pdf_text(&key).unwrap_or_default();
 
             writer.add_document(doc!(
+                fields.kind => "entry",
                 fields.key => key.clone(),
                 fields.type_ => type_,
                 fields.author => author,
@@ -192,12 +221,42 @@ impl SearchIndex {
             ))?;
         }
 
+        // Nodes: indexed into the same schema, discriminated by `kind:node`. A node reuses
+        // `title` (label), `type` (node-type), and `note` (body), plus `alias`/`identifier`.
+        for slug in library.node_slugs()? {
+            // An unparseable node is skipped (fsck reports it) rather than failing the build.
+            let Ok(node) = library.load_node(&slug) else {
+                continue;
+            };
+            let fm = &node.frontmatter;
+            let aliases = fm.aliases.join(" ");
+            // Index both each identifier's scheme and value ("wikidata Q8018"), so a query
+            // can find a node by either.
+            let identifiers = fm
+                .identifiers
+                .iter()
+                .map(|(scheme, value)| format!("{scheme} {value}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            writer.add_document(doc!(
+                fields.kind => "node",
+                fields.key => slug.clone(),
+                fields.type_ => node_type_str(fm.node_type),
+                fields.title => fm.label.clone(),
+                fields.alias => aliases,
+                fields.identifier => identifiers,
+                fields.note => node.body.clone(),
+            ))?;
+        }
+
         writer.commit()?;
         Ok(SearchIndex { index, fields })
     }
 
     /// Run a query. Bare terms search the text fields; field scoping (`author:`, `tag:`,
-    /// `type:`, `year:`, `title:`) works via field names.
+    /// `type:`, `year:`, `title:`, `kind:`) works via field names — e.g. `kind:node augustine`
+    /// to restrict to nodes, or `type:person` for person nodes.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let reader = self.index.reader()?;
         let searcher = reader.searcher();
@@ -207,6 +266,8 @@ impl SearchIndex {
             self.fields.author,
             self.fields.tag,
             self.fields.facet,
+            self.fields.alias,
+            self.fields.identifier,
             self.fields.note,
             self.fields.annotation,
             self.fields.pdftext,
@@ -228,6 +289,7 @@ impl SearchIndex {
                     .to_string()
             };
             hits.push(SearchHit {
+                kind: get(self.fields.kind),
                 key: get(self.fields.key),
                 score,
                 title: get(self.fields.title),

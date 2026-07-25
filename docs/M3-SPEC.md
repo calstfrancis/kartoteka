@@ -1,9 +1,9 @@
 # Kartoteka M3 — Implementation Spec: Knowledge-Graph Nodes
 
-Status: **in progress.** PRs 1–4 (node file type + slug + `nodes/` in `init`; node-oriented
+Status: **in progress.** PRs 1–5 (node file type + slug + `nodes/` in `init`; node-oriented
 predicate vocabulary; polymorphic target resolution + relation hosts spanning notes ∪ nodes;
-fsck node checks) are **built and tested**; PRs 5–8 not yet. See the PR sequence and
-`docs/STATUS.md`.
+fsck node checks; `fond-index` node indexing) are **built and tested** — the whole non-GUI
+library layer. PRs 6–8 (all GUI) not yet. See the PR sequence and `docs/STATUS.md`.
 
 > **Naming note.** "M3" here is the **knowledge-base extension track** (M2 = typed relations
 > etc., already built; M3 = this), *not* `ROADMAP.md`'s "Milestone 3" (bibliography output,
@@ -151,14 +151,14 @@ This is the one part that genuinely re-touches M2 code; everything else is addit
 
 ---
 
-## 5. Indexing (`fond-index`)
+## 5. Indexing (`fond-index`) — ✅ **done (PR 5)**
 
-- Index nodes as their own document kind: `label`, `aliases`, `node-type`, `identifiers`,
-  and body prose, with a `kind:node` discriminator so search can scope to/from nodes
-  (`kind:node augustine`).
-- A node hit needs a distinct `SearchHit` shape or a `kind` field on the existing one
-  (nodes have no author/year). Prefer adding `kind` + making author/year optional-ish
-  (empty for nodes) to avoid a second result type.
+- ✅ Nodes indexed into the same schema, discriminated by a `kind` field (`entry`/`node`), so
+  `kind:node augustine` scopes to nodes. A node reuses `title` (label), `type` (node-type),
+  and `note` (body), and adds searchable `alias` + `identifier` text (each identifier's scheme
+  *and* value indexed). `type:person` finds person nodes.
+- ✅ Added a `kind` field to the existing `SearchHit` (no second result type); for a node hit
+  `title` is the label and `author`/`year` are empty. `kartoteka search --json` emits `kind`.
 
 ---
 
@@ -203,7 +203,9 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
    when no nodes are present (all M2 relation tests still pass) + new node-spanning tests.
 4. ✅ **Done.** `fsck` node checks: parse (`unparseable_nodes`) + well-formed-slug filename
    (`malformed_node_slugs`); `reconcile` made corruption-tolerant. Tests added.
-5. `fond-index` node indexing + `kind` scoping + tests.
+5. ✅ **Done.** `fond-index` indexes nodes into the shared schema with a `kind` discriminator
+   (`kind:node`), reusing title/type/note and adding alias/identifier; `SearchHit.kind` added.
+   Tests added.
 6. GUI: node list/editor.
 7. GUI: nodes as relation targets + node-appropriate predicates.
 8. GUI: node detail / neighbours view + author→node linkage.
