@@ -1141,6 +1141,16 @@ fn predicate_key(p: Predicate) -> &'static str {
         RepliedToBy => "replied-to-by",
         Expands => "expands",
         ExpandedBy => "expanded-by",
+        Influenced => "influenced",
+        InfluencedBy => "influenced-by",
+        Authored => "authored",
+        AuthoredBy => "authored-by",
+        MemberOf => "member-of",
+        HasMember => "has-member",
+        About => "about",
+        DiscussedIn => "discussed-in",
+        PartOf => "part-of",
+        HasPart => "has-part",
         Related => "related",
     }
 }

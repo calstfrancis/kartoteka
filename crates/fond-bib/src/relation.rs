@@ -9,6 +9,38 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::node::NodeType;
+
+/// What kind of thing a relation `target` is, used only to curate which forward predicates
+/// the UI offers first (see [`Predicate::forward_choices_for`]). An entry key resolves to
+/// [`TargetKind::Work`]; a node slug maps from its [`NodeType`]. Purely advisory — it never
+/// constrains what may be stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetKind {
+    Work,
+    Person,
+    School,
+    Concept,
+    Event,
+    Place,
+    /// A dangling target, or one whose kind is not (yet) known.
+    Other,
+}
+
+impl From<NodeType> for TargetKind {
+    fn from(t: NodeType) -> Self {
+        match t {
+            NodeType::Person => TargetKind::Person,
+            NodeType::Concept => TargetKind::Concept,
+            NodeType::School => TargetKind::School,
+            NodeType::Event => TargetKind::Event,
+            NodeType::Place => TargetKind::Place,
+            // An uncatalogued work is still a work for predicate-offering purposes.
+            NodeType::WorkUncataloged => TargetKind::Work,
+        }
+    }
+}
+
 /// The closed relationship vocabulary. Each predicate has exactly one inverse; the
 /// symmetric [`Predicate::Related`] is its own inverse. Unknown predicates are a hard parse
 /// error (via serde) so a typo can never become a silent broken edge.
@@ -33,6 +65,23 @@ pub enum Predicate {
     RepliedToBy,
     Expands,
     ExpandedBy,
+    // Node-oriented predicates (M3, `docs/M3-SPEC.md` §2). These extend the same closed
+    // vocabulary — there is no separate type for node relations.
+    /// person/school → person/school.
+    Influenced,
+    InfluencedBy,
+    /// person → entry (work).
+    Authored,
+    AuthoredBy,
+    /// person → school.
+    MemberOf,
+    HasMember,
+    /// entry/node → concept.
+    About,
+    DiscussedIn,
+    /// event/place → event/place.
+    PartOf,
+    HasPart,
     /// Untyped "see also"; symmetric (its own inverse).
     Related,
 }
@@ -61,6 +110,16 @@ impl Predicate {
             RepliedToBy => RepliesTo,
             Expands => ExpandedBy,
             ExpandedBy => Expands,
+            Influenced => InfluencedBy,
+            InfluencedBy => Influenced,
+            Authored => AuthoredBy,
+            AuthoredBy => Authored,
+            MemberOf => HasMember,
+            HasMember => MemberOf,
+            About => DiscussedIn,
+            DiscussedIn => About,
+            PartOf => HasPart,
+            HasPart => PartOf,
             Related => Related,
         }
     }
@@ -72,10 +131,11 @@ impl Predicate {
 
     /// The predicates a user picks when *authoring* a forward edge: the "primary direction"
     /// of each asymmetric pair plus the symmetric `Related`. The inverse halves
-    /// (`CitedBy`, `HasCommentary`, …) are omitted because they are maintained automatically
-    /// on the other endpoint — offering both directions would be redundant and confusing.
-    /// Order is stable (used to build UI dropdowns).
-    pub fn forward_choices() -> [Predicate; 10] {
+    /// (`CitedBy`, `HasCommentary`, `AuthoredBy`, …) are omitted because they are maintained
+    /// automatically on the other endpoint — offering both directions would be redundant and
+    /// confusing. Order is stable (used to build UI dropdowns): the M2 work-to-work
+    /// predicates first, then the M3 node-oriented ones.
+    pub fn forward_choices() -> [Predicate; 15] {
         use Predicate::*;
         [
             Related,
@@ -88,7 +148,49 @@ impl Predicate {
             Supersedes,
             RepliesTo,
             Expands,
+            Influenced,
+            Authored,
+            MemberOf,
+            About,
+            PartOf,
         ]
+    }
+
+    /// The forward predicates worth *offering first* when the edge points at a target of a
+    /// given [`TargetKind`] (`docs/M3-SPEC.md` §2). Advisory UI curation only — the
+    /// vocabulary stays fully open, so this never restricts what can be stored; it just
+    /// surfaces the domain-appropriate predicates (e.g. `authored` when the target is a work,
+    /// `member-of` when it is a school). `Related` always leads. An `Other`/unknown target
+    /// falls back to the full [`forward_choices`](Self::forward_choices) list.
+    pub fn forward_choices_for(target: TargetKind) -> Vec<Predicate> {
+        use Predicate::*;
+        let tail: &[Predicate] = match target {
+            // A cited/critiqued/… target is a work; a person also "authored" it.
+            TargetKind::Work => &[
+                Cites,
+                Critiques,
+                Reviews,
+                CommentaryOn,
+                TranslationOf,
+                EditionOf,
+                Supersedes,
+                RepliesTo,
+                Expands,
+                Authored,
+            ],
+            TargetKind::Person => &[Influenced],
+            TargetKind::School => &[Influenced, MemberOf],
+            TargetKind::Concept => &[About],
+            TargetKind::Event | TargetKind::Place => &[PartOf],
+            TargetKind::Other => {
+                // Everything after the leading `Related` in the full list.
+                return Self::forward_choices().to_vec();
+            }
+        };
+        let mut out = Vec::with_capacity(tail.len() + 1);
+        out.push(Related);
+        out.extend_from_slice(tail);
+        out
     }
 
     /// A human-readable label for UI display (e.g. `CitedBy` → "Cited by").
@@ -113,6 +215,16 @@ impl Predicate {
             RepliedToBy => "Replied to by",
             Expands => "Expands",
             ExpandedBy => "Expanded by",
+            Influenced => "Influenced",
+            InfluencedBy => "Influenced by",
+            Authored => "Authored",
+            AuthoredBy => "Authored by",
+            MemberOf => "Member of",
+            HasMember => "Has member",
+            About => "About",
+            DiscussedIn => "Discussed in",
+            PartOf => "Part of",
+            HasPart => "Has part",
             Related => "Related",
         }
     }
@@ -180,6 +292,16 @@ mod tests {
             Predicate::RepliedToBy,
             Predicate::Expands,
             Predicate::ExpandedBy,
+            Predicate::Influenced,
+            Predicate::InfluencedBy,
+            Predicate::Authored,
+            Predicate::AuthoredBy,
+            Predicate::MemberOf,
+            Predicate::HasMember,
+            Predicate::About,
+            Predicate::DiscussedIn,
+            Predicate::PartOf,
+            Predicate::HasPart,
             Predicate::Related,
         ] {
             assert_eq!(p.inverse().inverse(), p, "double-inverse must be identity");
@@ -218,5 +340,107 @@ mod tests {
     fn unknown_predicate_is_a_parse_error() {
         let err = serde_yaml_ng::from_str::<Relation>("predicate: frobnicates\ntarget: x\n");
         assert!(err.is_err(), "unknown predicate must fail to parse");
+    }
+
+    #[test]
+    fn node_predicates_serialize_kebab() {
+        for (p, kebab) in [
+            (Predicate::Influenced, "influenced"),
+            (Predicate::InfluencedBy, "influenced-by"),
+            (Predicate::Authored, "authored"),
+            (Predicate::AuthoredBy, "authored-by"),
+            (Predicate::MemberOf, "member-of"),
+            (Predicate::HasMember, "has-member"),
+            (Predicate::About, "about"),
+            (Predicate::DiscussedIn, "discussed-in"),
+            (Predicate::PartOf, "part-of"),
+            (Predicate::HasPart, "has-part"),
+        ] {
+            let r = Relation::forward(p, "x");
+            let yaml = serde_yaml_ng::to_string(&r).unwrap();
+            assert!(yaml.contains(&format!("predicate: {kebab}")), "{yaml}");
+            // …and parses back to the same predicate.
+            let back: Relation = serde_yaml_ng::from_str(&yaml).unwrap();
+            assert_eq!(back.predicate, p);
+        }
+    }
+
+    #[test]
+    fn forward_choices_has_new_forwards_and_no_inverse_halves() {
+        let fc = Predicate::forward_choices();
+        for p in [
+            Predicate::Influenced,
+            Predicate::Authored,
+            Predicate::MemberOf,
+            Predicate::About,
+            Predicate::PartOf,
+        ] {
+            assert!(fc.contains(&p), "{p:?} should be authorable");
+        }
+        // No inverse half is offered as a forward choice.
+        for p in [
+            Predicate::InfluencedBy,
+            Predicate::AuthoredBy,
+            Predicate::HasMember,
+            Predicate::DiscussedIn,
+            Predicate::HasPart,
+        ] {
+            assert!(!fc.contains(&p), "{p:?} is maintained, not authorable");
+        }
+    }
+
+    #[test]
+    fn forward_choices_for_curates_by_target_and_always_leads_with_related() {
+        // A work target offers work-to-work predicates plus `authored`, never `about`.
+        let work = Predicate::forward_choices_for(TargetKind::Work);
+        assert_eq!(work.first(), Some(&Predicate::Related));
+        assert!(work.contains(&Predicate::Cites));
+        assert!(work.contains(&Predicate::Authored));
+        assert!(!work.contains(&Predicate::About));
+
+        // A school target offers membership + influence.
+        let school = Predicate::forward_choices_for(TargetKind::School);
+        assert!(school.contains(&Predicate::MemberOf));
+        assert!(school.contains(&Predicate::Influenced));
+
+        // A concept target offers `about`.
+        assert!(Predicate::forward_choices_for(TargetKind::Concept).contains(&Predicate::About));
+
+        // Event and place both offer `part-of`.
+        assert!(Predicate::forward_choices_for(TargetKind::Event).contains(&Predicate::PartOf));
+        assert!(Predicate::forward_choices_for(TargetKind::Place).contains(&Predicate::PartOf));
+
+        // Every curated list is advisory but still a subset of the full authorable set.
+        let full = Predicate::forward_choices();
+        for kind in [
+            TargetKind::Work,
+            TargetKind::Person,
+            TargetKind::School,
+            TargetKind::Concept,
+            TargetKind::Event,
+            TargetKind::Place,
+            TargetKind::Other,
+        ] {
+            for p in Predicate::forward_choices_for(kind) {
+                assert!(full.contains(&p), "{p:?} offered for {kind:?} but not authorable");
+            }
+        }
+
+        // Unknown target falls back to the full list.
+        assert_eq!(
+            Predicate::forward_choices_for(TargetKind::Other),
+            full.to_vec()
+        );
+    }
+
+    #[test]
+    fn target_kind_maps_from_node_type() {
+        assert_eq!(TargetKind::from(NodeType::Person), TargetKind::Person);
+        assert_eq!(TargetKind::from(NodeType::School), TargetKind::School);
+        assert_eq!(TargetKind::from(NodeType::Concept), TargetKind::Concept);
+        assert_eq!(TargetKind::from(NodeType::Event), TargetKind::Event);
+        assert_eq!(TargetKind::from(NodeType::Place), TargetKind::Place);
+        // An uncatalogued work counts as a work for predicate offering.
+        assert_eq!(TargetKind::from(NodeType::WorkUncataloged), TargetKind::Work);
     }
 }

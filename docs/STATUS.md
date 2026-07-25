@@ -22,8 +22,9 @@ the single most confusing thing about the docs:
    - **Extension-M2** = typed relations, facets, small note fields, AI sidecar, projects/usage
      — **built and tested** (see below).
    - **Extension-M3** = knowledge-graph nodes (people/concepts/schools) + author IDs —
-     **PR 1 of 8 built** (node file type + slug helper + `nodes/` in `init`); PRs 2–8 still
-     to do (`M3-SPEC.md`).
+     **PRs 1–2 of 8 built** (node file type + slug helper + `nodes/` in `init`; node-oriented
+     predicate vocabulary + advisory `forward_choices_for`); PRs 3–8 still to do
+     (`M3-SPEC.md`).
 
 When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 "Milestone 2/3" it means the **original brief**. They are unrelated.
@@ -48,13 +49,20 @@ The extension-M2 index + GUI surfacing, under `CHANGELOG.md` `[Unreleased]`:
 This is a plain work commit (not a dev build): no version bump, no tag. The `[Unreleased]`
 CHANGELOG section will fold into the next dev tag when one is prepped.
 
-### Working tree — uncommitted M3 PR 1 (as of 2026-07-25)
-On top of `5614503`, **not yet committed**: extension-M3 PR 1 — `crates/fond-bib/src/node.rs`
-(node file type: `NodeType`/`NodeFrontmatter`/`Node`), `node_slug` in `key.rs`, `nodes/`
-wired into `Library` (`init` + `node_path`/`node_slugs`/`load_node`/`write_node`),
-`split_frontmatter` factored into `util`, plus `lib.rs` re-exports, tests, and CHANGELOG /
-`M3-SPEC.md` / this file updated. `cargo test --workspace` and `cargo clippy --workspace`
-both green. Next dev build would be `v0.1.0-dev6`.
+### Committed on top of dev5 (not tagged, not pushed) — M3 PRs 1–2
+- **PR 1** (commit `11b8ad9`) — `crates/fond-bib/src/node.rs` (node file type:
+  `NodeType`/`NodeFrontmatter`/`Node`), `node_slug` in `key.rs`, `nodes/` wired into `Library`
+  (`init` + `node_path`/`node_slugs`/`load_node`/`write_node`), `split_frontmatter` factored
+  into `util`.
+- **PR 2** — node-oriented `Predicate` pairs (influenced/authored/member-of/about/part-of +
+  inverses), extended `inverse`/`label`/`predicate_key`/`forward_choices`, and
+  `TargetKind` + `forward_choices_for` (advisory domain curation, `From<NodeType>`).
+
+All under `[Unreleased]` in `CHANGELOG.md`; `cargo test --workspace` (55 fond-bib lib tests)
+and `cargo clippy --workspace` both green. Next dev build would be `v0.1.0-dev6`.
+
+### Working tree
+Clean once PR 2 is committed.
 
 ### Test / quality state
 - Whole workspace: **94 tests passing, 0 clippy warnings** at last run.
@@ -96,9 +104,10 @@ Next candidates (pick per Cal):
 - **Extension-M2 leftovers** (`M2-GUI-PLAN.md` §4): "Used in" panel (needs GUI scan trigger +
   `usage.json` loader), facet chip grouping in the editor, "promote AI keyword → tag", global
   task view, in-GUI editing of progress/cite/tasks.
-- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **PR 1 done** (node file type +
-  slug + `nodes/`). Next is **PR 2**: extend the `Predicate` vocabulary with the node-oriented
-  predicates (`influenced`, `authored`, `member-of`, `about`, `part-of` + inverses).
+- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **PRs 1–2 done** (node file type +
+  slug + `nodes/`; node-oriented predicates + `forward_choices_for`). Next is **PR 3** — the
+  load-bearing one: `resolve_target` + a `RelationHost` refactor so `set_relations`/
+  `reconcile_relations` span notes ∪ nodes (keep it isolated).
 
 ---
 

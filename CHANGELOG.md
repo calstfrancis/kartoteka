@@ -4,6 +4,20 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [Unreleased]
 
+### Added — M3 node-oriented predicates (`fond-bib`, PR 2 of the sequence)
+
+- **Node-oriented relationship predicates** — the closed `Predicate` vocabulary gains five
+  new pairs for graph edges among nodes and to works: `influenced`/`influenced-by`,
+  `authored`/`authored-by`, `member-of`/`has-member`, `about`/`discussed-in`, and
+  `part-of`/`has-part`. Each has its inverse, label, and stable sort key, so the existing
+  inverse-maintenance and diff-stable ordering carry over unchanged. See `docs/M3-SPEC.md` §2.
+- **Domain-appropriate predicate offering** — `Predicate::forward_choices_for(TargetKind)`
+  curates which forward predicates the relations dialog should surface first for a given
+  target kind (a work offers `cites`/`authored`/…; a school offers `member-of`; a concept
+  offers `about`; an event/place offers `part-of`). Advisory only — the vocabulary stays
+  fully open. `TargetKind` maps from `NodeType` (`From`), with an entry key counting as a
+  work. `forward_choices()` now also includes the new authorable forwards.
+
 ### Added — M3 knowledge-graph nodes (`fond-bib`, PR 1 of the sequence)
 
 - **Node files (`nodes/<slug>.md`)** — first-class non-work entities (person / concept /
