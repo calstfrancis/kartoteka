@@ -1,8 +1,8 @@
 # Kartoteka M3 — Implementation Spec: Knowledge-Graph Nodes
 
-Status: **in progress.** PRs 1–2 (node file type + slug + `nodes/` in `init`; node-oriented
-predicate vocabulary) are **built and tested**; PRs 3–8 not yet. See the PR sequence and
-`docs/STATUS.md`.
+Status: **in progress.** PRs 1–3 (node file type + slug + `nodes/` in `init`; node-oriented
+predicate vocabulary; polymorphic target resolution + relation hosts spanning notes ∪ nodes)
+are **built and tested**; PRs 4–8 not yet. See the PR sequence and `docs/STATUS.md`.
 
 > **Naming note.** "M3" here is the **knowledge-base extension track** (M2 = typed relations
 > etc., already built; M3 = this), *not* `ROADMAP.md`'s "Milestone 3" (bibliography output,
@@ -191,8 +191,10 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
    `TargetKind` + `Predicate::forward_choices_for(TargetKind)` as the advisory domain-curated
    list (the "context" mechanism), with `From<NodeType>`. Tests cover round-trip, inverses,
    and curation.
-3. `resolve_target` + `RelationHost` refactor of `set_relations`/reconcile to span notes ∪
-   nodes + tests (the load-bearing PR; keep it isolated).
+3. ✅ **Done.** `resolve_target` (`Target::{Entry,Node,Dangling}`) + a private `RelationHost`
+   (note-or-node) refactor of `relations`/`set_relations`/`add`/`remove`/`reconcile_relations`
+   to span notes ∪ nodes. `fsck` covers node relations via `reconcile`. No M2 behaviour change
+   when no nodes are present (all M2 relation tests still pass) + new node-spanning tests.
 4. `fsck` node checks + tests.
 5. `fond-index` node indexing + `kind` scoping + tests.
 6. GUI: node list/editor.

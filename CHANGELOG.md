@@ -4,6 +4,21 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [Unreleased]
 
+### Added — M3 polymorphic relation targets (`fond-bib`, PR 3 of the sequence)
+
+- **`resolve_target`** — `Library::resolve_target(target)` classifies a relation target as an
+  existing entry key (`Target::Entry`), an existing node slug (`Target::Node`), or neither
+  (`Target::Dangling`); entries win if a slug ever collides with a key. This is the mechanism
+  that makes a relation `target` polymorphic across the note and node file types.
+- **Relations span notes ∪ nodes** — `set_relations`/`add_relation`/`remove_relation` and
+  `reconcile_relations` now operate over a *relation host* (the note behind an entry key, or a
+  node file behind a slug) instead of assuming target == entry key. A forward edge may live on
+  a node and point at an entry (or vice-versa), and its maintained inverse lands on whichever
+  file type the target resolves to. `reconcile_relations` gathers forward edges from every
+  note **and** every node, validates targets against entry keys ∪ node slugs, and repairs
+  inverse edges across both — so `fsck` (which calls it) now covers node relations too. See
+  `docs/M3-SPEC.md` §3. Purely a widening: with no nodes present, behaviour is identical to M2.
+
 ### Added — M3 node-oriented predicates (`fond-bib`, PR 2 of the sequence)
 
 - **Node-oriented relationship predicates** — the closed `Predicate` vocabulary gains five

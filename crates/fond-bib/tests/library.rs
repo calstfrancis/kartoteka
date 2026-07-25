@@ -18,6 +18,15 @@ fn seed_entries(lib: &Library, keys: &[&str]) {
     }
 }
 
+/// Seed a node file with the given type and label (no relations).
+fn seed_node(lib: &Library, slug: &str, node_type: &str, label: &str) {
+    fs::write(
+        lib.node_path(slug),
+        format!("---\nnode-type: {node_type}\nlabel: {label}\n---\n"),
+    )
+    .unwrap();
+}
+
 /// The `(predicate, target, inverse)` triples on `key`'s note, for terse assertions.
 fn edges(lib: &Library, key: &str) -> Vec<(Predicate, String, bool)> {
     lib.relations(key)
@@ -448,4 +457,124 @@ fn node_round_trips_through_disk() {
     assert_eq!(loaded, node);
     assert_eq!(loaded.frontmatter.node_type, NodeType::Person);
     assert_eq!(loaded.frontmatter.label, "Origen of Alexandria");
+}
+
+// ---- M3: relations spanning notes ∪ nodes (docs/M3-SPEC.md §3) ----------------------
+
+#[test]
+fn resolve_target_distinguishes_entry_node_and_dangling() {
+    use fond_bib::Target;
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["augustine0426city"]);
+    seed_node(&lib, "aquinas", "person", "Thomas Aquinas");
+
+    assert_eq!(
+        lib.resolve_target("augustine0426city").unwrap(),
+        Target::Entry("augustine0426city".into())
+    );
+    assert_eq!(
+        lib.resolve_target("aquinas").unwrap(),
+        Target::Node("aquinas".into())
+    );
+    assert_eq!(
+        lib.resolve_target("nobody").unwrap(),
+        Target::Dangling("nobody".into())
+    );
+}
+
+#[test]
+fn forward_edge_on_entry_maintains_inverse_on_node() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["cone1970black"]);
+    seed_node(&lib, "black-theology", "concept", "Black Theology");
+
+    // An entry is `about` a concept node ⇒ the node gains the `discussed-in` inverse.
+    lib.add_relation("cone1970black", Predicate::About, "black-theology")
+        .unwrap();
+    assert_eq!(
+        edges(&lib, "cone1970black"),
+        vec![(Predicate::About, "black-theology".into(), false)]
+    );
+    assert_eq!(
+        edges(&lib, "black-theology"),
+        vec![(Predicate::DiscussedIn, "cone1970black".into(), true)]
+    );
+    // The inverse really landed in the node file, and the node still parses.
+    let node = lib.load_node("black-theology").unwrap();
+    assert_eq!(node.frontmatter.label, "Black Theology");
+    assert_eq!(node.frontmatter.relations.len(), 1);
+
+    // Reconciliation sees nothing to fix (the universe spans notes ∪ nodes).
+    assert!(lib.reconcile_relations(false).unwrap().is_clean());
+
+    // Removing the forward edge removes the inverse from the node too.
+    lib.remove_relation("cone1970black", Predicate::About, "black-theology")
+        .unwrap();
+    assert!(edges(&lib, "black-theology").is_empty());
+}
+
+#[test]
+fn forward_edge_on_node_maintains_inverse_on_entry() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["augustine0426city"]);
+    seed_node(&lib, "augustine", "person", "Augustine of Hippo");
+
+    // A person node `authored` a work entry ⇒ the entry gains the `authored-by` inverse.
+    lib.set_relations(
+        "augustine",
+        &[Relation::forward(Predicate::Authored, "augustine0426city")],
+    )
+    .unwrap();
+    assert_eq!(
+        edges(&lib, "augustine"),
+        vec![(Predicate::Authored, "augustine0426city".into(), false)]
+    );
+    assert_eq!(
+        edges(&lib, "augustine0426city"),
+        vec![(Predicate::AuthoredBy, "augustine".into(), true)]
+    );
+    assert!(lib.reconcile_relations(false).unwrap().is_clean());
+}
+
+#[test]
+fn reconcile_repairs_a_desynced_node_inverse_edge() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["augustine0426city"]);
+    seed_node(&lib, "augustine", "person", "Augustine of Hippo");
+
+    // Hand-write a forward edge on the node without its maintained counterpart.
+    fs::write(
+        lib.node_path("augustine"),
+        "---\nnode-type: person\nlabel: Augustine of Hippo\nrelations:\n  - predicate: authored\n    target: augustine0426city\n---\n",
+    )
+    .unwrap();
+
+    // Report finds the missing inverse; fix materializes it on the entry.
+    let before = lib.reconcile_relations(false).unwrap();
+    assert_eq!(before.missing.len(), 1, "{before:?}");
+    lib.reconcile_relations(true).unwrap();
+    assert_eq!(
+        edges(&lib, "augustine0426city"),
+        vec![(Predicate::AuthoredBy, "augustine".into(), true)]
+    );
+    // Idempotent: a second fix finds nothing.
+    assert!(lib.reconcile_relations(true).unwrap().is_clean());
+}
+
+#[test]
+fn reconcile_flags_target_that_is_neither_entry_nor_node() {
+    let (_dir, lib) = temp_library();
+    seed_node(&lib, "augustine", "person", "Augustine of Hippo");
+
+    // A node forward edge pointing at something that resolves to neither entry nor node.
+    fs::write(
+        lib.node_path("augustine"),
+        "---\nnode-type: person\nlabel: Augustine of Hippo\nrelations:\n  - predicate: influenced\n    target: ghost\n---\n",
+    )
+    .unwrap();
+
+    let report = lib.reconcile_relations(false).unwrap();
+    assert_eq!(report.dangling_targets.len(), 1);
+    assert_eq!(report.dangling_targets[0].0, "augustine");
+    assert_eq!(report.dangling_targets[0].2, "ghost");
 }

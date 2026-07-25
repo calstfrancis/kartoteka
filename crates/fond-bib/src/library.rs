@@ -205,6 +205,60 @@ impl Library {
         Ok(path)
     }
 
+    /// Resolve a relation `target` to what it points at (`docs/M3-SPEC.md` §3): an existing
+    /// entry key, else an existing node slug, else dangling. `entries/` wins on the
+    /// (discouraged) chance a slug collides with a key. This is the one mechanism that makes
+    /// a relation `target` polymorphic across the note and node file types.
+    pub fn resolve_target(&self, target: &str) -> Result<Target> {
+        if self.entry_path(target).is_file() {
+            Ok(Target::Entry(target.to_string()))
+        } else if self.node_path(target).is_file() {
+            Ok(Target::Node(target.to_string()))
+        } else {
+            Ok(Target::Dangling(target.to_string()))
+        }
+    }
+
+    /// Load the relation host for `id`, for a *write* that may create it. A node slug loads
+    /// its (mandatory) node file; an entry key — or a not-yet-existing id — is a note,
+    /// created empty if absent, so an id can be handed a maintained inverse edge before its
+    /// note exists (and a dangling target is treated as a future entry key, matching M2).
+    fn load_host(&self, id: &str) -> Result<RelationHost> {
+        match self.resolve_target(id)? {
+            Target::Node(slug) => Ok(RelationHost::Node {
+                node: self.load_node(&slug)?,
+                slug,
+            }),
+            Target::Entry(key) | Target::Dangling(key) => Ok(RelationHost::Note {
+                note: self.load_note(&key)?.unwrap_or_default(),
+                key,
+            }),
+        }
+    }
+
+    /// Load the relation host for `id` only if its backing file already exists (never
+    /// creates one). Used when *removing* an edge — there is nothing to touch if the host
+    /// file isn't there.
+    fn load_host_existing(&self, id: &str) -> Result<Option<RelationHost>> {
+        match self.resolve_target(id)? {
+            Target::Node(slug) => Ok(Some(RelationHost::Node {
+                node: self.load_node(&slug)?,
+                slug,
+            })),
+            Target::Entry(key) | Target::Dangling(key) => Ok(self
+                .load_note(&key)?
+                .map(|note| RelationHost::Note { key, note })),
+        }
+    }
+
+    /// Persist a relation host back to its backing file.
+    fn save_host(&self, host: &RelationHost) -> Result<()> {
+        match host {
+            RelationHost::Note { key, note } => self.write_note(key, note).map(|_| ()),
+            RelationHost::Node { slug, node } => self.write_node(slug, node).map(|_| ()),
+        }
+    }
+
     pub fn attachments_dir(&self) -> PathBuf {
         self.root.join(ATTACHMENTS_DIR)
     }
@@ -322,11 +376,12 @@ impl Library {
 
     // ---- Typed relations (see docs/M2-SPEC.md §1) -------------------------------------
 
-    /// All relation edges recorded on `key`'s note (forward and inverse), empty if none.
-    pub fn relations(&self, key: &str) -> Result<Vec<Relation>> {
+    /// All relation edges recorded on `id`'s host (forward and inverse), empty if none.
+    /// `id` may be an entry key (edges in its note) or a node slug (edges in its node file).
+    pub fn relations(&self, id: &str) -> Result<Vec<Relation>> {
         Ok(self
-            .load_note(key)?
-            .map(|n| n.frontmatter.relations)
+            .load_host_existing(id)?
+            .map(|h| h.relations().clone())
             .unwrap_or_default())
     }
 
@@ -350,11 +405,11 @@ impl Library {
         let new = normalize_forward(key, forward);
         let old = self.forward_relations(key)?;
 
-        // Rewrite key's note: new forward edges + key's existing inverse edges, re-sorted.
-        let mut own = self.load_note(key)?.unwrap_or_default();
+        // Rewrite the host's own edges: new forward edges + its existing inverse edges,
+        // re-sorted. The host may be a note (entry key) or a node file (slug).
+        let mut own = self.load_host(key)?;
         let kept_inverse: Vec<Relation> = own
-            .frontmatter
-            .relations
+            .relations()
             .iter()
             .filter(|r| r.inverse)
             .cloned()
@@ -362,13 +417,13 @@ impl Library {
         let mut relations = new.clone();
         relations.extend(kept_inverse);
         sort_relations(&mut relations);
-        own.frontmatter.relations = relations;
-        self.write_note(key, &own)?;
+        *own.relations_mut() = relations;
+        self.save_host(&own)?;
 
         let new_ids: HashSet<(Predicate, &str)> = new.iter().map(|r| r.identity()).collect();
         let old_ids: HashSet<(Predicate, &str)> = old.iter().map(|r| r.identity()).collect();
 
-        // Added forward edges → add the counterpart edge on the target.
+        // Added forward edges → add the counterpart edge on the target (note or node).
         for r in &new {
             if !old_ids.contains(&r.identity()) {
                 self.add_counterpart_edge(&r.target, counterpart(r.predicate, key))?;
@@ -404,77 +459,94 @@ impl Library {
         self.set_relations(key, &forward)
     }
 
-    /// Add `edge` to `target`'s note if an edge with the same identity isn't already there.
+    /// Add `edge` to `target`'s host (note or node) if an edge with the same identity isn't
+    /// already there. Creates the host (a note) if the target doesn't exist yet.
     fn add_counterpart_edge(&self, target: &str, edge: Relation) -> Result<()> {
-        let mut note = self.load_note(target)?.unwrap_or_default();
-        if !note
-            .frontmatter
-            .relations
+        let mut host = self.load_host(target)?;
+        if !host
+            .relations()
             .iter()
             .any(|r| r.identity() == edge.identity())
         {
-            note.frontmatter.relations.push(edge);
-            sort_relations(&mut note.frontmatter.relations);
-            self.write_note(target, &note)?;
+            host.relations_mut().push(edge);
+            sort_relations(host.relations_mut());
+            self.save_host(&host)?;
         }
         Ok(())
     }
 
-    /// Remove any edge on `target`'s note with identity `(predicate, other)`.
+    /// Remove any edge on `target`'s host with identity `(predicate, other)`. A no-op if the
+    /// host file doesn't exist.
     fn remove_edge(&self, target: &str, predicate: Predicate, other: &str) -> Result<()> {
-        if let Some(mut note) = self.load_note(target)? {
-            let before = note.frontmatter.relations.len();
-            note.frontmatter
-                .relations
+        if let Some(mut host) = self.load_host_existing(target)? {
+            let before = host.relations().len();
+            host.relations_mut()
                 .retain(|r| r.identity() != (predicate, other));
-            if note.frontmatter.relations.len() != before {
-                self.write_note(target, &note)?;
+            if host.relations().len() != before {
+                self.save_host(&host)?;
             }
         }
         Ok(())
     }
 
-    /// Reconcile every note's *maintained* relation edges against the forward edges that
-    /// are the source of truth (see docs/M2-SPEC.md §1.5). Asymmetric inverse edges are
-    /// fully derived (dropped and regenerated); self-inverse `Related` edges are
-    /// symmetric-completed (a missing reciprocal is added, never silently removed).
+    /// Reconcile every relation host's *maintained* edges against the forward edges that are
+    /// the source of truth (see docs/M2-SPEC.md §1.5). Asymmetric inverse edges are fully
+    /// derived (dropped and regenerated); self-inverse `Related` edges are symmetric-completed
+    /// (a missing reciprocal is added, never silently removed).
     ///
-    /// With `fix == false` it only reports; with `fix == true` it rewrites the notes that
+    /// From M3 the relation-bearing universe is *notes ∪ nodes* and the valid-target set is
+    /// *entry keys ∪ node slugs* (`docs/M3-SPEC.md` §3): a forward edge may live on a node and
+    /// point at an entry, or vice-versa, and the maintained counterpart lands on whichever
+    /// file type the target resolves to. A target that resolves to neither is dangling.
+    ///
+    /// With `fix == false` it only reports; with `fix == true` it rewrites the hosts that
     /// need it. Idempotent: a second run with `fix` finds nothing.
     pub fn reconcile_relations(&self, fix: bool) -> Result<RelationReconcile> {
         let mut report = RelationReconcile::default();
         let key_set = self.existing_keys()?;
+        let slug_set: HashSet<String> = self.node_slugs()?.into_iter().collect();
+        let is_valid_target = |t: &str| key_set.contains(t) || slug_set.contains(t);
 
-        // Expected maintained edges per note, derived from all forward edges in the vault.
-        // expected[owner] = set of edges that owner must carry because of others' forwards.
+        // Every relation-bearing host id: entry keys (edges in their notes) plus node slugs
+        // (edges in their node files). A slug that collides with an entry key is skipped —
+        // entries win, so the note is the canonical host (matching `resolve_target`).
+        let mut host_ids: Vec<String> = self.keys_sorted()?;
+        for slug in self.node_slugs()? {
+            if !key_set.contains(&slug) {
+                host_ids.push(slug);
+            }
+        }
+
+        // Expected maintained edges per host, derived from every forward edge in the vault.
+        // expected[owner] = edges that owner must carry because of others' forward edges.
         let mut expected: HashMap<String, Vec<Relation>> = HashMap::new();
-        let all_keys = self.keys_sorted()?;
-        for key in &all_keys {
-            for r in self.forward_relations(key)? {
-                if !key_set.contains(&r.target) {
+        for id in &host_ids {
+            let host = self.load_host(id)?;
+            for r in host.relations().iter().filter(|r| !r.inverse) {
+                if !is_valid_target(&r.target) {
                     report
                         .dangling_targets
-                        .push((key.clone(), r.predicate, r.target.clone()));
+                        .push((id.clone(), r.predicate, r.target.clone()));
                     continue;
                 }
                 expected
                     .entry(r.target.clone())
                     .or_default()
-                    .push(counterpart(r.predicate, key));
+                    .push(counterpart(r.predicate, id));
             }
         }
 
-        for key in &all_keys {
-            // Default to an empty note: a key may legitimately have no note yet but still
-            // be owed a maintained inverse edge from another note's forward edge.
-            let mut note = self.load_note(key)?.unwrap_or_default();
-            let want = expected.remove(key).unwrap_or_default();
+        for id in &host_ids {
+            // Load the host (an entry key with no note yet loads as an empty note — it may
+            // still be owed a maintained inverse edge from another host's forward edge).
+            let mut host = self.load_host(id)?;
+            let want = expected.remove(id).unwrap_or_default();
             let want_ids: HashSet<(Predicate, &str)> = want.iter().map(|r| r.identity()).collect();
 
-            // Partition the note's edges into user-authored forward (kept as-is) and
+            // Partition the host's edges into user-authored forward (kept as-is) and
             // maintained (inverse edges + self-inverse reciprocals we materialized).
             let mut rebuilt: Vec<Relation> = Vec::new();
-            for r in &note.frontmatter.relations {
+            for r in host.relations() {
                 if r.inverse {
                     // Derived asymmetric inverse: keep only if still expected.
                     if want_ids.contains(&r.identity()) {
@@ -482,7 +554,7 @@ impl Library {
                     } else {
                         report
                             .orphaned
-                            .push((key.clone(), r.predicate, r.target.clone()));
+                            .push((id.clone(), r.predicate, r.target.clone()));
                     }
                 } else {
                     // Forward edge (asymmetric-authored or self-inverse): always kept.
@@ -490,23 +562,23 @@ impl Library {
                 }
             }
             // Add any expected maintained edge that's missing (identity not already present).
-            let present: HashSet<(Predicate, &str)> =
-                rebuilt.iter().map(|r| r.identity()).collect();
-            let present: HashSet<(Predicate, String)> =
-                present.iter().map(|(p, t)| (*p, t.to_string())).collect();
+            let present: HashSet<(Predicate, String)> = rebuilt
+                .iter()
+                .map(|r| (r.predicate, r.target.clone()))
+                .collect();
             for e in want {
                 if !present.contains(&(e.predicate, e.target.clone())) {
                     report
                         .missing
-                        .push((key.clone(), e.predicate, e.target.clone()));
+                        .push((id.clone(), e.predicate, e.target.clone()));
                     rebuilt.push(e);
                 }
             }
 
             sort_relations(&mut rebuilt);
-            if rebuilt != note.frontmatter.relations && fix {
-                note.frontmatter.relations = rebuilt;
-                self.write_note(key, &note)?;
+            if &rebuilt != host.relations() && fix {
+                *host.relations_mut() = rebuilt;
+                self.save_host(&host)?;
             }
         }
 
@@ -1081,6 +1153,31 @@ pub struct UsageMap {
     pub unreadable: Vec<(String, PathBuf)>,
 }
 
+/// A relation-bearing file: the note backing an entry key, or a node file backing a node
+/// slug (`docs/M3-SPEC.md` §3). Abstracts load/mutate/save of a `Vec<Relation>` so the M2
+/// edge algorithms (`set_relations`, `reconcile_relations`, …) operate uniformly over the
+/// notes ∪ nodes universe without caring which file type backs a given id.
+enum RelationHost {
+    Note { key: String, note: Note },
+    Node { slug: String, node: Node },
+}
+
+impl RelationHost {
+    fn relations(&self) -> &Vec<Relation> {
+        match self {
+            RelationHost::Note { note, .. } => &note.frontmatter.relations,
+            RelationHost::Node { node, .. } => &node.frontmatter.relations,
+        }
+    }
+
+    fn relations_mut(&mut self) -> &mut Vec<Relation> {
+        match self {
+            RelationHost::Note { note, .. } => &mut note.frontmatter.relations,
+            RelationHost::Node { node, .. } => &mut node.frontmatter.relations,
+        }
+    }
+}
+
 /// The edge that `subject`'s target must carry pointing back at `subject`. For an
 /// asymmetric predicate this is the inverse predicate as an `inverse: true` edge; for the
 /// self-inverse `Related` it is a plain forward edge (symmetric).
@@ -1155,15 +1252,37 @@ fn predicate_key(p: Predicate) -> &'static str {
     }
 }
 
-/// The result of [`Library::reconcile_relations`]. Empty means every note's maintained
-/// relation edges already match the forward edges that are the source of truth.
+/// What a relation `target` resolves to (see [`Library::resolve_target`]). A target is
+/// polymorphic from M3 on: it may name an entry key or a node slug, or resolve to neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// An existing `entries/<key>.yml`.
+    Entry(String),
+    /// An existing `nodes/<slug>.md`.
+    Node(String),
+    /// Resolves to neither an entry nor a node (a broken edge; `fsck` warns).
+    Dangling(String),
+}
+
+impl Target {
+    /// The underlying identifier string, regardless of what it resolved to.
+    pub fn id(&self) -> &str {
+        match self {
+            Target::Entry(s) | Target::Node(s) | Target::Dangling(s) => s,
+        }
+    }
+}
+
+/// The result of [`Library::reconcile_relations`]. Empty means every relation host's
+/// maintained edges already match the forward edges that are the source of truth.
 #[derive(Debug, Default)]
 pub struct RelationReconcile {
-    /// `(note key, predicate, target)` — a maintained edge that should exist but didn't.
+    /// `(host id, predicate, target)` — a maintained edge that should exist but didn't.
     pub missing: Vec<(String, Predicate, String)>,
-    /// `(note key, predicate, target)` — an `inverse` edge with no forward edge behind it.
+    /// `(host id, predicate, target)` — an `inverse` edge with no forward edge behind it.
     pub orphaned: Vec<(String, Predicate, String)>,
-    /// `(note key, predicate, target)` — a forward edge whose target has no entry.
+    /// `(host id, predicate, target)` — a forward edge whose target resolves to neither an
+    /// entry nor a node.
     pub dangling_targets: Vec<(String, Predicate, String)>,
 }
 
