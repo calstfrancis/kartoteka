@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use hayagriva::Library as HLibrary;
 
+use crate::ai::AiMetadata;
 use crate::annotation::AnnotationSidecar;
 use crate::collection::Collection;
 use crate::entry::{self, ParsedEntry};
@@ -15,11 +16,15 @@ use crate::error::{BibError, Result};
 use crate::key;
 use crate::note::Attachment;
 use crate::note::Note;
+use crate::project::{self, Project};
+use crate::relation::{Predicate, Relation};
 
 pub const ENTRIES_DIR: &str = "entries";
 pub const NOTES_DIR: &str = "notes";
 pub const ANNOTS_DIR: &str = "annots";
 pub const COLLECTIONS_DIR: &str = "collections";
+pub const AI_DIR: &str = "ai";
+pub const PROJECTS_DIR: &str = "projects";
 pub const ATTACHMENTS_DIR: &str = "attachments";
 pub const DERIVED_DIR: &str = ".kartoteka";
 pub const LIBRARY_YML: &str = "library.yml";
@@ -50,7 +55,14 @@ impl Library {
     /// `.gitignore` excluding `attachments/` and `.kartoteka/`. Idempotent.
     pub fn init(root: impl Into<PathBuf>) -> Result<Library> {
         let root = root.into();
-        for dir in [ENTRIES_DIR, NOTES_DIR, ANNOTS_DIR, COLLECTIONS_DIR] {
+        for dir in [
+            ENTRIES_DIR,
+            NOTES_DIR,
+            ANNOTS_DIR,
+            COLLECTIONS_DIR,
+            AI_DIR,
+            PROJECTS_DIR,
+        ] {
             let path = root.join(dir);
             fs::create_dir_all(&path).map_err(|e| BibError::io(&path, e))?;
         }
@@ -79,6 +91,10 @@ impl Library {
 
     pub fn annot_path(&self, key: &str) -> PathBuf {
         self.root.join(ANNOTS_DIR).join(format!("{key}.json"))
+    }
+
+    pub fn ai_path(&self, key: &str) -> PathBuf {
+        self.root.join(AI_DIR).join(format!("{key}.yml"))
     }
 
     pub fn library_yml_path(&self) -> PathBuf {
@@ -274,6 +290,236 @@ impl Library {
         Ok(())
     }
 
+    // ---- Typed relations (see docs/M2-SPEC.md §1) -------------------------------------
+
+    /// All relation edges recorded on `key`'s note (forward and inverse), empty if none.
+    pub fn relations(&self, key: &str) -> Result<Vec<Relation>> {
+        Ok(self
+            .load_note(key)?
+            .map(|n| n.frontmatter.relations)
+            .unwrap_or_default())
+    }
+
+    /// Just the user-authored forward edges on `key` (the ones `key` "owns").
+    pub fn forward_relations(&self, key: &str) -> Result<Vec<Relation>> {
+        Ok(self
+            .relations(key)?
+            .into_iter()
+            .filter(|r| !r.inverse)
+            .collect())
+    }
+
+    /// Replace `key`'s forward edges with `forward`, maintaining the matching edge on each
+    /// target. `key`'s inverse edges (maintained by other notes) are preserved untouched.
+    ///
+    /// For an asymmetric predicate the target gains an `inverse: true` edge carrying the
+    /// inverse predicate; for the self-inverse `Related` the target gains a plain forward
+    /// edge back to `key` (symmetric, matching legacy `set_related`). Writes only the notes
+    /// that actually change.
+    pub fn set_relations(&self, key: &str, forward: &[Relation]) -> Result<()> {
+        let new = normalize_forward(key, forward);
+        let old = self.forward_relations(key)?;
+
+        // Rewrite key's note: new forward edges + key's existing inverse edges, re-sorted.
+        let mut own = self.load_note(key)?.unwrap_or_default();
+        let kept_inverse: Vec<Relation> = own
+            .frontmatter
+            .relations
+            .iter()
+            .filter(|r| r.inverse)
+            .cloned()
+            .collect();
+        let mut relations = new.clone();
+        relations.extend(kept_inverse);
+        sort_relations(&mut relations);
+        own.frontmatter.relations = relations;
+        self.write_note(key, &own)?;
+
+        let new_ids: HashSet<(Predicate, &str)> = new.iter().map(|r| r.identity()).collect();
+        let old_ids: HashSet<(Predicate, &str)> = old.iter().map(|r| r.identity()).collect();
+
+        // Added forward edges → add the counterpart edge on the target.
+        for r in &new {
+            if !old_ids.contains(&r.identity()) {
+                self.add_counterpart_edge(&r.target, counterpart(r.predicate, key))?;
+            }
+        }
+        // Removed forward edges → drop the counterpart edge on the (old) target.
+        for r in &old {
+            if !new_ids.contains(&r.identity()) {
+                let cp = counterpart(r.predicate, key);
+                self.remove_edge(&r.target, cp.predicate, key)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Add a single forward edge `key --predicate--> target` (idempotent).
+    pub fn add_relation(&self, key: &str, predicate: Predicate, target: &str) -> Result<()> {
+        let mut forward = self.forward_relations(key)?;
+        let wanted = (predicate, target);
+        if !forward.iter().any(|r| r.identity() == wanted) {
+            forward.push(Relation::forward(predicate, target));
+        }
+        self.set_relations(key, &forward)
+    }
+
+    /// Remove the forward edge `key --predicate--> target` (idempotent).
+    pub fn remove_relation(&self, key: &str, predicate: Predicate, target: &str) -> Result<()> {
+        let forward: Vec<Relation> = self
+            .forward_relations(key)?
+            .into_iter()
+            .filter(|r| r.identity() != (predicate, target))
+            .collect();
+        self.set_relations(key, &forward)
+    }
+
+    /// Add `edge` to `target`'s note if an edge with the same identity isn't already there.
+    fn add_counterpart_edge(&self, target: &str, edge: Relation) -> Result<()> {
+        let mut note = self.load_note(target)?.unwrap_or_default();
+        if !note
+            .frontmatter
+            .relations
+            .iter()
+            .any(|r| r.identity() == edge.identity())
+        {
+            note.frontmatter.relations.push(edge);
+            sort_relations(&mut note.frontmatter.relations);
+            self.write_note(target, &note)?;
+        }
+        Ok(())
+    }
+
+    /// Remove any edge on `target`'s note with identity `(predicate, other)`.
+    fn remove_edge(&self, target: &str, predicate: Predicate, other: &str) -> Result<()> {
+        if let Some(mut note) = self.load_note(target)? {
+            let before = note.frontmatter.relations.len();
+            note.frontmatter
+                .relations
+                .retain(|r| r.identity() != (predicate, other));
+            if note.frontmatter.relations.len() != before {
+                self.write_note(target, &note)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reconcile every note's *maintained* relation edges against the forward edges that
+    /// are the source of truth (see docs/M2-SPEC.md §1.5). Asymmetric inverse edges are
+    /// fully derived (dropped and regenerated); self-inverse `Related` edges are
+    /// symmetric-completed (a missing reciprocal is added, never silently removed).
+    ///
+    /// With `fix == false` it only reports; with `fix == true` it rewrites the notes that
+    /// need it. Idempotent: a second run with `fix` finds nothing.
+    pub fn reconcile_relations(&self, fix: bool) -> Result<RelationReconcile> {
+        let mut report = RelationReconcile::default();
+        let key_set = self.existing_keys()?;
+
+        // Expected maintained edges per note, derived from all forward edges in the vault.
+        // expected[owner] = set of edges that owner must carry because of others' forwards.
+        let mut expected: HashMap<String, Vec<Relation>> = HashMap::new();
+        let all_keys = self.keys_sorted()?;
+        for key in &all_keys {
+            for r in self.forward_relations(key)? {
+                if !key_set.contains(&r.target) {
+                    report
+                        .dangling_targets
+                        .push((key.clone(), r.predicate, r.target.clone()));
+                    continue;
+                }
+                expected
+                    .entry(r.target.clone())
+                    .or_default()
+                    .push(counterpart(r.predicate, key));
+            }
+        }
+
+        for key in &all_keys {
+            // Default to an empty note: a key may legitimately have no note yet but still
+            // be owed a maintained inverse edge from another note's forward edge.
+            let mut note = self.load_note(key)?.unwrap_or_default();
+            let want = expected.remove(key).unwrap_or_default();
+            let want_ids: HashSet<(Predicate, &str)> = want.iter().map(|r| r.identity()).collect();
+
+            // Partition the note's edges into user-authored forward (kept as-is) and
+            // maintained (inverse edges + self-inverse reciprocals we materialized).
+            let mut rebuilt: Vec<Relation> = Vec::new();
+            for r in &note.frontmatter.relations {
+                if r.inverse {
+                    // Derived asymmetric inverse: keep only if still expected.
+                    if want_ids.contains(&r.identity()) {
+                        rebuilt.push(r.clone());
+                    } else {
+                        report
+                            .orphaned
+                            .push((key.clone(), r.predicate, r.target.clone()));
+                    }
+                } else {
+                    // Forward edge (asymmetric-authored or self-inverse): always kept.
+                    rebuilt.push(r.clone());
+                }
+            }
+            // Add any expected maintained edge that's missing (identity not already present).
+            let present: HashSet<(Predicate, &str)> =
+                rebuilt.iter().map(|r| r.identity()).collect();
+            let present: HashSet<(Predicate, String)> =
+                present.iter().map(|(p, t)| (*p, t.to_string())).collect();
+            for e in want {
+                if !present.contains(&(e.predicate, e.target.clone())) {
+                    report
+                        .missing
+                        .push((key.clone(), e.predicate, e.target.clone()));
+                    rebuilt.push(e);
+                }
+            }
+
+            sort_relations(&mut rebuilt);
+            if rebuilt != note.frontmatter.relations && fix {
+                note.frontmatter.relations = rebuilt;
+                self.write_note(key, &note)?;
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Lift every note's legacy untyped `related:` list into typed `relations` edges with
+    /// `predicate: related`, then clear `related`. Runs [`reconcile_relations`] afterward so
+    /// the old two-sided symmetric storage collapses to the canonical form and any missing
+    /// reciprocal is materialized. Idempotent: a note with no legacy `related` is untouched.
+    /// Returns the number of notes changed.
+    ///
+    /// [`reconcile_relations`]: Library::reconcile_relations
+    pub fn migrate_related_to_relations(&self) -> Result<usize> {
+        let mut changed = 0;
+        for key in self.keys_sorted()? {
+            let Some(mut note) = self.load_note(&key)? else {
+                continue;
+            };
+            if note.frontmatter.related.is_empty() {
+                continue;
+            }
+            let legacy = std::mem::take(&mut note.frontmatter.related);
+            for target in legacy {
+                if target == key {
+                    continue;
+                }
+                let id = (Predicate::Related, target.as_str());
+                if !note.frontmatter.relations.iter().any(|r| r.identity() == id) {
+                    note.frontmatter
+                        .relations
+                        .push(Relation::forward(Predicate::Related, target));
+                }
+            }
+            sort_relations(&mut note.frontmatter.relations);
+            self.write_note(&key, &note)?;
+            changed += 1;
+        }
+        // Symmetric-complete any reciprocals the per-note lift didn't reach.
+        self.reconcile_relations(true)?;
+        Ok(changed)
+    }
+
     /// Load an entry's annotation sidecar if one exists.
     pub fn load_annotations(&self, key: &str) -> Result<Option<AnnotationSidecar>> {
         let path = self.annot_path(key);
@@ -289,6 +535,26 @@ impl Library {
         let path = self.annot_path(&sidecar.key);
         ensure_parent(&path)?;
         fs::write(&path, sidecar.to_json()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    /// Load an entry's AI-metadata sidecar if one exists.
+    pub fn load_ai(&self, key: &str) -> Result<Option<AiMetadata>> {
+        let path = self.ai_path(key);
+        match fs::read_to_string(&path) {
+            Ok(text) => Ok(Some(AiMetadata::parse(&text, &path)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(BibError::io(&path, e)),
+        }
+    }
+
+    /// Write an entry's AI-metadata sidecar. This is the *only* path that writes AI data,
+    /// and it writes solely to `ai/<key>.yml` — it never touches the note or entry, keeping
+    /// the "AI output never overwrites curated fields" boundary structural.
+    pub fn write_ai(&self, key: &str, ai: &AiMetadata) -> Result<PathBuf> {
+        let path = self.ai_path(key);
+        ensure_parent(&path)?;
+        fs::write(&path, ai.to_yaml()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -314,6 +580,74 @@ impl Library {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(BibError::io(&path, e)),
         }
+    }
+
+    // ---- Projects & usage (see docs/M2-SPEC.md §5) ------------------------------------
+
+    pub fn project_path(&self, slug: &str) -> PathBuf {
+        self.root.join(PROJECTS_DIR).join(format!("{slug}.yml"))
+    }
+
+    pub fn project_slugs(&self) -> Result<Vec<String>> {
+        self.dir_stems(PROJECTS_DIR, "yml")
+    }
+
+    pub fn load_project(&self, slug: &str) -> Result<Project> {
+        let path = self.project_path(slug);
+        let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
+        Project::parse(&text, &path)
+    }
+
+    pub fn save_project(&self, slug: &str, project: &Project) -> Result<PathBuf> {
+        let path = self.project_path(slug);
+        ensure_parent(&path)?;
+        fs::write(&path, project.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    /// Scan every project's declared Typst documents for `@key` citations and build the
+    /// reverse "used in" map. This is **derived** state: it is persisted under `.kartoteka/`
+    /// (never into notes), rebuildable at any time. A document path that can't be read is
+    /// skipped and recorded in `unreadable`, not fatal.
+    pub fn scan_usage(&self) -> Result<UsageMap> {
+        let mut map = UsageMap::default();
+        for slug in self.project_slugs()? {
+            let project = self.load_project(&slug)?;
+            for doc in &project.documents {
+                let path = expand_tilde(doc);
+                match fs::read_to_string(&path) {
+                    Ok(src) => {
+                        for key in project::scan_typst_citation_keys(&src) {
+                            let uses = map.by_key.entry(key).or_default();
+                            let entry = (slug.clone(), path.display().to_string());
+                            if !uses.contains(&entry) {
+                                uses.push(entry);
+                            }
+                        }
+                    }
+                    Err(_) => map.unreadable.push((slug.clone(), path)),
+                }
+            }
+        }
+        for uses in map.by_key.values_mut() {
+            uses.sort();
+        }
+        Ok(map)
+    }
+
+    /// Scan usage and persist it to `.kartoteka/usage.json` (derived, gitignored). Returns
+    /// the map so callers need not re-read it.
+    pub fn write_usage(&self) -> Result<UsageMap> {
+        let map = self.scan_usage()?;
+        let dir = self.root.join(DERIVED_DIR);
+        fs::create_dir_all(&dir).map_err(|e| BibError::io(&dir, e))?;
+        let path = dir.join("usage.json");
+        let json = serde_json::to_string_pretty(&map.by_key).map_err(|e| BibError::Yaml {
+            path: path.clone(),
+            message: e.to_string(),
+        })?;
+        fs::write(&path, json).map_err(|e| BibError::io(&path, e))?;
+        Ok(map)
     }
 
     /// Add one or more entries from a Hayagriva YAML snippet. Keys in the snippet are
@@ -653,6 +987,21 @@ impl Library {
             }
         }
 
+        // Typed relations: report-only reconciliation (repair is `reconcile_relations(true)`).
+        report.relations = self.reconcile_relations(false)?;
+
+        // Projects: document paths that don't resolve to a readable file.
+        for slug in self.project_slugs()? {
+            let project = self.load_project(&slug)?;
+            for doc in &project.documents {
+                if !expand_tilde(doc).is_file() {
+                    report
+                        .dangling_project_docs
+                        .push((slug.clone(), doc.display().to_string()));
+                }
+            }
+        }
+
         Ok(report)
     }
 }
@@ -670,6 +1019,118 @@ fn ensure_parent(path: &Path) -> Result<()> {
 
 fn strip_hash_prefix(hash: &str) -> &str {
     hash.split_once(':').map(|(_, hex)| hex).unwrap_or(hash)
+}
+
+/// Expand a leading `~/` (or bare `~`) in a path using `$HOME`. Any other path is returned
+/// unchanged. Kept dependency-free (no `shellexpand`) since this is the only place in the
+/// crate that needs it and only the home shorthand matters for project document paths.
+fn expand_tilde(path: &Path) -> PathBuf {
+    let Some(s) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let Ok(home) = std::env::var("HOME") else {
+        return path.to_path_buf();
+    };
+    if s == "~" {
+        PathBuf::from(home)
+    } else if let Some(rest) = s.strip_prefix("~/") {
+        PathBuf::from(home).join(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// The reverse "used in" map produced by [`Library::scan_usage`]: for each citation key, the
+/// `(project slug, document path)` pairs that cite it. Derived, never authoritative.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct UsageMap {
+    /// `key -> [(project slug, document path), …]`.
+    pub by_key: HashMap<String, Vec<(String, String)>>,
+    /// `(project slug, path)` documents that could not be read during the scan.
+    #[serde(skip)]
+    pub unreadable: Vec<(String, PathBuf)>,
+}
+
+/// The edge that `subject`'s target must carry pointing back at `subject`. For an
+/// asymmetric predicate this is the inverse predicate as an `inverse: true` edge; for the
+/// self-inverse `Related` it is a plain forward edge (symmetric).
+fn counterpart(predicate: Predicate, subject: &str) -> Relation {
+    Relation {
+        predicate: predicate.inverse(),
+        target: subject.to_string(),
+        inverse: !predicate.is_self_inverse(),
+    }
+}
+
+/// Normalize a requested forward-edge list for `key`: drop self-links, force `inverse`
+/// off, and dedup by `(predicate, target)` identity (first occurrence wins).
+fn normalize_forward(key: &str, forward: &[Relation]) -> Vec<Relation> {
+    let mut seen: HashSet<(Predicate, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for r in forward {
+        if r.target == key {
+            continue;
+        }
+        if seen.insert((r.predicate, r.target.clone())) {
+            out.push(Relation::forward(r.predicate, r.target.clone()));
+        }
+    }
+    out
+}
+
+/// Stable ordering for a note's relation list: forward edges before inverse, then by
+/// predicate name, then target — so diffs stay minimal across rewrites.
+fn sort_relations(relations: &mut [Relation]) {
+    relations.sort_by(|a, b| {
+        a.inverse
+            .cmp(&b.inverse)
+            .then_with(|| predicate_key(a.predicate).cmp(predicate_key(b.predicate)))
+            .then_with(|| a.target.cmp(&b.target))
+    });
+}
+
+/// A stable sort key for a predicate (its serialized name).
+fn predicate_key(p: Predicate) -> &'static str {
+    use Predicate::*;
+    match p {
+        Cites => "cites",
+        CitedBy => "cited-by",
+        Critiques => "critiques",
+        CritiquedBy => "critiqued-by",
+        Reviews => "reviews",
+        ReviewedBy => "reviewed-by",
+        CommentaryOn => "commentary-on",
+        HasCommentary => "has-commentary",
+        TranslationOf => "translation-of",
+        HasTranslation => "has-translation",
+        EditionOf => "edition-of",
+        HasEdition => "has-edition",
+        Supersedes => "supersedes",
+        SupersededBy => "superseded-by",
+        RepliesTo => "replies-to",
+        RepliedToBy => "replied-to-by",
+        Expands => "expands",
+        ExpandedBy => "expanded-by",
+        Related => "related",
+    }
+}
+
+/// The result of [`Library::reconcile_relations`]. Empty means every note's maintained
+/// relation edges already match the forward edges that are the source of truth.
+#[derive(Debug, Default)]
+pub struct RelationReconcile {
+    /// `(note key, predicate, target)` — a maintained edge that should exist but didn't.
+    pub missing: Vec<(String, Predicate, String)>,
+    /// `(note key, predicate, target)` — an `inverse` edge with no forward edge behind it.
+    pub orphaned: Vec<(String, Predicate, String)>,
+    /// `(note key, predicate, target)` — a forward edge whose target has no entry.
+    pub dangling_targets: Vec<(String, Predicate, String)>,
+}
+
+impl RelationReconcile {
+    pub fn is_clean(&self) -> bool {
+        self.missing.is_empty() && self.orphaned.is_empty() && self.dangling_targets.is_empty()
+    }
 }
 
 /// The result of [`Library::fsck`]. Empty means the library is structurally clean.
@@ -694,6 +1155,11 @@ pub struct FsckReport {
     /// `(entry key, pdf_hash)` where a sidecar's `pdf_hash` matches no attachment recorded
     /// for that entry.
     pub annotation_pdf_unmatched: Vec<(String, String)>,
+    /// Typed-relation reconciliation findings (desynced inverse edges, dangling targets).
+    /// Repaired by [`Library::reconcile_relations`]`(true)`.
+    pub relations: RelationReconcile,
+    /// `(project slug, document path)` where a project's declared document does not exist.
+    pub dangling_project_docs: Vec<(String, String)>,
 }
 
 impl FsckReport {
@@ -711,5 +1177,9 @@ impl FsckReport {
             + self.unparseable_annotations.len()
             + self.annotation_key_mismatches.len()
             + self.annotation_pdf_unmatched.len()
+            + self.relations.missing.len()
+            + self.relations.orphaned.len()
+            + self.relations.dangling_targets.len()
+            + self.dangling_project_docs.len()
     }
 }

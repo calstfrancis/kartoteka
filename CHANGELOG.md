@@ -2,6 +2,51 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0-dev5] — 2026-07-25 — Development build
+
+The first M2 knowledge-base slice, at the `fond-bib` library layer: typed relationships,
+reading/workflow note fields, an AI-metadata sidecar, and project-based usage tracking.
+GUI/index surfacing of these is deferred (see `docs/M2-SPEC.md`).
+
+### Added — Typed relationships (M2, `fond-bib`)
+
+The first slice of the M2 knowledge-base layer (`docs/M2-SPEC.md` §1). Item relationships
+gain typed predicates, upgrading the previous untyped `related` links:
+
+- **`relations:` note frontmatter** with a closed predicate vocabulary (`cites`/`cited-by`,
+  `critiques`/`critiqued-by`, `reviews`/`reviewed-by`, `commentary-on`/`has-commentary`,
+  `translation-of`/`has-translation`, `edition-of`/`has-edition`, `supersedes`/
+  `superseded-by`, `replies-to`/`replied-to-by`, `expands`/`expanded-by`, and the symmetric
+  `related`). An unknown predicate is a hard parse error, never a silent broken edge.
+- **Automatic inverse maintenance** — asserting `a cites b` writes the forward edge on `a`
+  and the `cited-by` inverse on `b`; the symmetric `related` is stored as a plain forward
+  edge on both. `Library::{set_relations, add_relation, remove_relation}` keep both sides in
+  sync, preserving each note's inbound inverse edges when its own forward edges are edited.
+- **`fsck` reconciliation** — `reconcile_relations` (wired into `fsck` report-only; repair
+  via `reconcile_relations(true)`) rebuilds derived inverse edges from the forward edges that
+  are the source of truth: adds missing, removes orphaned, flags dangling targets. Idempotent.
+- **`related` → `relations` migration** — `migrate_related_to_relations` lifts legacy
+  untyped links into typed `related` edges and clears the old field; idempotent.
+
+### Added — Reading/workflow fields & AI sidecar (M2, `fond-bib`)
+
+- **Note frontmatter fields** — `progress` (page/of reading position), `cite` (per-entry
+  short form + preferred style), and `tasks` (per-item to-dos). All optional and elided when
+  empty, so existing notes round-trip byte-identically.
+- **`ai/<key>.yml` sidecar** — AI-generated summary/keywords/concepts/claims/counterarguments
+  with a provenance header (model id, timestamp, source hash). Committed but never
+  authoritative: `write_ai` writes solely to `ai/`, structurally guaranteeing AI output can
+  never overwrite curated note/entry fields. `AiMetadata`, `Library::{load_ai, write_ai}`.
+
+### Added — Projects & usage tracking (M2, `fond-bib`)
+
+- **`projects/<slug>.yml`** — a named project declaring the Typst documents it comprises.
+  `Project`, `Library::{load_project, save_project, project_slugs}`.
+- **Usage scan** — `scan_usage`/`write_usage` parse each project's Typst documents for
+  `@key` citations and build the reverse "used in" map, persisted to `.kartoteka/usage.json`
+  (derived, gitignored — never written into notes). `fsck` flags project documents that
+  don't exist.
+
 ## [0.1.0-dev4] — 2026-07-24 — Development build
 
 The full headless roadmap (Milestones 1–5 plus cross-cutting search) is implemented — the

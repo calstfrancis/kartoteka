@@ -8,6 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{BibError, Result};
+use crate::relation::Relation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,6 +32,43 @@ pub struct Attachment {
     pub pages: Option<u32>,
 }
 
+/// Coarse reading position (§8). Pairs with `read-status: reading`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Progress {
+    pub page: u32,
+    pub of: u32,
+}
+
+/// Per-entry citation preferences (§13). `preferred_style` is advisory to export; `short`
+/// is a hand-authored short form. Citation *history* is derived UI state, not stored here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CitePrefs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_style: Option<String>,
+}
+
+impl CitePrefs {
+    pub fn is_empty(&self) -> bool {
+        self.short.is_none() && self.preferred_style.is_none()
+    }
+}
+
+/// A per-item to-do (§20). Lives with the item so it merges per-key and is `vim`-fixable; a
+/// global task view is a derived aggregation over these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Task {
+    pub text: String,
+    #[serde(default)]
+    pub done: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct NoteFrontmatter {
@@ -46,9 +84,25 @@ pub struct NoteFrontmatter {
     pub date_read: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
-    /// Citation keys of related entries (symmetric — see `Library::set_related`).
+    /// Citation keys of related entries (legacy untyped "see also" — see
+    /// `Library::set_related`). Retained for back-compat; `kartoteka migrate` lifts these
+    /// into `relations` with `predicate: related`. Kept indefinitely for anyone who never
+    /// migrates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<String>,
+    /// Typed relationship edges (see `docs/M2-SPEC.md` §1 and `Library::set_relations`).
+    /// Holds both user-authored forward edges and Kartoteka-maintained inverse edges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<Relation>,
+    /// Coarse reading position (§8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
+    /// Per-entry citation preferences (§13).
+    #[serde(default, skip_serializing_if = "CitePrefs::is_empty")]
+    pub cite: CitePrefs,
+    /// Per-item to-dos (§20).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<Task>,
 }
 
 /// A parsed note: frontmatter plus the Markdown body prose.
@@ -156,6 +210,33 @@ mod tests {
         assert_eq!(note.body, text);
         // And it round-trips to exactly the same bytes.
         assert_eq!(note.to_text().unwrap(), text);
+    }
+
+    #[test]
+    fn round_trips_small_fields() {
+        let text = "---\nprogress:\n  page: 112\n  of: 420\ncite:\n  short: Cone, Black Theology\n  preferred-style: chicago-author-date\ntasks:\n  - text: Verify the Barth quotation\n    done: false\n    due: 2026-08-15\n  - text: Re-read chapter 3\n    done: true\n---\nBody.\n";
+        let note = Note::parse(text, &p()).unwrap();
+        assert_eq!(note.frontmatter.progress, Some(Progress { page: 112, of: 420 }));
+        assert_eq!(note.frontmatter.cite.short.as_deref(), Some("Cone, Black Theology"));
+        assert_eq!(note.frontmatter.tasks.len(), 2);
+        assert!(note.frontmatter.tasks[1].done);
+        // Round-trips unchanged.
+        assert_eq!(Note::parse(&note.to_text().unwrap(), &p()).unwrap(), note);
+    }
+
+    #[test]
+    fn round_trips_typed_relations() {
+        use crate::relation::Predicate;
+        let text = "---\nrelations:\n  - predicate: critiques\n    target: barth1932kd\n  - predicate: cited-by\n    target: cone1975god\n    inverse: true\n---\nBody.\n";
+        let note = Note::parse(text, &p()).unwrap();
+        assert_eq!(note.frontmatter.relations.len(), 2);
+        assert_eq!(note.frontmatter.relations[0].predicate, Predicate::Critiques);
+        assert!(!note.frontmatter.relations[0].inverse);
+        assert_eq!(note.frontmatter.relations[1].predicate, Predicate::CitedBy);
+        assert!(note.frontmatter.relations[1].inverse);
+        // Round-trips through the model unchanged.
+        let reparsed = Note::parse(&note.to_text().unwrap(), &p()).unwrap();
+        assert_eq!(note, reparsed);
     }
 
     #[test]

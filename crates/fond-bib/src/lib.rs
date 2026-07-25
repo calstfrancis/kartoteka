@@ -8,6 +8,7 @@
 
 #[cfg(feature = "acquire")]
 pub mod acquire;
+pub mod ai;
 pub mod annotation;
 pub mod collection;
 pub mod entry;
@@ -16,16 +17,21 @@ pub mod import;
 pub mod key;
 pub mod library;
 pub mod note;
+pub mod project;
+pub mod relation;
 pub mod render;
 pub mod util;
 pub mod zotero;
 
+pub use ai::AiMetadata;
 pub use annotation::{Annotation, AnnotationKind, AnnotationSidecar};
 pub use collection::Collection;
 pub use error::{BibError, Result};
 pub use import::{ImportOptions, ImportReport};
-pub use library::{FsckReport, Library};
-pub use note::{Attachment, Note, NoteFrontmatter, ReadStatus};
+pub use library::{FsckReport, Library, RelationReconcile, UsageMap};
+pub use note::{Attachment, CitePrefs, Note, NoteFrontmatter, Progress, ReadStatus, Task};
+pub use project::Project;
+pub use relation::{Predicate, Relation};
 pub use render::{resolve_style, style_from_csl, RenderedEntry};
 
 // Re-export the CSL output format and style type so the CLI need not depend on
