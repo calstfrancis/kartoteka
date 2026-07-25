@@ -1,8 +1,9 @@
 # Kartoteka M3 — Implementation Spec: Knowledge-Graph Nodes
 
-Status: **in progress.** PRs 1–3 (node file type + slug + `nodes/` in `init`; node-oriented
-predicate vocabulary; polymorphic target resolution + relation hosts spanning notes ∪ nodes)
-are **built and tested**; PRs 4–8 not yet. See the PR sequence and `docs/STATUS.md`.
+Status: **in progress.** PRs 1–4 (node file type + slug + `nodes/` in `init`; node-oriented
+predicate vocabulary; polymorphic target resolution + relation hosts spanning notes ∪ nodes;
+fsck node checks) are **built and tested**; PRs 5–8 not yet. See the PR sequence and
+`docs/STATUS.md`.
 
 > **Naming note.** "M3" here is the **knowledge-base extension track** (M2 = typed relations
 > etc., already built; M3 = this), *not* `ROADMAP.md`'s "Milestone 3" (bibliography output,
@@ -136,11 +137,16 @@ This is the one part that genuinely re-touches M2 code; everything else is addit
 
 ---
 
-## 4. `fsck` additions
+## 4. `fsck` additions — ✅ **done (PR 4)**
 
-- Node files parse; filename/slug agreement (mirrors entry key-filename check).
-- Relation targets resolve to entry **or** node (extends the M2 dangling-target check).
-- Inverse-edge reconciliation spans notes ∪ nodes (§3).
+- ✅ Node files parse (`unparseable_nodes`). Filename/slug agreement: since a node stores no
+  inner slug and slugs are *stable across label edits*, "agreement" is that the filename is
+  itself a well-formed slug (lowercase alnum + single hyphens); a hand-made file with spaces
+  or uppercase — unreachable as a target — is flagged (`malformed_node_slugs`). We do **not**
+  enforce `node_slug(label) == filename`, which would wrongly flag a legitimately renamed node.
+- ✅ Relation targets resolve to entry **or** node (landed in PR 3's `reconcile_relations`).
+- ✅ Inverse-edge reconciliation spans notes ∪ nodes (PR 3, §3). PR 4 also made `reconcile`
+  corruption-tolerant: an unparseable host is skipped and reported, not fatal.
 - Orphaned identifier check is out of scope (we don't validate ORCID/VIAF against the network).
 
 ---
@@ -195,7 +201,8 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
    (note-or-node) refactor of `relations`/`set_relations`/`add`/`remove`/`reconcile_relations`
    to span notes ∪ nodes. `fsck` covers node relations via `reconcile`. No M2 behaviour change
    when no nodes are present (all M2 relation tests still pass) + new node-spanning tests.
-4. `fsck` node checks + tests.
+4. ✅ **Done.** `fsck` node checks: parse (`unparseable_nodes`) + well-formed-slug filename
+   (`malformed_node_slugs`); `reconcile` made corruption-tolerant. Tests added.
 5. `fond-index` node indexing + `kind` scoping + tests.
 6. GUI: node list/editor.
 7. GUI: nodes as relation targets + node-appropriate predicates.

@@ -578,3 +578,42 @@ fn reconcile_flags_target_that_is_neither_entry_nor_node() {
     assert_eq!(report.dangling_targets[0].0, "augustine");
     assert_eq!(report.dangling_targets[0].2, "ghost");
 }
+
+#[test]
+fn fsck_clean_with_valid_nodes() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["augustine0426city"]);
+    seed_node(&lib, "augustine", "person", "Augustine of Hippo");
+    lib.set_relations(
+        "augustine",
+        &[Relation::forward(Predicate::Authored, "augustine0426city")],
+    )
+    .unwrap();
+    let report = lib.fsck().unwrap();
+    assert!(report.is_clean(), "expected clean, got {report:?}");
+}
+
+#[test]
+fn fsck_flags_unparseable_node() {
+    let (_dir, lib) = temp_library();
+    // A node file with no frontmatter (and thus no label) is a parse error.
+    fs::write(lib.node_path("broken"), "just prose, no frontmatter\n").unwrap();
+    let report = lib.fsck().unwrap();
+    assert_eq!(report.unparseable_nodes.len(), 1, "{report:?}");
+    assert!(report.unparseable_nodes[0].0.contains("broken.md"));
+}
+
+#[test]
+fn fsck_flags_malformed_node_slug() {
+    let (_dir, lib) = temp_library();
+    // A hand-created file whose name isn't a valid slug (spaces + uppercase).
+    fs::write(
+        lib.node_path("Augustine Of Hippo"),
+        "---\nnode-type: person\nlabel: Augustine of Hippo\n---\n",
+    )
+    .unwrap();
+    let report = lib.fsck().unwrap();
+    assert_eq!(report.malformed_node_slugs, vec!["Augustine Of Hippo"]);
+    // The file itself parses fine — only its name is the problem.
+    assert!(report.unparseable_nodes.is_empty());
+}

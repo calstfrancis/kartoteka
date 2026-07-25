@@ -2,6 +2,20 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased]
+
+### Added — M3 fsck node checks (`fond-bib`, PR 4 of the sequence)
+
+- **Node files are fsck-checked** — `fsck` now parses every `nodes/<slug>.md` and flags any
+  that don't (`unparseable_nodes`), and flags filenames that aren't a well-formed slug —
+  lowercase alphanumerics joined by single hyphens — so a hand-created node with spaces or
+  uppercase, which couldn't serve as a reachable relation target, is caught
+  (`malformed_node_slugs`). The inverse-edge reconciliation across notes ∪ nodes already
+  arrived with PR 3. See `docs/M3-SPEC.md` §4.
+- **Reconciliation is corruption-tolerant** — `reconcile_relations` (and thus `fsck`) now
+  skips a relation host whose backing file doesn't parse instead of aborting the whole pass;
+  the parse failure is reported by the dedicated fsck check rather than surfacing as an error.
+
 ## [0.1.0-dev6] — 2026-07-25 — Development build
 
 The M2 GUI/index surfacing plus the first three M3 knowledge-graph slices at the `fond-bib`

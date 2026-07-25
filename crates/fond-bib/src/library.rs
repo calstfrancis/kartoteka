@@ -500,7 +500,9 @@ impl Library {
     /// file type the target resolves to. A target that resolves to neither is dangling.
     ///
     /// With `fix == false` it only reports; with `fix == true` it rewrites the hosts that
-    /// need it. Idempotent: a second run with `fix` finds nothing.
+    /// need it. Idempotent: a second run with `fix` finds nothing. Best-effort against a
+    /// corrupt vault: a host whose backing file doesn't parse is skipped here (and reported
+    /// separately by [`fsck`](Self::fsck)) rather than aborting the whole pass.
     pub fn reconcile_relations(&self, fix: bool) -> Result<RelationReconcile> {
         let mut report = RelationReconcile::default();
         let key_set = self.existing_keys()?;
@@ -521,7 +523,12 @@ impl Library {
         // expected[owner] = edges that owner must carry because of others' forward edges.
         let mut expected: HashMap<String, Vec<Relation>> = HashMap::new();
         for id in &host_ids {
-            let host = self.load_host(id)?;
+            // A host whose backing file doesn't parse is skipped here (best-effort): fsck's
+            // dedicated entry/node parse checks report it, and we can't reconcile what we
+            // can't read.
+            let Ok(host) = self.load_host(id) else {
+                continue;
+            };
             for r in host.relations().iter().filter(|r| !r.inverse) {
                 if !is_valid_target(&r.target) {
                     report
@@ -538,8 +545,11 @@ impl Library {
 
         for id in &host_ids {
             // Load the host (an entry key with no note yet loads as an empty note — it may
-            // still be owed a maintained inverse edge from another host's forward edge).
-            let mut host = self.load_host(id)?;
+            // still be owed a maintained inverse edge from another host's forward edge). An
+            // unparseable host is skipped, as in the gathering pass above.
+            let Ok(mut host) = self.load_host(id) else {
+                continue;
+            };
             let want = expected.remove(id).unwrap_or_default();
             let want_ids: HashSet<(Predicate, &str)> = want.iter().map(|r| r.identity()).collect();
 
@@ -998,6 +1008,20 @@ impl Library {
             }
         }
 
+        // Node files: parse + filename is a well-formed slug (the node analogue of the entry
+        // key/filename check — a node stores no inner slug, so "agreement" is that the
+        // filename is itself a valid, reachable slug; see docs/M3-SPEC.md §4).
+        for slug in self.node_slugs()? {
+            if !is_valid_node_slug(&slug) {
+                report.malformed_node_slugs.push(slug.clone());
+            }
+            if let Err(e) = self.load_node(&slug) {
+                report
+                    .unparseable_nodes
+                    .push((self.node_path(&slug).display().to_string(), e.to_string()));
+            }
+        }
+
         // Collections: dangling key references.
         for slug in self.collection_slugs()? {
             let collection = self.load_collection(&slug)?;
@@ -1121,6 +1145,19 @@ fn ensure_parent(path: &Path) -> Result<()> {
 
 fn strip_hash_prefix(hash: &str) -> &str {
     hash.split_once(':').map(|(_, hex)| hex).unwrap_or(hash)
+}
+
+/// True when `s` has the canonical node-slug shape: non-empty, lowercase ASCII alphanumerics
+/// grouped into words joined by single hyphens, with no leading/trailing/double hyphen. This
+/// is exactly the shape [`key::node_slug`](crate::key::node_slug) produces (plus its `b`/`c`
+/// collision suffixes), so a hand-created node file with spaces or uppercase is flagged.
+fn is_valid_node_slug(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && !s.contains("--")
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Expand a leading `~/` (or bare `~`) in a path using `$HOME`. Any other path is returned
@@ -1301,6 +1338,11 @@ pub struct FsckReport {
     pub key_filename_mismatches: Vec<(String, String)>,
     /// `(entry path, parse error)`.
     pub unparseable_entries: Vec<(String, String)>,
+    /// `(node path, parse error)`.
+    pub unparseable_nodes: Vec<(String, String)>,
+    /// Node filenames that are not a well-formed slug (lowercase alphanumerics joined by
+    /// single hyphens) — so they can't serve as a reachable relation target.
+    pub malformed_node_slugs: Vec<String>,
     /// `(entry key, attachment hash with no blob present)`.
     pub missing_attachments: Vec<(String, String)>,
     /// Blob filenames in `attachments/` with no record referencing them.
@@ -1330,6 +1372,8 @@ impl FsckReport {
         self.dangling_collection_refs.len()
             + self.key_filename_mismatches.len()
             + self.unparseable_entries.len()
+            + self.unparseable_nodes.len()
+            + self.malformed_node_slugs.len()
             + self.missing_attachments.len()
             + self.orphaned_attachments.len()
             + self.hash_mismatched_attachments.len()

@@ -22,9 +22,10 @@ the single most confusing thing about the docs:
    - **Extension-M2** = typed relations, facets, small note fields, AI sidecar, projects/usage
      — **built and tested** (see below).
    - **Extension-M3** = knowledge-graph nodes (people/concepts/schools) + author IDs —
-     **PRs 1–3 of 8 built** (node file type + slug helper + `nodes/` in `init`; node-oriented
+     **PRs 1–4 of 8 built** (node file type + slug helper + `nodes/` in `init`; node-oriented
      predicate vocabulary + advisory `forward_choices_for`; polymorphic `resolve_target` +
-     relation hosts spanning notes ∪ nodes); PRs 4–8 still to do (`M3-SPEC.md`).
+     relation hosts spanning notes ∪ nodes; fsck node checks); PRs 5–8 still to do
+     (`M3-SPEC.md`).
 
 When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 "Milestone 2/3" it means the **original brief**. They are unrelated.
@@ -34,43 +35,32 @@ When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 ## Where things stand right now
 
 ### Committed + tagged (unpushed)
-- **`v0.1.0-dev5`** — the extension-M2 `fond-bib` layer (typed relations, note fields, AI
-  sidecar, projects/usage). Commit + tag exist on `main`; **not pushed**. Ready for Cal to
-  run `./dev-build.sh` in `kartoteka/`.
+- **`v0.1.0-dev6`** (commit `4e31c2e`, tag `v0.1.0-dev6`) — folds in the extension-M2 index +
+  GUI surfacing (`5614503`) **and** M3 PRs 1–3:
+  - **PR 1** (`11b8ad9`) — `crates/fond-bib/src/node.rs` (node file type
+    `NodeType`/`NodeFrontmatter`/`Node`), `node_slug` in `key.rs`, `nodes/` wired into
+    `Library` (`init` + `node_path`/`node_slugs`/`load_node`/`write_node`), `split_frontmatter`
+    factored into `util`.
+  - **PR 2** (`c733bdc`) — node-oriented `Predicate` pairs (influenced/authored/member-of/
+    about/part-of + inverses); extended `inverse`/`label`/`predicate_key`/`forward_choices`;
+    `TargetKind` + `forward_choices_for` (advisory curation, `From<NodeType>`).
+  - **PR 3** (`63c36a4`) — `resolve_target` (`Target::{Entry,Node,Dangling}`) + private
+    `RelationHost` refactor so relations span notes ∪ nodes; no M2 behaviour change absent nodes.
+  - `cargo-sources.json` was regenerated (byte-identical — only local crate versions moved).
+  **Not pushed.** Ready for Cal to run `./dev-build.sh` in `kartoteka/`.
 
-### Committed on top of dev5 (not tagged, not pushed) — commit `5614503`
-The extension-M2 index + GUI surfacing, under `CHANGELOG.md` `[Unreleased]`:
-- `fond-index`: `facet` field (faceted-tag scoping) + `ai` field (AI-text search).
-- GUI detail panel: typed relations displayed grouped by predicate.
-- GUI: the **"Relations…" editing dialog** (typed forward edges via `set_relations`), verified
-  end-to-end headless.
-- Docs: `M2-GUI-PLAN.md`, `M3-SPEC.md`, `STATUS.md`, disambiguation banners.
-
-This is a plain work commit (not a dev build): no version bump, no tag. The `[Unreleased]`
-CHANGELOG section will fold into the next dev tag when one is prepped.
-
-### Committed on top of dev5 (not tagged, not pushed) — M3 PRs 1–3
-- **PR 1** (commit `11b8ad9`) — `crates/fond-bib/src/node.rs` (node file type:
-  `NodeType`/`NodeFrontmatter`/`Node`), `node_slug` in `key.rs`, `nodes/` wired into `Library`
-  (`init` + `node_path`/`node_slugs`/`load_node`/`write_node`), `split_frontmatter` factored
-  into `util`.
-- **PR 2** (commit `c733bdc`) — node-oriented `Predicate` pairs (influenced/authored/
-  member-of/about/part-of + inverses), extended `inverse`/`label`/`predicate_key`/
-  `forward_choices`, and `TargetKind` + `forward_choices_for` (advisory domain curation,
-  `From<NodeType>`).
-- **PR 3** — `resolve_target` (`Target::{Entry,Node,Dangling}`) + a private `RelationHost`
-  (note-or-node) refactor so `relations`/`set_relations`/`add`/`remove`/`reconcile_relations`
-  span notes ∪ nodes. `fsck` covers node relations via `reconcile`. No M2 behaviour change
-  when nodes are absent.
-
-All under `[Unreleased]` in `CHANGELOG.md`; `cargo test --workspace` (58 tests total) and
-`cargo clippy --workspace` both green. Next dev build would be `v0.1.0-dev6`.
+### Committed on top of dev6 (not tagged, not pushed) — M3 PR 4
+- **PR 4** — `fsck` node checks: parse (`unparseable_nodes`) + well-formed-slug filename
+  (`malformed_node_slugs`); `reconcile_relations` made corruption-tolerant (skips + reports an
+  unparseable host instead of erroring). Under `CHANGELOG.md` `[Unreleased]`; folds into the
+  next dev tag when one is prepped.
 
 ### Working tree
-Clean once PR 3 is committed.
+Clean once PR 4 is committed.
 
 ### Test / quality state
-- Whole workspace: **94 tests passing, 0 clippy warnings** at last run.
+- Whole workspace: **116 tests passing, 0 clippy warnings** at last run (up from 94 pre-M3;
+  fond-bib carries the node/predicate/relation-host/fsck additions).
 - `cargo test --workspace` and `cargo clippy --workspace` are the gates.
 
 ---
@@ -109,11 +99,12 @@ Next candidates (pick per Cal):
 - **Extension-M2 leftovers** (`M2-GUI-PLAN.md` §4): "Used in" panel (needs GUI scan trigger +
   `usage.json` loader), facet chip grouping in the editor, "promote AI keyword → tag", global
   task view, in-GUI editing of progress/cite/tasks.
-- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **PRs 1–3 done** (node file type +
+- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **PRs 1–4 done** (node file type +
   slug + `nodes/`; node-oriented predicates + `forward_choices_for`; polymorphic targets +
-  relation hosts). Next is **PR 4**: `fsck` node checks — node files parse, filename/slug
-  agreement (mirrors the entry key-filename check). Inverse reconciliation across notes ∪
-  nodes already lands via PR 3's `reconcile_relations`.
+  relation hosts; fsck node checks). Next is **PR 5**: `fond-index` node indexing — index nodes
+  as their own document kind (`label`, `aliases`, `node-type`, `identifiers`, body) with a
+  `kind:node` discriminator; add a `kind` field to the search hit (author/year empty for nodes)
+  rather than a second result type.
 
 ---
 
