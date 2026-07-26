@@ -34,43 +34,28 @@ When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 ## Where things stand right now
 
 ### Committed + tagged (unpushed)
-- **`v0.1.0-dev6`** (commit `4e31c2e`, tag `v0.1.0-dev6`) — folds in the extension-M2 index +
-  GUI surfacing (`5614503`) **and** M3 PRs 1–3:
-  - **PR 1** (`11b8ad9`) — `crates/fond-bib/src/node.rs` (node file type
-    `NodeType`/`NodeFrontmatter`/`Node`), `node_slug` in `key.rs`, `nodes/` wired into
-    `Library` (`init` + `node_path`/`node_slugs`/`load_node`/`write_node`), `split_frontmatter`
-    factored into `util`.
-  - **PR 2** (`c733bdc`) — node-oriented `Predicate` pairs (influenced/authored/member-of/
-    about/part-of + inverses); extended `inverse`/`label`/`predicate_key`/`forward_choices`;
-    `TargetKind` + `forward_choices_for` (advisory curation, `From<NodeType>`).
-  - **PR 3** (`63c36a4`) — `resolve_target` (`Target::{Entry,Node,Dangling}`) + private
-    `RelationHost` refactor so relations span notes ∪ nodes; no M2 behaviour change absent nodes.
-  - `cargo-sources.json` was regenerated (byte-identical — only local crate versions moved).
+- **`v0.1.0-dev7`** (commit + tag `v0.1.0-dev7`) — **the complete M3 knowledge-graph track**,
+  folding in everything since dev5: the extension-M2 index/GUI surfacing plus M3 PRs 1–8.
+  - **PRs 1–3** (`11b8ad9`/`c733bdc`/`63c36a4`, first shipped in the dev6 tag) — node file type
+    (`NodeType`/`NodeFrontmatter`/`Node`, `node_slug`, `nodes/` in `Library`); node-oriented
+    `Predicate` vocabulary + `TargetKind`/`forward_choices_for`; `resolve_target` + `RelationHost`
+    so relations span notes ∪ nodes.
+  - **PR 4** (`faf030a`) — `fsck` node checks (`unparseable_nodes`, `malformed_node_slugs`);
+    `reconcile_relations` made corruption-tolerant.
+  - **PR 5** (`1dc5437`) — `fond-index` node indexing with a `kind` discriminator (`kind:node`,
+    `type:person`), reusing title/type/note + alias/identifier; `SearchHit.kind`.
+  - **PR 6** (`1501d0a`) — GUI Nodes manager (menu → "Nodes…"): filterable list + create/edit
+    editor. No delete yet.
+  - **PR 7** (`bf9973f`) — GUI: `relations_dialog` offers nodes as targets with predicate
+    dropdowns curated by `forward_choices_for(TargetKind)`.
+  - **PR 8** (`c8745b7`) — GUI: node editor "Relations" neighbours section + node-label
+    resolution in entry relation lists; "Link author…" creates/links a person node per author.
+  - `cargo-sources.json` unchanged (only the two local crate versions moved; no dependency set
+    change, so the generator emits byte-identical output).
   **Not pushed.** Ready for Cal to run `./dev-build.sh` in `kartoteka/`.
 
-### Committed on top of dev6 (not tagged, not pushed) — M3 PRs 4–6
-- **PR 4** — `fsck` node checks: parse (`unparseable_nodes`) + well-formed-slug filename
-  (`malformed_node_slugs`); `reconcile_relations` made corruption-tolerant (skips + reports an
-  unparseable host instead of erroring).
-- **PR 5** — `fond-index` indexes `nodes/` into the shared schema with a `kind` discriminator
-  (`kind:node`, `type:person`), reusing title/type/note + adding alias/identifier;
-  `SearchHit.kind` added; `kartoteka search --json` emits `kind`.
-- **PR 6** — GUI Nodes manager (`kartoteka-ui-gtk`): menu → "Nodes…" opens a filterable node
-  list + create/edit editor (type/label/aliases/identifiers/prose); slug-stable on edit,
-  label-derived collision-free slug on create; relations preserved; silent reindex on save.
-  No delete yet. Verified end-to-end headless (list + editor render correctly, no panics).
-- **PR 7** — GUI: `relations_dialog` now offers nodes as relation targets (label + type · slug)
-  alongside entries, with each row's predicate dropdown curated by
-  `forward_choices_for(TargetKind)`. Verified headless (a person node shows Related/Influenced).
-- **PR 8** — GUI: node editor "Relations" neighbours section + node-label resolution in entry
-  relation lists; "Link author…" creates/links a person node per author (family-name slug) and
-  relates it with `authored`. Verified headless (person node + authored/authored-by written).
-
-All under `CHANGELOG.md` `[Unreleased]`; fold into the next dev tag when one is prepped.
-**This completes M3.** A dev build (v0.1.0-dev7) is the natural next step.
-
 ### Working tree
-Clean once PR 8 is committed.
+Clean once the dev7 bump is committed.
 
 ### Test / quality state
 - Whole workspace: **117 tests passing, 0 clippy warnings** at last run (up from 94 pre-M3;

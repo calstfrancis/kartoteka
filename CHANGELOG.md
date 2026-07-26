@@ -2,7 +2,11 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased]
+## [0.1.0-dev7] — 2026-07-25 — Development build
+
+Completes the M3 knowledge-graph track: `fsck` node checks and node search indexing at the
+library layer, and the full node GUI — a Nodes manager (list + editor), nodes as relation
+targets with kind-curated predicates, node neighbours views, and author→node linkage.
 
 ### Added — M3 node detail & author→node linkage (`kartoteka-ui-gtk`, PR 8 of the sequence)
 
