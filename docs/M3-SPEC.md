@@ -1,9 +1,9 @@
 # Kartoteka M3 — Implementation Spec: Knowledge-Graph Nodes
 
-Status: **in progress.** PRs 1–5 (the whole non-GUI library layer) plus PRs 6–7 (GUI node
-list/editor; nodes as relation targets with curated predicates) are **built and tested**. Only
-PR 8 (node detail/neighbours + author→node linkage) remains. See the PR sequence and
-`docs/STATUS.md`.
+Status: **complete.** All 8 PRs are **built and tested** — the library layer (node files,
+predicate vocabulary, polymorphic targets + relation hosts, fsck checks, indexing) and the GUI
+(node manager, nodes as relation targets, node detail/neighbours, author→node linkage). See the
+PR sequence below and `docs/STATUS.md`.
 
 > **Naming note.** "M3" here is the **knowledge-base extension track** (M2 = typed relations
 > etc., already built; M3 = this), *not* `ROADMAP.md`'s "Milestone 3" (bibliography output,
@@ -178,10 +178,14 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
   curated to the target's kind via `Predicate::forward_choices_for(TargetKind)` (entry = Work;
   node = its `NodeType`), staying advisory (an out-of-set current predicate is appended so Save
   round-trips it). Verified headless: a person node shows Related/Influenced only.
-- **Node detail + graph view** — show a node's relations grouped by predicate (reuse the
-  detail-panel grouping already built for entries); optionally a simple graph/neighbours view.
-- **Author-node linkage** — offer to create/link a person node from an entry's author
-  (this is how §1 author IDs get captured in practice).
+- ✅ **Node detail + neighbours (PR 8)** — the node editor shows a read-only "Relations"
+  section: the node's edges grouped by predicate with targets resolved to display names
+  (via `group_relations_display`). Entry relation lists likewise resolve node targets to their
+  labels. A visual graph view stays deferred (open item 3).
+- ✅ **Author-node linkage (PR 8)** — an entry's "Link author…" action creates/links a person
+  node per author (family-name slug) and relates it with `authored`; the user then adds §1
+  identifiers in the node editor. Verified end-to-end headless (person node + `authored`/
+  `authored-by` edges written correctly).
 
 ---
 
@@ -217,7 +221,9 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
    edit editor (type/label/aliases/identifiers/prose). Verified end-to-end headless.
 7. ✅ **Done.** GUI: `relations_dialog` offers nodes as targets with per-row predicate
    dropdowns curated by `forward_choices_for(TargetKind)`. Verified end-to-end headless.
-8. GUI: node detail / neighbours view + author→node linkage.
+8. ✅ **Done.** GUI: node editor "Relations" neighbours section + node-label resolution in
+   entry relation lists (`group_relations_display`/`target_display`); "Link author…" creates/
+   links a person node per author and relates it with `authored`. Verified end-to-end headless.
 
 Each PR additive and independently shippable; a vault written by an earlier PR parses under
 a later one.
@@ -233,8 +239,9 @@ a later one.
    matching M2. `forward_choices_for(TargetKind)` surfaces domain-appropriate predicates but
    never restricts what can be stored; `fsck` does *not* validate predicate domains. Revisit
    only if a domain-mismatch warning proves wanted later.
-3. **Graph view depth** — is a grouped-relations list per node enough for M3, with a visual
-   graph deferred, or is the visual graph part of the M3 bar?
+3. ~~**Graph view depth**~~ — **Resolved by shipping: the grouped-relations list per node is
+   the M3 bar** (node editor "Relations" section); a visual graph/neighbours canvas stays
+   deferred to a future track. Reopen if a visual graph becomes wanted.
 4. ~~**Slug scheme for concepts/events**~~ — **PR 1 implements kebab-of-label for all types**
    (`node_slug`: ASCII-fold each whitespace-separated word, join with `-`). The spec's
    "person → family-name-ish slug" nuance is deferred to the author→node linkage PR (8),

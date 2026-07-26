@@ -4,6 +4,21 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [Unreleased]
 
+### Added — M3 node detail & author→node linkage (`kartoteka-ui-gtk`, PR 8 of the sequence)
+
+- **Author → node linkage** — an entry's detail panel gains a **Link author…** action: it
+  offers to create a person node for each author (or link an existing one whose family-name
+  slug already exists) and relate it to the entry with `authored`. This is how §1 author
+  identifiers (ORCID/VIAF/Wikidata) get captured — link the author, then add identifiers in
+  the node editor. A new person node's slug is the author's family name.
+- **Node neighbours view** — the node editor now shows a read-only **Relations** section: the
+  node's edges grouped by predicate, targets resolved to display names (e.g. "Authored: Black
+  Theology and Black Power").
+- **Node labels in entry relations** — an entry's relation list now resolves a node target to
+  its label instead of showing the raw slug (e.g. "Authored by: James H. Cone").
+
+This completes the M3 knowledge-graph track. Verified end-to-end headless.
+
 ### Added — M3 nodes as relation targets (`kartoteka-ui-gtk`, PR 7 of the sequence)
 
 - **Relate entries to nodes** — the entry Relations dialog now lists every knowledge-graph

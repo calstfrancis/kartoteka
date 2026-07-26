@@ -3410,6 +3410,16 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         related_button.connect_clicked(move |_| relations_dialog(&state, &widgets, &key));
     }
     actions.append(&related_button);
+    // Author → node: create/link a person node for each author (feature §1 author IDs).
+    if !summary.author.is_empty() {
+        let author_button = gtk4::Button::with_label("Link author…");
+        author_button.set_tooltip_text(Some("Create or link a person node for each author"));
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        author_button.connect_clicked(move |_| link_authors_dialog(&state, &widgets, &key));
+        actions.append(&author_button);
+    }
     // "Locate" menu: open DOI / on the web (feature 10).
     let locate = gtk4::MenuButton::builder().label("Locate").build();
     {
@@ -3554,7 +3564,15 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
                             e.title.clone()
                         }
                     })
-                    .unwrap_or_else(|| rk.clone());
+                    // Not an entry — it may be a node slug; show the node label if so.
+                    .unwrap_or_else(|| {
+                        library
+                            .load_node(rk)
+                            .ok()
+                            .map(|n| n.frontmatter.label)
+                            .filter(|l| !l.is_empty())
+                            .unwrap_or_else(|| rk.clone())
+                    });
                 let link = gtk4::Button::with_label(&display);
                 link.add_css_class("flat");
                 link.set_tooltip_text(Some(rk));
@@ -4072,6 +4090,48 @@ fn node_type_label(t: fond_bib::NodeType) -> &'static str {
         .unwrap_or("Concept")
 }
 
+/// A human display name for a relation `target`: an entry's title, else a node's label, else
+/// the raw id (a dangling target). Lets relation lists read as names, not slugs.
+fn target_display(lib: &Library, target: &str) -> String {
+    if let Ok(parsed) = lib.load_entry(target) {
+        if let Some(t) = bibentry::title_string(&parsed.entry) {
+            if !t.is_empty() {
+                return t;
+            }
+        }
+    }
+    if let Ok(node) = lib.load_node(target) {
+        if !node.frontmatter.label.is_empty() {
+            return node.frontmatter.label;
+        }
+    }
+    target.to_string()
+}
+
+/// Group a relation list by predicate label, resolving each target to a display name and
+/// sorting for a stable, de-duplicated view. Returns `(predicate label, [display names])`.
+fn group_relations_display(
+    lib: &Library,
+    relations: &[fond_bib::Relation],
+) -> Vec<(String, Vec<String>)> {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+    for r in relations {
+        groups
+            .entry(r.predicate.label())
+            .or_default()
+            .push(target_display(lib, &r.target));
+    }
+    groups
+        .into_iter()
+        .map(|(label, mut names)| {
+            names.sort();
+            names.dedup();
+            (label.to_string(), names)
+        })
+        .collect()
+}
+
 /// Rebuild the search index quietly (no toast) so newly created/edited nodes and entries are
 /// findable. A no-op if no library is open or the rebuild fails (search just stays stale).
 fn rebuild_index_silent(state: &Rc<RefCell<AppState>>) {
@@ -4260,6 +4320,16 @@ fn show_node_editor(
         .unwrap_or_default();
     let body_text = existing.map(|n| n.body).unwrap_or_default();
 
+    // This node's relations, grouped by predicate with targets resolved to display names —
+    // a read-only "neighbours" view (relations are authored from the entry side).
+    let relation_groups: Vec<(String, Vec<String>)> = {
+        let st = state.borrow();
+        match st.library.as_ref() {
+            Some(lib) => group_relations_display(lib, &fm.relations),
+            None => Vec::new(),
+        }
+    };
+
     let dialog = adw::Window::new();
     dialog.set_title(Some(if slug.is_some() {
         "Edit node"
@@ -4331,6 +4401,26 @@ fn show_node_editor(
         "Identifiers (one per line — scheme: value)",
         &ident_scroll,
     ));
+
+    // Read-only neighbours: this node's relations grouped by predicate. Edited from the
+    // entry's "Relations…" dialog, not here.
+    if !relation_groups.is_empty() {
+        let section = gtk4::Box::new(Orientation::Vertical, 2);
+        let heading = gtk4::Label::new(Some("Relations"));
+        heading.add_css_class("dim-label");
+        heading.set_xalign(0.0);
+        heading.set_halign(gtk4::Align::Start);
+        section.append(&heading);
+        for (pred, names) in &relation_groups {
+            let line = gtk4::Label::new(Some(&format!("{pred}: {}", names.join(", "))));
+            line.set_wrap(true);
+            line.set_xalign(0.0);
+            line.set_halign(gtk4::Align::Start);
+            line.add_css_class("caption");
+            section.append(&line);
+        }
+        content.append(&section);
+    }
 
     let body = gtk4::TextView::builder()
         .wrap_mode(gtk4::WrapMode::WordChar)
@@ -4430,6 +4520,186 @@ fn show_node_editor(
                 }
                 Some(Err(e)) => toast(&widgets, &format!("Could not save node: {e}")),
                 None => {}
+            }
+        });
+    }
+
+    dialog.present();
+}
+
+/// Offer to create or link a **person node** for each of an entry's authors, then relate it
+/// to the entry with `authored` (which maintains the entry's `authored-by` inverse). This is
+/// how §1 author identifiers (ORCID/VIAF/…) get captured in practice: link the author, then
+/// add identifiers in the node editor. A new node's slug is the family name (`docs/M3-SPEC.md`
+/// §1); an author whose family-name slug already exists is offered as a link to that node.
+fn link_authors_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    use fond_bib::{NodeFrontmatter, NodeType, Predicate};
+
+    struct AuthorPlan {
+        label: String,
+        slug: String,
+        exists: bool,
+    }
+    let plans: Vec<AuthorPlan> = {
+        let s = state.borrow();
+        let Some(lib) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        let Ok(parsed) = lib.load_entry(key) else {
+            toast(widgets, "Could not load this entry");
+            return;
+        };
+        let authors: Vec<_> = parsed.entry.authors().unwrap_or_default().to_vec();
+        if authors.is_empty() {
+            toast(widgets, "This entry has no authors");
+            return;
+        }
+        let existing: std::collections::HashSet<String> =
+            lib.node_slugs().unwrap_or_default().into_iter().collect();
+        let mut taken = existing.clone();
+        authors
+            .iter()
+            .map(|p| {
+                let family = p.name.clone();
+                let label = match &p.given_name {
+                    Some(g) if !g.is_empty() => format!("{g} {family}"),
+                    _ => family.clone(),
+                };
+                let base = fond_bib::key::node_slug(&family);
+                if existing.contains(&base) {
+                    AuthorPlan {
+                        label,
+                        slug: base,
+                        exists: true,
+                    }
+                } else {
+                    // Fresh, collision-free against disk slugs and others in this batch.
+                    let slug = fond_bib::key::assign_key(&base, &taken);
+                    taken.insert(slug.clone());
+                    AuthorPlan {
+                        label,
+                        slug,
+                        exists: false,
+                    }
+                }
+            })
+            .collect()
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Link authors to nodes"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, -1);
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let link = gtk4::Button::with_label("Link");
+    link.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&link);
+    view.add_top_bar(&header);
+
+    let list = gtk4::Box::new(Orientation::Vertical, 8);
+    list.set_margin_top(14);
+    list.set_margin_bottom(14);
+    list.set_margin_start(16);
+    list.set_margin_end(16);
+
+    // (checkbox, slug, label, exists) per author.
+    let rows: Rc<Vec<(gtk4::CheckButton, String, String, bool)>> = Rc::new(
+        plans
+            .into_iter()
+            .map(|p| {
+                let row = gtk4::Box::new(Orientation::Horizontal, 8);
+                let check = gtk4::CheckButton::new();
+                check.set_active(true);
+                check.set_valign(gtk4::Align::Center);
+                let text = gtk4::Box::new(Orientation::Vertical, 0);
+                text.set_hexpand(true);
+                let name = gtk4::Label::new(Some(&p.label));
+                name.set_xalign(0.0);
+                name.set_halign(gtk4::Align::Start);
+                let sub = gtk4::Label::new(Some(&if p.exists {
+                    format!("→ link existing node «{}»", p.slug)
+                } else {
+                    format!("→ create person node «{}»", p.slug)
+                }));
+                sub.add_css_class("dim-label");
+                sub.add_css_class("caption");
+                sub.set_xalign(0.0);
+                sub.set_halign(gtk4::Align::Start);
+                text.append(&name);
+                text.append(&sub);
+                row.append(&check);
+                row.append(&text);
+                list.append(&row);
+                (check, p.slug, p.label, p.exists)
+            })
+            .collect(),
+    );
+
+    view.set_content(Some(&list));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let key = key.to_string();
+        let rows = rows.clone();
+        link.connect_clicked(move |_| {
+            let mut linked = 0usize;
+            let mut failed: Option<String> = None;
+            {
+                let s = state.borrow();
+                let Some(lib) = s.library.as_ref() else {
+                    return;
+                };
+                for (check, slug, label, exists) in rows.iter() {
+                    if !check.is_active() {
+                        continue;
+                    }
+                    // Create the person node first (so the slug resolves to a node host),
+                    // unless we're linking one that already exists.
+                    if !exists {
+                        let node = fond_bib::Node {
+                            frontmatter: NodeFrontmatter {
+                                node_type: NodeType::Person,
+                                label: label.clone(),
+                                ..Default::default()
+                            },
+                            body: String::new(),
+                        };
+                        if let Err(e) = lib.write_node(slug, &node) {
+                            failed = Some(e.to_string());
+                            break;
+                        }
+                    }
+                    match lib.add_relation(slug, Predicate::Authored, &key) {
+                        Ok(()) => linked += 1,
+                        Err(e) => {
+                            failed = Some(e.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+            match failed {
+                Some(e) => toast(&widgets, &format!("Could not link: {e}")),
+                None => {
+                    rebuild_index_silent(&state);
+                    toast(&widgets, &format!("Linked {linked} author(s)"));
+                    dialog.close();
+                    reload_current(&state, &widgets);
+                }
             }
         });
     }
