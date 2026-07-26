@@ -2765,47 +2765,43 @@ fn membership_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: 
     dialog.present();
 }
 
-/// Edit the typed relationships from `key` to other entries. A searchable, checkable list of
-/// every other entry; each checked row carries a predicate dropdown. On Save the chosen
-/// forward edges are written via `Library::set_relations`, which maintains the inverse edge
-/// on each target automatically.
+/// Edit the typed relationships from `key` to other entries **and knowledge-graph nodes**. A
+/// searchable, checkable list of every other entry plus every node; each checked row carries
+/// a predicate dropdown. On Save the chosen forward edges are written via
+/// `Library::set_relations`, which maintains the inverse edge on each target automatically —
+/// on whichever file type (note or node) the target resolves to.
 ///
 /// Scope: this dialog models **one predicate per target** (the common case) and manages only
 /// typed `relations` — legacy untyped `related` is lifted separately by
-/// `migrate_related_to_relations`. If a target's current forward edge uses a predicate
-/// outside `Predicate::forward_choices()`, that predicate is added to the option list so
-/// Save round-trips it rather than dropping it.
+/// `migrate_related_to_relations`. Each row's predicate dropdown is curated to the target's
+/// kind via `Predicate::forward_choices_for` (a person node offers Related/Influenced, a work
+/// offers cites/critiques/…); it stays advisory — if a target's current forward edge already
+/// uses a predicate outside that curated set, it's appended so Save round-trips it.
 fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
-    use fond_bib::Predicate;
+    use fond_bib::{Predicate, TargetKind};
 
-    // Option list for the per-row predicate dropdown: the authorable set, plus any predicate
-    // already present on a current forward edge that isn't in it (data-safety).
-    // `rows` = (key, label, sub) for every entry except this one; `current` = target ->
-    // current forward predicate; `options` = the dropdown's predicate list.
-    type DialogData = (
-        Vec<(String, String, String)>,
-        std::collections::HashMap<String, Predicate>,
-        Vec<Predicate>,
-    );
-    let (rows, current, options): DialogData = {
+    /// One pickable target: an entry or a node, with the predicate list appropriate to it.
+    struct RowSpec {
+        id: String,
+        label: String,
+        sub: String,
+        kind: TargetKind,
+    }
+    // `rows` = every entry (except this one) then every node; `current` = target -> current
+    // forward predicate (one-predicate-per-target model).
+    let (rows, current): (Vec<RowSpec>, std::collections::HashMap<String, Predicate>) = {
         let s = state.borrow();
         let Some(lib) = s.library.as_ref() else {
             toast(widgets, "Open a library first");
             return;
         };
-        // First forward predicate per target (one-predicate-per-target model).
         let mut current: std::collections::HashMap<String, Predicate> =
             std::collections::HashMap::new();
         for r in lib.forward_relations(key).unwrap_or_default() {
             current.entry(r.target).or_insert(r.predicate);
         }
-        let mut options: Vec<Predicate> = Predicate::forward_choices().to_vec();
-        for p in current.values() {
-            if !options.contains(p) {
-                options.push(*p);
-            }
-        }
-        let rows = s
+        // Entries (kind = Work).
+        let mut rows: Vec<RowSpec> = s
             .entries
             .iter()
             .filter(|e| e.key != key)
@@ -2821,14 +2817,39 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
                     (true, false) => e.year.clone(),
                     (true, true) => e.key.clone(),
                 };
-                (e.key.clone(), label, sub)
+                RowSpec {
+                    id: e.key.clone(),
+                    label,
+                    sub,
+                    kind: TargetKind::Work,
+                }
             })
             .collect();
-        (rows, current, options)
+        // Nodes (kind from the node type).
+        for slug in lib.node_slugs().unwrap_or_default() {
+            if slug == key {
+                continue;
+            }
+            if let Ok(node) = lib.load_node(&slug) {
+                let fm = node.frontmatter;
+                let label = if fm.label.is_empty() {
+                    slug.clone()
+                } else {
+                    fm.label.clone()
+                };
+                rows.push(RowSpec {
+                    sub: format!("{} · {}", node_type_label(fm.node_type), slug),
+                    id: slug,
+                    label,
+                    kind: TargetKind::from(fm.node_type),
+                });
+            }
+        }
+        (rows, current)
     };
 
     if rows.is_empty() {
-        toast(widgets, "No other entries to relate to");
+        toast(widgets, "Nothing else to relate to");
         return;
     }
 
@@ -2842,7 +2863,7 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
     let save = gtk4::Button::with_label("Save");
     save.add_css_class("suggested-action");
     let search = gtk4::SearchEntry::new();
-    search.set_placeholder_text(Some("Filter entries"));
+    search.set_placeholder_text(Some("Filter entries and nodes"));
     search.set_width_chars(28);
     header.set_title_widget(Some(&search));
     header.pack_end(&save);
@@ -2856,22 +2877,37 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
     view.set_content(Some(&scroll));
     dialog.set_content(Some(&view));
 
-    // Shared dropdown model: predicate labels in `options` order.
-    let option_labels: Vec<&str> = options.iter().map(|p| p.label()).collect();
-    let options = Rc::new(options);
-
     // Build every row up front (checkbox/predicate state survives filtering, which only
-    // toggles row visibility). Each row keeps (key, check, predicate dropdown, row, haystack).
+    // toggles row visibility). Each row keeps its own predicate `options` (curated by target
+    // kind), so the correct predicate can be recovered from the dropdown index on Save.
     struct RelRow {
         key: String,
         check: gtk4::CheckButton,
         predicate: gtk4::DropDown,
+        options: Vec<Predicate>,
         row: gtk4::ListBoxRow,
         hay: String,
     }
     let rel_rows: Rc<Vec<RelRow>> = Rc::new(
         rows.into_iter()
-            .map(|(k, label, sub)| {
+            .map(|spec| {
+                let RowSpec {
+                    id: k,
+                    label,
+                    sub,
+                    kind,
+                } = spec;
+
+                // Domain-appropriate predicates for this target kind, plus any current
+                // out-of-set predicate so a hand-authored edge round-trips.
+                let mut options = Predicate::forward_choices_for(kind);
+                if let Some(p) = current.get(&k) {
+                    if !options.contains(p) {
+                        options.push(*p);
+                    }
+                }
+                let option_labels: Vec<&str> = options.iter().map(|p| p.label()).collect();
+
                 let check = gtk4::CheckButton::new();
                 let checked = current.contains_key(&k);
                 check.set_active(checked);
@@ -2921,6 +2957,7 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
                     key: k,
                     check,
                     predicate,
+                    options,
                     row,
                     hay,
                 }
@@ -2944,14 +2981,13 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
         let dialog = dialog.clone();
         let key = key.to_string();
         let rel_rows = rel_rows.clone();
-        let options = options.clone();
         save.connect_clicked(move |_| {
             let forward: Vec<fond_bib::Relation> = rel_rows
                 .iter()
                 .filter(|r| r.check.is_active())
                 .map(|r| {
                     let idx = r.predicate.selected() as usize;
-                    let predicate = options.get(idx).copied().unwrap_or(Predicate::Related);
+                    let predicate = r.options.get(idx).copied().unwrap_or(Predicate::Related);
                     fond_bib::Relation::forward(predicate, r.key.clone())
                 })
                 .collect();

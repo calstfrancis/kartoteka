@@ -1,8 +1,9 @@
 # Kartoteka M3 — Implementation Spec: Knowledge-Graph Nodes
 
-Status: **in progress.** PRs 1–5 (the whole non-GUI library layer) plus PR 6 (GUI node
-list/editor) are **built and tested**. PRs 7–8 (GUI: nodes as relation targets; node detail/
-neighbours + author→node linkage) not yet. See the PR sequence and `docs/STATUS.md`.
+Status: **in progress.** PRs 1–5 (the whole non-GUI library layer) plus PRs 6–7 (GUI node
+list/editor; nodes as relation targets with curated predicates) are **built and tested**. Only
+PR 8 (node detail/neighbours + author→node linkage) remains. See the PR sequence and
+`docs/STATUS.md`.
 
 > **Naming note.** "M3" here is the **knowledge-base extension track** (M2 = typed relations
 > etc., already built; M3 = this), *not* `ROADMAP.md`'s "Milestone 3" (bibliography output,
@@ -172,9 +173,11 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
   main-pane integration is PR 8's node detail view. Relations preserved on edit; new nodes get
   a collision-free label-derived slug; existing nodes keep their stable slug. No delete yet
   (needs relation cleanup — deferred).
-- **Nodes as relation targets** — the relations dialog (`relations_dialog`) currently lists
-  only entries; add nodes to the pickable targets, and offer node-appropriate predicates
-  (§2 context).
+- ✅ **Nodes as relation targets (PR 7)** — `relations_dialog` now lists every node (label +
+  type · slug) alongside entries as a checkable target; each row's predicate dropdown is
+  curated to the target's kind via `Predicate::forward_choices_for(TargetKind)` (entry = Work;
+  node = its `NodeType`), staying advisory (an out-of-set current predicate is appended so Save
+  round-trips it). Verified headless: a person node shows Related/Influenced only.
 - **Node detail + graph view** — show a node's relations grouped by predicate (reuse the
   detail-panel grouping already built for entries); optionally a simple graph/neighbours view.
 - **Author-node linkage** — offer to create/link a person node from an entry's author
@@ -212,7 +215,8 @@ Deferred sub-track, sequenced after the library layer (mirrors how M2 split lib 
    Tests added.
 6. ✅ **Done.** GUI: Nodes manager window (menu → "Nodes…") — filterable node list + create/
    edit editor (type/label/aliases/identifiers/prose). Verified end-to-end headless.
-7. GUI: nodes as relation targets + node-appropriate predicates.
+7. ✅ **Done.** GUI: `relations_dialog` offers nodes as targets with per-row predicate
+   dropdowns curated by `forward_choices_for(TargetKind)`. Verified end-to-end headless.
 8. GUI: node detail / neighbours view + author→node linkage.
 
 Each PR additive and independently shippable; a vault written by an earlier PR parses under

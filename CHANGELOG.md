@@ -4,6 +4,18 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [Unreleased]
 
+### Added — M3 nodes as relation targets (`kartoteka-ui-gtk`, PR 7 of the sequence)
+
+- **Relate entries to nodes** — the entry Relations dialog now lists every knowledge-graph
+  node (label + type · slug) alongside other entries as a checkable target. Saving writes the
+  typed forward edge via `set_relations`, which maintains the inverse edge on the node file
+  automatically (polymorphic targets, PR 3).
+- **Node-appropriate predicates** — each target row's predicate dropdown is curated to the
+  target's kind via `Predicate::forward_choices_for` (a person node offers Related/Influenced,
+  a school adds Member of, a work keeps cites/critiques/…). Advisory only: a hand-authored
+  edge whose predicate falls outside the curated set is appended so Save round-trips it. See
+  `docs/M3-SPEC.md` §6. Verified end-to-end headless.
+
 ### Added — M3 node manager GUI (`kartoteka-ui-gtk`, PR 6 of the sequence)
 
 - **Nodes manager** — a new "Nodes…" menu item opens a manager window listing the library's

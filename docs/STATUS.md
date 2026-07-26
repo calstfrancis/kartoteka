@@ -22,10 +22,9 @@ the single most confusing thing about the docs:
    - **Extension-M2** = typed relations, facets, small note fields, AI sidecar, projects/usage
      — **built and tested** (see below).
    - **Extension-M3** = knowledge-graph nodes (people/concepts/schools) + author IDs —
-     **PRs 1–6 of 8 built** — the whole non-GUI library layer (node file type; predicate
-     vocabulary; polymorphic targets + relation hosts; fsck node checks; index node indexing)
-     **plus PR 6 GUI** (Nodes manager window: list + create/edit editor). PRs 7–8 (remaining
-     GUI) still to do (`M3-SPEC.md`).
+     **PRs 1–7 of 8 built** — the whole non-GUI library layer plus GUI PRs 6 (Nodes manager)
+     and 7 (nodes as relation targets with curated predicates). Only **PR 8** (node detail/
+     neighbours + author→node linkage) remains (`M3-SPEC.md`).
 
 When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 "Milestone 2/3" it means the **original brief**. They are unrelated.
@@ -60,11 +59,14 @@ When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
   list + create/edit editor (type/label/aliases/identifiers/prose); slug-stable on edit,
   label-derived collision-free slug on create; relations preserved; silent reindex on save.
   No delete yet. Verified end-to-end headless (list + editor render correctly, no panics).
+- **PR 7** — GUI: `relations_dialog` now offers nodes as relation targets (label + type · slug)
+  alongside entries, with each row's predicate dropdown curated by
+  `forward_choices_for(TargetKind)`. Verified headless (a person node shows Related/Influenced).
 
 All under `CHANGELOG.md` `[Unreleased]`; fold into the next dev tag when one is prepped.
 
 ### Working tree
-Clean once PR 6 is committed.
+Clean once PR 7 is committed.
 
 ### Test / quality state
 - Whole workspace: **117 tests passing, 0 clippy warnings** at last run (up from 94 pre-M3;
@@ -108,11 +110,11 @@ Next candidates (pick per Cal):
 - **Extension-M2 leftovers** (`M2-GUI-PLAN.md` §4): "Used in" panel (needs GUI scan trigger +
   `usage.json` loader), facet chip grouping in the editor, "promote AI keyword → tag", global
   task view, in-GUI editing of progress/cite/tasks.
-- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **PRs 1–6 done** (non-GUI library
-  layer + the GUI Nodes manager). Remaining: **PR 7** — nodes as relation targets in the
-  relations dialog (`relations_dialog` at ~`app_window.rs:2770`) + node-appropriate predicates
-  via `Predicate::forward_choices_for(TargetKind)`; **PR 8** — node detail/neighbours view +
-  author→node linkage. See `docs/M3-SPEC.md` §6.
+- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **PRs 1–7 done** (non-GUI library
+  layer + GUI Nodes manager + nodes as relation targets). Remaining: **PR 8** — node detail /
+  neighbours view (show a node's relations grouped by predicate, reusing the entry detail-panel
+  grouping) + author→node linkage (offer to create/link a person node from an entry's author).
+  See `docs/M3-SPEC.md` §6.
 
 ---
 
