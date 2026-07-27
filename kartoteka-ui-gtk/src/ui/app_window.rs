@@ -452,6 +452,7 @@ fn build_menu() -> gio::Menu {
     actions.append(Some("New item…"), Some("win.new-item"));
     actions.append(Some("Acquire…"), Some("win.acquire"));
     actions.append(Some("Add PDF…"), Some("win.add-pdf"));
+    actions.append(Some("Add EPUB…"), Some("win.add-epub"));
     actions.append(Some("Add folder of PDFs…"), Some("win.add-folder"));
     actions.append(Some("Add from URL…"), Some("win.add-url"));
     actions.append(Some("Import…"), Some("win.import"));
@@ -517,6 +518,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("add-pdf", None);
         action.connect_activate(move |_, _| show_add_pdf(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("add-epub", None);
+        action.connect_activate(move |_, _| show_add_epub(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -799,6 +807,103 @@ fn identify_pdf(path: &std::path::Path) -> Result<(bool, String, Option<u32>), S
     }
 
     Err("could not identify the PDF (no DOI in text, no embedded title)".to_string())
+}
+
+fn show_add_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+    let filter = gtk4::FileFilter::new();
+    filter.set_name(Some("EPUB books"));
+    filter.add_pattern("*.epub");
+    let filters = gio::ListStore::new::<gtk4::FileFilter>();
+    filters.append(&filter);
+    let dialog = gtk4::FileDialog::builder()
+        .title("Add EPUB")
+        .filters(&filters)
+        .build();
+    let parent = widgets.window.clone();
+    let state = state.clone();
+    let widgets = widgets.clone();
+    dialog.open(Some(&parent), gio::Cancellable::NONE, move |result| {
+        if let Ok(file) = result {
+            if let Some(path) = file.path() {
+                import_epub(&state, &widgets, path);
+            }
+        }
+    });
+}
+
+/// Import a dropped EPUB: read its OPF metadata and (off the UI thread, since it may hit the
+/// network for an ISBN lookup) build the entry YAML, then add the entry and attach the .epub.
+#[allow(deprecated)]
+fn import_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBuf) {
+    toast(widgets, "Reading EPUB…");
+
+    let (sender, receiver) = glib::MainContext::channel::<Result<String, String>>(glib::Priority::DEFAULT);
+    let worker_path = path.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(epub_entry_yaml(&worker_path));
+    });
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok(yaml) => {
+                let added = {
+                    let s = state.borrow();
+                    let library = s.library.as_ref().expect("library open");
+                    library.add_from_yaml(&yaml)
+                };
+                match added {
+                    Ok(keys) if !keys.is_empty() => {
+                        let key = keys[0].clone();
+                        let attached = {
+                            let s = state.borrow();
+                            let library = s.library.as_ref().expect("library open");
+                            library.store_attachment(&key, &path, None)
+                        };
+                        match attached {
+                            Ok(_) => toast(&widgets, &format!("Added {key} with its EPUB")),
+                            Err(e) => toast(&widgets, &format!("Added {key}, but attach failed: {e}")),
+                        }
+                        rebuild_index_silent(&state);
+                        reload_current(&state, &widgets);
+                    }
+                    Ok(_) => toast(&widgets, "The record produced no entry"),
+                    Err(e) => toast(&widgets, &format!("Could not add entry: {e}")),
+                }
+            }
+            Err(e) => toast(&widgets, &format!("EPUB import failed: {e}")),
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// Worker-thread logic for an EPUB: parse the OPF, enrich via ISBN lookup when one is present
+/// (falling back to the OPF fields on failure), else build from the OPF fields directly.
+/// Returns the Hayagriva YAML document to add.
+fn epub_entry_yaml(path: &std::path::Path) -> Result<String, String> {
+    let meta = fond_doc::extract_epub_metadata(path).map_err(|e| e.to_string())?;
+    if let Some(isbn) = meta.isbn.as_deref() {
+        if let Ok(yaml) = fond_bib::acquire::fetch_isbn_yaml(isbn) {
+            return Ok(yaml);
+        }
+    }
+    let title = meta
+        .title
+        .as_deref()
+        .ok_or_else(|| "the EPUB has no title in its metadata".to_string())?;
+    fond_bib::acquire::book_yaml(
+        title,
+        &meta.authors,
+        meta.date.as_deref(),
+        meta.publisher.as_deref(),
+        meta.isbn.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Progress messages streamed from the bulk-import worker to the UI.

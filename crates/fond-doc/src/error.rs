@@ -9,6 +9,9 @@ pub enum DocError {
 
     #[error("PDF error: {0}")]
     Pdfium(#[from] pdfium_render::prelude::PdfiumError),
+
+    #[error("EPUB error: {0}")]
+    Epub(String),
 }
 
 pub type Result<T> = std::result::Result<T, DocError>;

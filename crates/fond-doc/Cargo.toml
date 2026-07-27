@@ -11,5 +11,7 @@ repository.workspace = true
 [dependencies]
 pdfium-render.workspace = true
 thiserror.workspace = true
+zip.workspace = true
+quick-xml.workspace = true
 
 [dev-dependencies]

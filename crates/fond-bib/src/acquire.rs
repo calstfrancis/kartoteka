@@ -234,6 +234,53 @@ pub fn minimal_book_yaml(title: &str, author: Option<&str>) -> Result<String> {
     })
 }
 
+/// A Hayagriva YAML document (placeholder key `_`) built from plain book fields — used to
+/// seed an entry from EPUB OPF metadata when no ISBN lookup is available (or it failed).
+/// `authors` are each `Family, Given` (or display) form; empty/`None` fields are omitted.
+pub fn book_yaml(
+    title: &str,
+    authors: &[String],
+    date: Option<&str>,
+    publisher: Option<&str>,
+    isbn: Option<&str>,
+) -> Result<String> {
+    use serde_yaml_ng::{Mapping, Value};
+    let s = |v: &str| Value::String(v.to_string());
+    fn clean(o: Option<&str>) -> Option<&str> {
+        o.map(str::trim).filter(|v| !v.is_empty())
+    }
+
+    let mut inner = Mapping::new();
+    inner.insert(s("type"), s("book"));
+    inner.insert(s("title"), s(title.trim()));
+    let authors: Vec<Value> = authors
+        .iter()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .map(s)
+        .collect();
+    if !authors.is_empty() {
+        inner.insert(s("author"), Value::Sequence(authors));
+    }
+    if let Some(d) = clean(date) {
+        inner.insert(s("date"), s(d));
+    }
+    if let Some(p) = clean(publisher) {
+        inner.insert(s("publisher"), s(p));
+    }
+    if let Some(i) = clean(isbn) {
+        let mut sn = Mapping::new();
+        sn.insert(s("isbn"), s(i));
+        inner.insert(s("serial-number"), Value::Mapping(sn));
+    }
+
+    let mut doc = Mapping::new();
+    doc.insert(s("_"), Value::Mapping(inner));
+    serde_yaml_ng::to_string(&Value::Mapping(doc)).map_err(|e| BibError::Import {
+        message: format!("could not build entry YAML: {e}"),
+    })
+}
+
 /// Fetch book metadata for an ISBN from OpenLibrary and return it as a Hayagriva YAML
 /// document (placeholder key `_`, since the caller regenerates the key).
 pub fn fetch_isbn_yaml(isbn: &str) -> Result<String> {

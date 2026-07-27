@@ -5,8 +5,11 @@
 //! exposes no UI-framework types (`docs/ARCHITECTURE.md` §4).
 
 pub mod annotation;
+pub mod epub;
 pub mod error;
 pub mod pdf;
+
+pub use epub::{extract_metadata as extract_epub_metadata, EpubMetadata};
 
 pub use annotation::{
     embed_highlights, extract_annotations, AnnotationToEmbed, PdfAnnotation, PdfAnnotationKind,

@@ -115,6 +115,19 @@ enum Command {
         #[arg(long)]
         key: Option<String>,
     },
+    /// Import an EPUB: read its embedded (OPF) metadata, enrich via an ISBN lookup when the
+    /// EPUB carries one (falling back to the OPF fields offline), then attach the .epub to the
+    /// resulting entry.
+    AddEpub {
+        /// Path to the .epub.
+        path: PathBuf,
+        /// Use this ISBN for the lookup instead of the one embedded in the EPUB.
+        #[arg(long)]
+        isbn: Option<String>,
+        /// Attach to an existing entry with this key instead of creating one.
+        #[arg(long)]
+        key: Option<String>,
+    },
     /// Render a collection as a formatted reference list.
     Bib {
         /// Collection slug (the collections/<slug>.yml basename).
@@ -377,6 +390,29 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
 
             let att = library.store_attachment(&target_key, &path, pages)?;
             println!("attached {} to {target_key} ({})", att.filename, att.hash);
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::AddEpub { path, isbn, key } => {
+            let library = Library::open(&cli.library)?;
+
+            let target_key = if let Some(k) = key {
+                if !library.entry_path(&k).exists() {
+                    return Err(format!("no entry '{k}' to attach to").into());
+                }
+                k
+            } else {
+                let yaml = identify_epub(&path, isbn.as_deref())?;
+                let keys = library.add_from_yaml(&yaml)?;
+                keys.into_iter()
+                    .next()
+                    .ok_or("the EPUB produced no entry")?
+            };
+
+            // EPUBs have no page count in our model; the record simply omits it.
+            let att = library.store_attachment(&target_key, &path, None)?;
+            println!("attached {} to {target_key} ({})", att.filename, att.hash);
+            reindex_after_change(&cli.library, &library);
             Ok(ExitCode::SUCCESS)
         }
 
@@ -743,6 +779,40 @@ fn identify_pdf(library: &Library, path: &std::path::Path) -> CliResult<String> 
     }
 
     Err("could not identify the PDF; pass --doi, --arxiv, --isbn, or --key".into())
+}
+
+/// Build a Hayagriva YAML document for a dropped EPUB from its OPF metadata: if it (or the
+/// `--isbn` override) carries an ISBN, enrich via OpenLibrary, falling back to the OPF fields
+/// when the network lookup fails; otherwise use the OPF fields directly. Errors only when the
+/// EPUB has no title to key an entry on.
+fn identify_epub(path: &std::path::Path, isbn_override: Option<&str>) -> CliResult<String> {
+    let meta = fond_doc::extract_epub_metadata(path)?;
+    let isbn = isbn_override
+        .map(str::to_string)
+        .or_else(|| meta.isbn.clone());
+
+    if let Some(isbn) = isbn.as_deref() {
+        match fond_bib::acquire::fetch_isbn_yaml(isbn) {
+            Ok(yaml) => {
+                eprintln!("enriched from ISBN {isbn}");
+                return Ok(yaml);
+            }
+            Err(e) => eprintln!("ISBN lookup failed ({e}); using the EPUB's own metadata"),
+        }
+    }
+
+    let title = meta
+        .title
+        .as_deref()
+        .ok_or("the EPUB has no title in its metadata; pass --isbn or --key")?;
+    fond_bib::acquire::book_yaml(
+        title,
+        &meta.authors,
+        meta.date.as_deref(),
+        meta.publisher.as_deref(),
+        meta.isbn.as_deref(),
+    )
+    .map_err(Into::into)
 }
 
 fn load_style(
