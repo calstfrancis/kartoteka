@@ -2,11 +2,22 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.1.0-dev7] — 2026-07-25 — Development build
+## [0.1.0-dev8] — 2026-07-27 — Development build
 
 Completes the M3 knowledge-graph track: `fsck` node checks and node search indexing at the
 library layer, and the full node GUI — a Nodes manager (list + editor), nodes as relation
-targets with kind-curated predicates, node neighbours views, and author→node linkage.
+targets with kind-curated predicates, node neighbours views, and author→node linkage. Fixes a
+launch crash on libraries carrying a search index from a pre-nodes build.
+
+### Fixed — startup crash on an out-of-date search index
+
+- **Opening a library whose `.kartoteka/index/` was built before the node work no longer
+  aborts.** The node indexing added a `kind` field to the search schema; opening an older
+  on-disk index panicked (`FieldNotFound("kind")`) at startup, taking the whole app down before
+  the window appeared. `SearchIndex::open` now detects a schema built by an older version and
+  reports it instead of crashing; the GUI rebuilds the index once from the authoritative files,
+  and the CLI's `search` prints a clear "run `kartoteka reindex`" message. New regression tests
+  in `fond-index` cover both the legacy-schema and current-schema open paths.
 
 ### Added — M3 node detail & author→node linkage (`kartoteka-ui-gtk`, PR 8 of the sequence)
 

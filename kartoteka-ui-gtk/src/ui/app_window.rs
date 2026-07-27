@@ -2372,16 +2372,20 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
     // on every open would re-index the whole library at each launch — the menu's "Reindex
     // search" refreshes it on demand. Search falls back to a substring filter if unavailable.
     let index_dir = library.root().join(".kartoteka").join("index");
-    let index = if index_dir.join("meta.json").exists() {
-        fond_index::SearchIndex::open(&index_dir).ok()
-    } else {
-        match fond_index::SearchIndex::rebuild(&library, &index_dir, |_| None) {
+    // Open an existing index if present (cheap). An index left by an older build can have an
+    // out-of-date schema (e.g. pre-nodes, missing `kind`) — `open` reports that as an error
+    // rather than crashing, and we rebuild once from the authoritative files. A missing index
+    // also falls through to the one-time build. Search falls back to a substring filter if all
+    // of this fails.
+    let index = match fond_index::SearchIndex::open(&index_dir) {
+        Ok(idx) => Some(idx),
+        Err(_) => match fond_index::SearchIndex::rebuild(&library, &index_dir, |_| None) {
             Ok(idx) => Some(idx),
             Err(e) => {
                 toast(widgets, &format!("Search index unavailable: {e}"));
                 None
             }
-        }
+        },
     };
 
     let saved_searches = load_saved_searches(&path);

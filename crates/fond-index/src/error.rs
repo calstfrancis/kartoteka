@@ -18,6 +18,9 @@ pub enum IndexError {
 
     #[error("invalid search query: {0}")]
     Query(String),
+
+    #[error("index schema is out of date (missing field {0:?}); rebuild required")]
+    SchemaMismatch(String),
 }
 
 pub type Result<T> = std::result::Result<T, IndexError>;

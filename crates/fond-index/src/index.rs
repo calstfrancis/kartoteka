@@ -73,24 +73,32 @@ fn build_schema() -> Schema {
 }
 
 impl Fields {
-    fn of(schema: &Schema) -> Fields {
-        let f = |name: &str| schema.get_field(name).expect("known field");
-        Fields {
-            kind: f("kind"),
-            key: f("key"),
-            type_: f("type"),
-            author: f("author"),
-            title: f("title"),
-            year: f("year"),
-            tag: f("tag"),
-            facet: f("facet"),
-            alias: f("alias"),
-            identifier: f("identifier"),
-            note: f("note"),
-            annotation: f("annotation"),
-            pdftext: f("pdftext"),
-            ai: f("ai"),
-        }
+    /// Resolve every schema field by name. Returns `SchemaMismatch` if the on-disk index was
+    /// built by an older version whose schema lacks a field this build expects (e.g. `kind`,
+    /// added for nodes) — the caller rebuilds rather than crashing. The index is disposable
+    /// derived state, so a schema change just means "rebuild from the authoritative files."
+    fn of(schema: &Schema) -> Result<Fields> {
+        let f = |name: &str| {
+            schema
+                .get_field(name)
+                .map_err(|_| IndexError::SchemaMismatch(name.to_string()))
+        };
+        Ok(Fields {
+            kind: f("kind")?,
+            key: f("key")?,
+            type_: f("type")?,
+            author: f("author")?,
+            title: f("title")?,
+            year: f("year")?,
+            tag: f("tag")?,
+            facet: f("facet")?,
+            alias: f("alias")?,
+            identifier: f("identifier")?,
+            note: f("note")?,
+            annotation: f("annotation")?,
+            pdftext: f("pdftext")?,
+            ai: f("ai")?,
+        })
     }
 }
 
@@ -113,15 +121,16 @@ pub struct SearchIndex {
 }
 
 impl SearchIndex {
-    fn from_index(index: Index) -> SearchIndex {
-        let fields = Fields::of(&index.schema());
-        SearchIndex { index, fields }
+    fn from_index(index: Index) -> Result<SearchIndex> {
+        let fields = Fields::of(&index.schema())?;
+        Ok(SearchIndex { index, fields })
     }
 
-    /// Open an existing index directory.
+    /// Open an existing index directory. Returns `SchemaMismatch` if the on-disk index predates
+    /// a schema change in this build — callers should rebuild in that case.
     pub fn open(dir: &Path) -> Result<SearchIndex> {
         let index = Index::open_in_dir(dir)?;
-        Ok(Self::from_index(index))
+        Self::from_index(index)
     }
 
     /// Rebuild the index from scratch out of the library's authoritative files. `pdf_text`
@@ -143,7 +152,8 @@ impl SearchIndex {
         })?;
 
         let schema = build_schema();
-        let fields = Fields::of(&schema);
+        // Infallible here: `build_schema` is this build's own schema, so every field resolves.
+        let fields = Fields::of(&schema).expect("freshly built schema has all fields");
         let index = Index::create_in_dir(dir, schema)?;
         let mut writer: IndexWriter = index.writer(50_000_000)?;
 
@@ -298,5 +308,49 @@ impl SearchIndex {
             });
         }
         Ok(hits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An index left on disk by a build predating the `kind` field (added for nodes) must not
+    /// crash `open` — it should report `SchemaMismatch` so callers rebuild. This reproduces the
+    /// dev7 launch abort (`FieldNotFound("kind")`) against a real user's older index.
+    #[test]
+    fn open_reports_schema_mismatch_for_legacy_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        // A legacy schema: like today's minus the fields added later (`kind`, `alias`,
+        // `identifier`). Writing an index with it mimics a pre-nodes on-disk index.
+        let mut b = Schema::builder();
+        b.add_text_field("key", STRING | STORED);
+        b.add_text_field("type", STRING | STORED);
+        b.add_text_field("author", TEXT | STORED);
+        b.add_text_field("title", TEXT | STORED);
+        b.add_text_field("year", STRING | STORED);
+        b.add_text_field("tag", TEXT | STORED);
+        b.add_text_field("facet", TEXT | STORED);
+        b.add_text_field("note", TEXT);
+        b.add_text_field("annotation", TEXT);
+        b.add_text_field("pdftext", TEXT);
+        b.add_text_field("ai", TEXT);
+        Index::create_in_dir(path, b.build()).unwrap();
+
+        match SearchIndex::open(path) {
+            Err(IndexError::SchemaMismatch(field)) => assert_eq!(field, "kind"),
+            Err(e) => panic!("expected SchemaMismatch, got a different error: {e}"),
+            Ok(_) => panic!("expected SchemaMismatch, but open succeeded"),
+        }
+    }
+
+    /// A current-schema index opens cleanly.
+    #[test]
+    fn open_succeeds_for_current_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        Index::create_in_dir(dir.path(), build_schema()).unwrap();
+        assert!(SearchIndex::open(dir.path()).is_ok());
     }
 }

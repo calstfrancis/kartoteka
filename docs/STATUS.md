@@ -33,9 +33,19 @@ When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 
 ## Where things stand right now
 
-### Committed + tagged (unpushed)
-- **`v0.1.0-dev7`** (commit + tag `v0.1.0-dev7`) — **the complete M3 knowledge-graph track**,
-  folding in everything since dev5: the extension-M2 index/GUI surfacing plus M3 PRs 1–8.
+### Committed + tagged
+- **`v0.1.0-dev8`** (commit + tag `v0.1.0-dev8`, **unpushed**) — bugfix on top of dev7: the
+  dev7 flatpak crashed at startup (`FieldNotFound("kind")` abort) on any library carrying a
+  search index built before the node work, because PR5 added a `kind` schema field and
+  `SearchIndex::open` did `get_field("kind").expect(...)` against the persisted old schema.
+  `open` now returns a `SchemaMismatch` error instead of panicking; the GUI rebuilds the index
+  once from the authoritative files, the CLI prints a "run `kartoteka reindex`" message. New
+  `fond-index` regression tests cover the legacy- and current-schema open paths. `Cargo.lock`
+  only moved the two local crate versions (no dependency change) so `cargo-sources.json` stays
+  byte-identical. **Not pushed.** Ready for Cal to re-run `./dev-build.sh` in `kartoteka/`.
+- **`v0.1.0-dev7`** (commit + tag `v0.1.0-dev7`, pushed via `dev-build.sh`) — **the complete M3
+  knowledge-graph track**, folding in everything since dev5: the extension-M2 index/GUI
+  surfacing plus M3 PRs 1–8.
   - **PRs 1–3** (`11b8ad9`/`c733bdc`/`63c36a4`, first shipped in the dev6 tag) — node file type
     (`NodeType`/`NodeFrontmatter`/`Node`, `node_slug`, `nodes/` in `Library`); node-oriented
     `Predicate` vocabulary + `TargetKind`/`forward_choices_for`; `resolve_target` + `RelationHost`
