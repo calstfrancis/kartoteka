@@ -2,7 +2,7 @@
 
 **Read this first when picking up Kartoteka cold** (e.g. after a cleared chat). It records
 where the project actually is, how the docs fit together, and what's committed vs. not.
-Last updated: **2026-07-25.**
+Last updated: **2026-07-27.**
 
 ---
 
@@ -34,6 +34,18 @@ When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 ## Where things stand right now
 
 ### Committed + tagged
+- **`v0.1.0-dev9`** (commit + tag `v0.1.0-dev9`, **unpushed**) — three library-management
+  features, each in CLI + GUI:
+  - **Delete entries** — `Library::delete_entry` (removes the entry + sidecars, strips inbound
+    relation edges, drops collection membership, GCs unshared attachment blobs); CLI
+    `kartoteka delete <key> [-y]`; a destructive "Delete…" button in the detail panel.
+  - **Edit citation info** — a structured field editor (type/title/author/year/publisher/
+    DOI/ISBN) via `entry::EntryFields` + `Library::edit_fields`, which rewrites only changed
+    fields (exotic fields preserved) and validates by a parse round-trip; GUI "Edit citation…".
+  - **EPUB import** — new `fond-doc::epub` (zip + quick-xml) reads OPF Dublin Core; ISBN
+    enrichment via OpenLibrary with an OPF-only offline fallback; CLI `add-epub`, GUI
+    "Add EPUB…". Added deps → `cargo-sources.json` regenerated (only additions).
+  **Not pushed.** Ready for Cal to run `./dev-build.sh` in `kartoteka/`.
 - **`v0.1.0-dev8`** (commit + tag `v0.1.0-dev8`, **unpushed**) — bugfix on top of dev7: the
   dev7 flatpak crashed at startup (`FieldNotFound("kind")` abort) on any library carrying a
   search index built before the node work, because PR5 added a `kind` schema field and
@@ -68,9 +80,9 @@ When a doc says "M2/M3" it means the **extension track**. When `ROADMAP.md` says
 Clean once the dev7 bump is committed.
 
 ### Test / quality state
-- Whole workspace: **117 tests passing, 0 clippy warnings** at last run (up from 94 pre-M3;
-  fond-bib carries the node/predicate/relation-host/fsck additions, fond-index the node
-  indexing).
+- Whole workspace: **127 tests passing, 0 clippy warnings** at last run (up from 117 after
+  M3; dev9 adds delete_entry, edit_fields, EPUB-OPF, and book_yaml tests across fond-bib and
+  fond-doc).
 - `cargo test --workspace` and `cargo clippy --workspace` are the gates.
 
 ---

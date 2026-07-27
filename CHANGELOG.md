@@ -2,6 +2,38 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0-dev9] — 2026-07-27 — Development build
+
+Three library-management features: deleting entries, editing citation fields, and importing
+EPUBs — each available from both the CLI and the GTK app.
+
+### Added — delete entries
+
+- **Delete an entry and everything tied to it.** `Library::delete_entry` removes the entry
+  file and its sidecars (note, annotations, AI), strips every relation edge naming the key
+  from all other notes/nodes, drops the key from every collection, and garbage-collects
+  attachment blobs no other entry still references (a shared blob is kept). Best-effort and
+  idempotent.
+- **CLI:** `kartoteka delete <key>` (confirmation prompt, `-y` to skip), then a best-effort
+  reindex.
+- **GUI:** a destructive "Delete…" button in the entry detail panel behind a confirmation
+  dialog; the list and search index refresh afterward.
+
+### Added — edit citation info
+
+- **A structured citation editor** for the common bibliographic fields (type, title,
+  author(s), year, publisher, DOI, ISBN), reached from an "Edit citation…" button in the
+  detail panel. Only the edited fields are rewritten — every other field on the entry
+  (edition, language, a publisher's location, a full ISO date, …) is preserved, and the
+  citation key never changes. Edits are validated by a parse round-trip before they are saved.
+
+### Added — EPUB import
+
+- **Drop in an EPUB and get an entry.** `kartoteka add-epub <file>` and the GUI's "Add EPUB…"
+  read the book's embedded (OPF) metadata — title, author, date, publisher, ISBN — and, when
+  an ISBN is present, enrich the record via an OpenLibrary lookup (falling back to the EPUB's
+  own metadata offline). The `.epub` is attached to the resulting entry.
+
 ## [0.1.0-dev8] — 2026-07-27 — Development build
 
 Completes the M3 knowledge-graph track: `fsck` node checks and node search indexing at the
