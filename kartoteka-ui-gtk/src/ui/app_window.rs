@@ -3457,6 +3457,18 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         locate.set_menu_model(Some(&menu));
     }
     actions.append(&locate);
+    // Delete: destructive, so it sits at the end and asks for confirmation first.
+    let delete_button = gtk4::Button::with_label("Delete…");
+    delete_button.add_css_class("destructive-action");
+    delete_button.set_tooltip_text(Some("Delete this entry and its note, relations, and attachments"));
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        let title = title_text.to_string();
+        delete_button.connect_clicked(move |_| confirm_delete_entry(&state, &widgets, &key, &title));
+    }
+    actions.append(&delete_button);
     b.append(&actions);
 
     let fields = gtk4::Box::new(Orientation::Vertical, 4);
@@ -4138,6 +4150,59 @@ fn group_relations_display(
 
 /// Rebuild the search index quietly (no toast) so newly created/edited nodes and entries are
 /// findable. A no-op if no library is open or the rebuild fails (search just stays stale).
+/// Confirm and then delete an entry. Uses an `adw::MessageDialog` with a destructive
+/// "Delete" response; on confirmation, removes the entry via the library (note, relations,
+/// collection membership, and unshared attachment blobs go with it), rebuilds the search
+/// index, and reloads the list.
+fn confirm_delete_entry(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    key: &str,
+    title: &str,
+) {
+    let dialog = adw::MessageDialog::new(
+        Some(&widgets.window),
+        Some("Delete this entry?"),
+        Some(&format!(
+            "“{title}” and its note, relations, collection membership, and any attachments \
+             unique to it will be permanently removed. The underlying files are deleted from \
+             the library (use git to recover if needed)."
+        )),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("delete", "Delete");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let key = key.to_string();
+    dialog.connect_response(None, move |dlg, response| {
+        dlg.close();
+        if response != "delete" {
+            return;
+        }
+        let result = {
+            let s = state.borrow();
+            s.library
+                .as_ref()
+                .map(|lib| lib.delete_entry(&key))
+                .transpose()
+        };
+        match result {
+            Ok(_) => {
+                rebuild_index_silent(&state);
+                reload_current(&state, &widgets);
+                clear_box(&widgets.detail);
+                toast(&widgets, &format!("Deleted {key}"));
+            }
+            Err(e) => toast(&widgets, &format!("Could not delete {key}: {e}")),
+        }
+    });
+    dialog.present();
+}
+
 fn rebuild_index_silent(state: &Rc<RefCell<AppState>>) {
     let rebuilt = {
         let s = state.borrow();

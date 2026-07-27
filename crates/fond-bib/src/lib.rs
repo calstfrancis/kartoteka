@@ -29,7 +29,7 @@ pub use annotation::{Annotation, AnnotationKind, AnnotationSidecar};
 pub use collection::Collection;
 pub use error::{BibError, Result};
 pub use import::{ImportOptions, ImportReport};
-pub use library::{FsckReport, Library, RelationReconcile, Target, UsageMap};
+pub use library::{DeleteReport, FsckReport, Library, RelationReconcile, Target, UsageMap};
 pub use node::{Node, NodeFrontmatter, NodeType};
 pub use note::{
     split_facet, Attachment, CitePrefs, Note, NoteFrontmatter, Progress, ReadStatus, Task,

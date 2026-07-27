@@ -617,3 +617,74 @@ fn fsck_flags_malformed_node_slug() {
     // The file itself parses fine — only its name is the problem.
     assert!(report.unparseable_nodes.is_empty());
 }
+
+// ---- delete_entry -------------------------------------------------------------------
+
+#[test]
+fn delete_entry_removes_files_relations_and_collection_membership() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a", "b"]);
+
+    // A relates to B (symmetric): B's note gains a maintained edge back to A.
+    lib.add_relation("a", Predicate::Related, "b").unwrap();
+    assert!(edges(&lib, "b").iter().any(|(_, t, _)| t == "a"));
+
+    // A sits in a collection alongside B.
+    lib.save_collection(
+        "reading",
+        &fond_bib::Collection {
+            name: "Reading".into(),
+            description: None,
+            keys: vec!["a".into(), "b".into()],
+        },
+    )
+    .unwrap();
+
+    let report = lib.delete_entry("a").unwrap();
+
+    // The entry file (and its auto-created note) are gone.
+    assert!(!lib.entry_path("a").exists());
+    assert!(!lib.note_path("a").exists());
+    assert!(report.files_removed.iter().any(|p| p.ends_with("a.yml")));
+
+    // B no longer has any edge pointing at the deleted key.
+    assert!(!edges(&lib, "b").iter().any(|(_, t, _)| t == "a"));
+    assert_eq!(report.relations_cleared, 1, "{report:?}");
+
+    // The collection dropped A but kept B.
+    assert_eq!(lib.load_collection("reading").unwrap().keys, vec!["b"]);
+    assert_eq!(report.collections_updated, vec!["reading"]);
+
+    // Deleting again is a harmless no-op.
+    let again = lib.delete_entry("a").unwrap();
+    assert!(again.files_removed.is_empty());
+}
+
+#[test]
+fn delete_entry_gcs_unshared_blob_but_keeps_shared_one() {
+    let (dir, lib) = temp_library();
+    seed_entries(&lib, &["shared_a", "shared_b", "solo"]);
+
+    // One file attached to two entries → one shared blob.
+    let shared_src = dir.path().join("shared.pdf");
+    fs::write(&shared_src, b"shared bytes").unwrap();
+    let att = lib.store_attachment("shared_a", &shared_src, None).unwrap();
+    lib.store_attachment("shared_b", &shared_src, None).unwrap();
+    let hex = att.hash.rsplit(':').next().unwrap().to_string();
+    assert!(lib.attachment_blob_path(&hex).exists());
+
+    // A different file attached only to `solo` → its own blob.
+    let solo_src = dir.path().join("solo.pdf");
+    fs::write(&solo_src, b"solo bytes").unwrap();
+    let solo_att = lib.store_attachment("solo", &solo_src, None).unwrap();
+    let solo_hex = solo_att.hash.rsplit(':').next().unwrap().to_string();
+
+    // Deleting one sharer keeps the shared blob (still referenced by the other).
+    lib.delete_entry("shared_a").unwrap();
+    assert!(lib.attachment_blob_path(&hex).exists(), "shared blob GC'd too early");
+
+    // Deleting the sole referencer GCs its blob.
+    let report = lib.delete_entry("solo").unwrap();
+    assert!(!lib.attachment_blob_path(&solo_hex).exists(), "solo blob not GC'd");
+    assert!(report.blobs_removed.iter().any(|p| p.ends_with(&solo_hex)));
+}

@@ -694,6 +694,124 @@ impl Library {
         }
     }
 
+    /// Delete an entry and everything derived from or pointing at it, leaving the vault
+    /// consistent. Removes `entries/<key>.yml` and its sidecars (note, annotations, AI);
+    /// strips every relation edge that names `key` from all other notes/nodes; drops `key`
+    /// from every collection; and garbage-collects attachment blobs no surviving note still
+    /// references (a blob shared by another entry is kept). Best-effort and idempotent: a
+    /// missing file or an unparseable host is skipped rather than aborting. The search index
+    /// is derived state, so the caller reindexes afterward.
+    pub fn delete_entry(&self, key: &str) -> Result<DeleteReport> {
+        let mut report = DeleteReport::default();
+
+        // Capture this entry's attachment hashes before its note is removed, so we can GC any
+        // blob that becomes unreferenced. A missing or unparseable note just yields none.
+        let own_hashes: Vec<String> = match self.load_note(key) {
+            Ok(Some(note)) => note
+                .frontmatter
+                .attachments
+                .iter()
+                .map(|a| a.hash.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        // 1. Strip every relation edge naming `key` (forward or inverse) from all other hosts.
+        //    We drop edges wholesale rather than routing through `set_relations`, so a corrupt
+        //    counterpart elsewhere can't block the delete.
+        report.relations_cleared = self.strip_all_edges_to(key)?;
+
+        // 2. Remove `key` from every collection that lists it.
+        for slug in self.collection_slugs()? {
+            let Ok(mut coll) = self.load_collection(&slug) else {
+                continue;
+            };
+            let before = coll.keys.len();
+            coll.keys.retain(|k| k != key);
+            if coll.keys.len() != before {
+                self.save_collection(&slug, &coll)?;
+                report.collections_updated.push(slug);
+            }
+        }
+
+        // 3. Remove the entry file and its sidecars. Missing is fine.
+        for path in [
+            self.entry_path(key),
+            self.note_path(key),
+            self.annot_path(key),
+            self.ai_path(key),
+        ] {
+            match fs::remove_file(&path) {
+                Ok(()) => report.files_removed.push(path),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(BibError::io(&path, e)),
+            }
+        }
+
+        // 4. GC attachment blobs no surviving note references (the note above is now gone, so
+        //    it no longer counts toward the reference set).
+        if !own_hashes.is_empty() {
+            let still_referenced = self.referenced_attachment_hashes()?;
+            for hash in own_hashes {
+                if still_referenced.contains(&hash) {
+                    continue;
+                }
+                let hex = hash.rsplit(':').next().unwrap_or(&hash);
+                let blob = self.attachment_blob_path(hex);
+                match fs::remove_file(&blob) {
+                    Ok(()) => report.blobs_removed.push(blob),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(BibError::io(&blob, e)),
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Remove every relation edge (forward or inverse) whose target is `key`, from every
+    /// relation host (notes ∪ nodes). Returns the number of hosts changed. The host `key`
+    /// itself is skipped (its own files are being removed). Unparseable hosts are skipped.
+    fn strip_all_edges_to(&self, key: &str) -> Result<usize> {
+        let mut changed = 0usize;
+        let key_set = self.existing_keys()?;
+        let mut host_ids: Vec<String> = self.keys_sorted()?;
+        for slug in self.node_slugs()? {
+            if !key_set.contains(&slug) {
+                host_ids.push(slug);
+            }
+        }
+        for id in &host_ids {
+            if id == key {
+                continue;
+            }
+            let Ok(Some(mut host)) = self.load_host_existing(id) else {
+                continue;
+            };
+            let before = host.relations().len();
+            host.relations_mut().retain(|r| r.target != key);
+            if host.relations().len() != before {
+                self.save_host(&host)?;
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Every attachment hash referenced by any note currently on disk. Used to decide which
+    /// blobs are safe to GC after an entry is deleted.
+    fn referenced_attachment_hashes(&self) -> Result<HashSet<String>> {
+        let mut set = HashSet::new();
+        for key in self.keys_sorted()? {
+            if let Ok(Some(note)) = self.load_note(&key) {
+                for a in &note.frontmatter.attachments {
+                    set.insert(a.hash.clone());
+                }
+            }
+        }
+        Ok(set)
+    }
+
     // ---- Projects & usage (see docs/M2-SPEC.md §5) ------------------------------------
 
     pub fn project_path(&self, slug: &str) -> PathBuf {
@@ -1327,6 +1445,19 @@ impl RelationReconcile {
     pub fn is_clean(&self) -> bool {
         self.missing.is_empty() && self.orphaned.is_empty() && self.dangling_targets.is_empty()
     }
+}
+
+/// What [`Library::delete_entry`] removed or touched. Paths are under the library root.
+#[derive(Debug, Default)]
+pub struct DeleteReport {
+    /// The entry file and any sidecars (note, annotations, AI) that were removed.
+    pub files_removed: Vec<PathBuf>,
+    /// How many other hosts (notes/nodes) had an edge to the deleted key stripped.
+    pub relations_cleared: usize,
+    /// Collection slugs the key was removed from.
+    pub collections_updated: Vec<String>,
+    /// Attachment blobs garbage-collected (no surviving note referenced them).
+    pub blobs_removed: Vec<PathBuf>,
 }
 
 /// The result of [`Library::fsck`]. Empty means the library is structurally clean.

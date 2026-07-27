@@ -42,6 +42,16 @@ enum Command {
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// Delete an entry and everything derived from or pointing at it: its note,
+    /// annotations, AI sidecar, relation edges on other records, collection membership,
+    /// and any attachment blob no other entry still references.
+    Delete {
+        /// Citation key to delete.
+        key: String,
+        /// Skip the confirmation prompt.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
     /// List entries.
     List {
         #[arg(long)]
@@ -212,6 +222,33 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             for key in &keys {
                 println!("added {key}");
             }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Delete { key, yes } => {
+            let library = Library::open(&cli.library)?;
+            if !library.existing_keys()?.contains(&key) {
+                return Err(format!("no entry with key '{key}'").into());
+            }
+            if !yes {
+                print!("Delete '{key}' and its note, relations, and collection membership? [y/N] ");
+                std::io::Write::flush(&mut std::io::stdout())?;
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if !matches!(answer.trim(), "y" | "Y" | "yes") {
+                    println!("Cancelled.");
+                    return Ok(ExitCode::SUCCESS);
+                }
+            }
+            let report = library.delete_entry(&key)?;
+            println!(
+                "Deleted {key}: {} file(s) removed, {} record(s) unlinked, {} collection(s) updated, {} blob(s) freed",
+                report.files_removed.len(),
+                report.relations_cleared,
+                report.collections_updated.len(),
+                report.blobs_removed.len()
+            );
+            reindex_after_change(&cli.library, &library);
             Ok(ExitCode::SUCCESS)
         }
 
@@ -813,4 +850,20 @@ fn print_fsck(report: &FsckReport) {
         println!("annot pdf unmatched {key}: {hash} matches no recorded attachment");
     }
     println!("\n{} problem(s) found", report.problem_count());
+}
+
+/// Regenerate `library.yml` and, if a search index already exists, rebuild it — used after a
+/// mutation like `delete`. Best-effort: a reindex failure is reported but doesn't fail the
+/// command (the authoritative files are already updated; `reindex` can be rerun). We never
+/// *create* an index here, so CLI-only users who don't use search aren't forced into one.
+fn reindex_after_change(library_root: &std::path::Path, library: &Library) {
+    if let Err(e) = library.regenerate_library_yml() {
+        eprintln!("warning: could not regenerate library.yml: {e}");
+    }
+    let index_dir = library_root.join(".kartoteka").join("index");
+    if index_dir.join("meta.json").exists() {
+        if let Err(e) = fond_index::SearchIndex::rebuild(library, &index_dir, |_| None) {
+            eprintln!("warning: could not rebuild the search index: {e} (run `kartoteka reindex`)");
+        }
+    }
 }
