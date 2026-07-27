@@ -180,6 +180,22 @@ impl Library {
         Ok(path)
     }
 
+    /// Apply the structured citation editor's `edited` fields to `key`, preserving every
+    /// field the form doesn't manage (see [`entry::apply_fields_to_yaml`]). The citation key
+    /// is not changed. The result is validated by a parse round-trip before it is written, so
+    /// a malformed edit fails without touching the file. The search index is derived state;
+    /// the caller reindexes afterward.
+    pub fn edit_fields(&self, key: &str, edited: &entry::EntryFields) -> Result<()> {
+        let parsed = self.load_entry(key)?;
+        let current = entry::read_fields(&parsed.entry);
+        let original_yaml = entry::serialize_entry(&parsed.entry)?;
+        let new_yaml = entry::apply_fields_to_yaml(&original_yaml, &current, edited)?;
+        // Validate + normalize by round-tripping through Hayagriva before writing.
+        let reparsed = entry::parse_single(&new_yaml, &self.entry_path(key))?;
+        self.write_entry(&reparsed.entry)?;
+        Ok(())
+    }
+
     /// Write a note to `notes/<key>.md`.
     pub fn write_note(&self, key: &str, note: &Note) -> Result<PathBuf> {
         let path = self.note_path(key);

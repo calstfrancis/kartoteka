@@ -3366,6 +3366,15 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         edit_button.connect_clicked(move |_| show_note_editor(&state, &widgets, &key));
     }
     actions.append(&edit_button);
+    let cite_edit_button = gtk4::Button::with_label("Edit citation…");
+    cite_edit_button.set_tooltip_text(Some("Edit the bibliographic fields (title, author, year…)"));
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        cite_edit_button.connect_clicked(move |_| show_citation_editor(&state, &widgets, &key));
+    }
+    actions.append(&cite_edit_button);
     let cite_button = gtk4::Button::with_label("Cite");
     cite_button.set_tooltip_text(Some("Copy the Typst citation (@key)"));
     {
@@ -3956,6 +3965,141 @@ fn show_pdf_reader(window: &adw::ApplicationWindow, blob: &std::path::Path, titl
 }
 
 /// Edit an entry's note: tags, read status, rating, and prose. Writes `notes/<key>.md`.
+/// The structured citation editor: a small form over the common bibliographic fields
+/// (type, title, authors, year, publisher, DOI, ISBN). It edits only those fields — every
+/// other field on the entry is preserved (see `Library::edit_fields`). On save it rewrites
+/// the entry, rebuilds the search index, and refreshes the detail panel.
+fn show_citation_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    let current = {
+        let s = state.borrow();
+        let Some(lib) = s.library.as_ref() else {
+            return;
+        };
+        match lib.load_entry(key) {
+            Ok(parsed) => fond_bib::entry::read_fields(&parsed.entry),
+            Err(e) => {
+                drop(s);
+                toast(widgets, &format!("Could not read entry: {e}"));
+                return;
+            }
+        }
+    };
+
+    // Type choices: the shared ITEM_TYPES list, plus the entry's own type appended if it is
+    // something not in that list (so an exotic type round-trips instead of being changed).
+    let mut types: Vec<(String, String)> = ITEM_TYPES
+        .iter()
+        .map(|(l, t)| (l.to_string(), t.to_string()))
+        .collect();
+    if !current.entry_type.is_empty() && !types.iter().any(|(_, t)| t == &current.entry_type) {
+        types.push((current.entry_type.clone(), current.entry_type.clone()));
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Edit citation"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(480, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+
+    let type_labels: Vec<&str> = types.iter().map(|(l, _)| l.as_str()).collect();
+    let type_drop = gtk4::DropDown::from_strings(&type_labels);
+    type_drop.set_selected(
+        types
+            .iter()
+            .position(|(_, t)| t == &current.entry_type)
+            .unwrap_or(0) as u32,
+    );
+    let title = gtk4::Entry::builder().text(&current.title).build();
+    // Authors: one "Family, Given" per line internally; shown compactly as "; "-separated.
+    let authors = gtk4::Entry::builder()
+        .text(current.authors.replace('\n', "; "))
+        .placeholder_text("Last, First; Last, First")
+        .build();
+    let year = gtk4::Entry::builder().text(&current.year).build();
+    let publisher = gtk4::Entry::builder().text(&current.publisher).build();
+    let doi = gtk4::Entry::builder().text(&current.doi).build();
+    let isbn = gtk4::Entry::builder().text(&current.isbn).build();
+
+    content.append(&labeled("Type", &type_drop));
+    content.append(&labeled("Title", &title));
+    content.append(&labeled("Author(s)", &authors));
+    content.append(&labeled("Year", &year));
+    content.append(&labeled("Publisher", &publisher));
+    content.append(&labeled("DOI", &doi));
+    content.append(&labeled("ISBN", &isbn));
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let key = key.to_string();
+        save.connect_clicked(move |_| {
+            let entry_type = types
+                .get(type_drop.selected() as usize)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| current.entry_type.clone());
+            let authors_field = authors
+                .text()
+                .split([';', '\n'])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let edited = fond_bib::entry::EntryFields {
+                entry_type,
+                title: title.text().trim().to_string(),
+                authors: authors_field,
+                year: year.text().trim().to_string(),
+                publisher: publisher.text().trim().to_string(),
+                doi: doi.text().trim().to_string(),
+                isbn: isbn.text().trim().to_string(),
+            };
+
+            let result = {
+                let s = state.borrow();
+                s.library.as_ref().map(|lib| lib.edit_fields(&key, &edited))
+            };
+            match result {
+                Some(Ok(())) => {
+                    rebuild_index_silent(&state);
+                    reload_current(&state, &widgets);
+                    select_key(&state, &widgets, &key);
+                    toast(&widgets, "Citation updated");
+                    dialog.close();
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
+                None => {}
+            }
+        });
+    }
+
+    dialog.present();
+}
+
 fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
     let note = {
         let s = state.borrow();

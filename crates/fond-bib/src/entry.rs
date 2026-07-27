@@ -105,3 +105,160 @@ pub fn serialize_entry_as(entry: &HEntry, new_key: &str) -> Result<String> {
         None => format!("{new_key}:\n"),
     })
 }
+
+/// The subset of bibliographic fields the GUI's structured citation editor exposes. Values
+/// are the human-facing strings shown in the form; `authors` is one `Family, Given` per line
+/// (matching how the entry lists them). Everything else on the entry is left untouched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryFields {
+    /// Hayagriva entry type, lowercased (e.g. `book`, `article`).
+    pub entry_type: String,
+    pub title: String,
+    /// One author per line, each `Family, Given` (or just `Family`).
+    pub authors: String,
+    /// Publication year as free text (empty = no date).
+    pub year: String,
+    pub publisher: String,
+    pub doi: String,
+    pub isbn: String,
+}
+
+/// One author rendered as the `Family, Given` line the form shows (given name optional).
+fn person_line(p: &hayagriva::types::Person) -> String {
+    match &p.given_name {
+        Some(given) if !given.is_empty() => format!("{}, {given}", p.name),
+        _ => p.name.clone(),
+    }
+}
+
+/// Read the editable fields out of an entry, for populating the structured editor.
+pub fn read_fields(entry: &HEntry) -> EntryFields {
+    EntryFields {
+        entry_type: format!("{:?}", entry.entry_type()).to_lowercase(),
+        title: title_string(entry).unwrap_or_default(),
+        authors: entry
+            .authors()
+            .map(|people| {
+                people
+                    .iter()
+                    .map(person_line)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default(),
+        year: entry.date().map(|d| d.year.to_string()).unwrap_or_default(),
+        publisher: entry
+            .publisher()
+            .and_then(|p| p.name())
+            .map(|name| name.value.to_string())
+            .unwrap_or_default(),
+        doi: entry.doi().unwrap_or_default().to_string(),
+        isbn: entry.isbn().unwrap_or_default().to_string(),
+    }
+}
+
+/// Apply the structured editor's `edited` fields onto an entry's canonical `original_yaml`,
+/// preserving every field the form doesn't manage. Only keys whose value actually changed
+/// (vs. `current`, the fields as they were read from the same entry) are rewritten — so a
+/// publisher carrying a location, or a full ISO date, survives an edit that didn't touch it.
+/// Returns YAML text still keyed to the entry's own key; the caller validates it with a parse
+/// round-trip before writing.
+pub fn apply_fields_to_yaml(
+    original_yaml: &str,
+    current: &EntryFields,
+    edited: &EntryFields,
+) -> Result<String> {
+    use serde_yaml_ng::Value;
+
+    let mut doc: Value = serde_yaml_ng::from_str(original_yaml).map_err(|e| BibError::Yaml {
+        path: Path::new("<entry>").to_path_buf(),
+        message: e.to_string(),
+    })?;
+
+    // The document is a one-key mapping (`<key>: { fields }`). Grab that inner mapping.
+    let inner = doc
+        .as_mapping_mut()
+        .and_then(|m| m.values_mut().next())
+        .and_then(|v| v.as_mapping_mut())
+        .ok_or_else(|| BibError::Yaml {
+            path: Path::new("<entry>").to_path_buf(),
+            message: "entry YAML is not a single keyed mapping".to_string(),
+        })?;
+
+    let key_of = |s: &str| Value::String(s.to_string());
+
+    // type — always present; write the (non-empty) edited type when it changed.
+    if edited.entry_type != current.entry_type && !edited.entry_type.trim().is_empty() {
+        inner.insert(key_of("type"), key_of(edited.entry_type.trim()));
+    }
+
+    // Simple scalar-or-remove fields.
+    if edited.title != current.title {
+        set_or_remove(inner, "title", edited.title.trim());
+    }
+    if edited.publisher != current.publisher {
+        set_or_remove(inner, "publisher", edited.publisher.trim());
+    }
+
+    // author — a YAML sequence of "Family, Given" lines, or removed if empty.
+    if edited.authors != current.authors {
+        let lines: Vec<Value> = edited
+            .authors
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(key_of)
+            .collect();
+        if lines.is_empty() {
+            inner.remove(key_of("author"));
+        } else {
+            inner.insert(key_of("author"), Value::Sequence(lines));
+        }
+    }
+
+    // date — an integer year when it parses as one, else the raw string, else removed.
+    if edited.year != current.year {
+        let y = edited.year.trim();
+        if y.is_empty() {
+            inner.remove(key_of("date"));
+        } else if let Ok(n) = y.parse::<i64>() {
+            inner.insert(key_of("date"), Value::Number(n.into()));
+        } else {
+            inner.insert(key_of("date"), key_of(y));
+        }
+    }
+
+    // doi / isbn live under `serial-number`. Mutate that sub-map in place, preserving any
+    // other serial numbers, and drop it entirely if it ends up empty.
+    if edited.doi != current.doi || edited.isbn != current.isbn {
+        let sn_key = key_of("serial-number");
+        let mut sn = match inner.remove(&sn_key) {
+            Some(Value::Mapping(m)) => m,
+            _ => serde_yaml_ng::Mapping::new(),
+        };
+        if edited.doi != current.doi {
+            set_or_remove(&mut sn, "doi", edited.doi.trim());
+        }
+        if edited.isbn != current.isbn {
+            set_or_remove(&mut sn, "isbn", edited.isbn.trim());
+        }
+        if !sn.is_empty() {
+            inner.insert(sn_key, Value::Mapping(sn));
+        }
+    }
+
+    serde_yaml_ng::to_string(&doc).map_err(|e| BibError::Yaml {
+        path: Path::new("<entry>").to_path_buf(),
+        message: e.to_string(),
+    })
+}
+
+/// Set `map[key] = value` (as a string) when non-empty, else remove the key.
+fn set_or_remove(map: &mut serde_yaml_ng::Mapping, key: &str, value: &str) {
+    let k = serde_yaml_ng::Value::String(key.to_string());
+    if value.is_empty() {
+        map.remove(&k);
+    } else {
+        map.insert(k, serde_yaml_ng::Value::String(value.to_string()));
+    }
+}

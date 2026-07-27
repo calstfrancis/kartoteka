@@ -688,3 +688,70 @@ fn delete_entry_gcs_unshared_blob_but_keeps_shared_one() {
     assert!(!lib.attachment_blob_path(&solo_hex).exists(), "solo blob not GC'd");
     assert!(report.blobs_removed.iter().any(|p| p.ends_with(&solo_hex)));
 }
+
+// ---- edit_fields (structured citation editor) ---------------------------------------
+
+#[test]
+fn edit_fields_updates_managed_fields_and_preserves_others() {
+    use fond_bib::entry::{self, EntryFields};
+    let (_dir, lib) = temp_library();
+
+    // An entry with fields the form doesn't manage (edition, language) plus a publisher.
+    fs::write(
+        lib.entry_path("work"),
+        "work:\n  type: book\n  title: Old Title\n  author:\n  - Doe, Jane\n  date: 1990\n  \
+         publisher: Old Press\n  edition: 2\n  language: en\n",
+    )
+    .unwrap();
+
+    let current = entry::read_fields(&lib.load_entry("work").unwrap().entry);
+    assert_eq!(current.title, "Old Title");
+    assert_eq!(current.authors, "Doe, Jane");
+    assert_eq!(current.year, "1990");
+    assert_eq!(current.publisher, "Old Press");
+
+    // Edit title, add a second author, change the year, set a DOI — leave publisher untouched.
+    let edited = EntryFields {
+        title: "New Title".into(),
+        authors: "Doe, Jane\nRoe, Richard".into(),
+        year: "1991".into(),
+        doi: "10.1000/new".into(),
+        ..current.clone()
+    };
+    lib.edit_fields("work", &edited).unwrap();
+
+    let after = lib.load_entry("work").unwrap().entry;
+    let f = entry::read_fields(&after);
+    assert_eq!(f.title, "New Title");
+    assert_eq!(f.authors, "Doe, Jane\nRoe, Richard");
+    assert_eq!(f.year, "1991");
+    assert_eq!(f.doi, "10.1000/new");
+    assert_eq!(f.publisher, "Old Press", "untouched publisher must survive");
+
+    // Fields the form never exposes must still be on disk.
+    let raw = fs::read_to_string(lib.entry_path("work")).unwrap();
+    assert!(raw.contains("edition:"), "exotic field dropped: {raw}");
+    assert!(raw.contains("language: en"), "exotic field dropped: {raw}");
+}
+
+#[test]
+fn edit_fields_clearing_a_field_removes_it() {
+    use fond_bib::entry::{self, EntryFields};
+    let (_dir, lib) = temp_library();
+    fs::write(
+        lib.entry_path("work"),
+        "work:\n  type: book\n  title: T\n  date: 2000\n  publisher: P\n",
+    )
+    .unwrap();
+
+    let current = entry::read_fields(&lib.load_entry("work").unwrap().entry);
+    let edited = EntryFields {
+        publisher: String::new(), // clear it
+        ..current
+    };
+    lib.edit_fields("work", &edited).unwrap();
+
+    let raw = fs::read_to_string(lib.entry_path("work")).unwrap();
+    assert!(!raw.contains("publisher"), "cleared field still present: {raw}");
+    assert!(raw.contains("date: 2000"), "unrelated field lost: {raw}");
+}
