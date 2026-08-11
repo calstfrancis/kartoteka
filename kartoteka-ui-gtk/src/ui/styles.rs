@@ -6,9 +6,16 @@
 /// silently reverts you.
 const FOND_CSS: &str = include_str!("../../style/fond.css");
 
-/// App-specific additions, layered after `FOND_CSS`. Empty for now — Kartoteka
-/// has no rules of its own yet beyond what the shared classes already cover.
-const GLOBAL_CSS: &str = "";
+/// App-specific additions, layered after `FOND_CSS`. Tag chips aren't part of the shared
+/// suite vocabulary (no other Fond app has a tagging UI), so this is the one rule Kartoteka
+/// owns outright.
+const GLOBAL_CSS: &str = "\
+    .tag-chip { \
+        background: alpha(@window_fg_color, 0.08); \
+        border-radius: 999px; \
+        padding: 1px 9px; \
+        font-size: 0.85em; \
+    }";
 
 /// Loads all static, app-wide CSS once, at startup.
 pub fn load_global_css() {

@@ -147,11 +147,22 @@ nothing new decided here, just consolidated:
   removal, the relation cleanup, and delete-again-is-a-no-op idempotency. Verified end-to-end
   headless: deleted a node with an incoming relation from an entry, confirmed the node file,
   the confirmation dialog, and the Nodes-manager list refresh all worked.
+- **Facet chip grouping — done.** The detail panel's Tags row now groups faceted tags
+  (`discipline:theology`) under a small caption per facet, each value rendered as a pill
+  chip (a new `.tag-chip` class — the one rule in `GLOBAL_CSS` Kartoteka owns outright, since
+  no other Fond app has a tagging UI); unfaceted tags collect into their own trailing,
+  caption-less group. Replaces the old plain comma-joined string, which stopped scanning as
+  soon as facets and plain topical tags were mixed together. Verified visually, light.
+- **"Promote AI keyword → tag" — done.** An "AI keywords…" button on the detail panel (shown
+  only when `ai/<key>.yml` has keywords) opens a checklist — keywords already present as a
+  tag are shown disabled ("already a tag"), the rest pre-checked — and "Add as tags" appends
+  the chosen ones to the note. One-directional and user-triggered only: nothing here ever
+  writes back into the AI sidecar, matching `docs/M2-SPEC.md` §4's boundary rule. Verified
+  end-to-end headless: seeded an AI sidecar with one keyword already tagged and two not,
+  confirmed the dialog showed that split correctly, and confirmed both new keywords landed
+  in `notes/<key>.md` after saving.
 - **"Used in" panel** — `scan_usage`/`write_usage` exist at the `fond-bib` layer; needs a GUI
   scan trigger (on open/reindex) and a `usage.json` loader on the detail panel.
-- **Facet chip grouping** in the entry editor (the search side, `facet:` scoping, is done).
-- **"Promote AI keyword → tag"** — one-directional, user-triggered only (never automatic, per
-  the `ai/<key>.yml` boundary rule).
 - **Global task view** — aggregate note `tasks:` across the library. Now that tasks are
   GUI-editable (above), this is more worth doing than when tasks were disk-only.
 - **Node-side relation editor** — relations are currently authored from the entry side only.

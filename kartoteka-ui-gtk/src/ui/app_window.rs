@@ -2836,6 +2836,129 @@ fn show_tags_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.present();
 }
 
+/// Offer an entry's `ai/<key>.yml` keywords as tags to add. Checking a keyword and saving
+/// appends it to the note's `tags:` — a one-directional, user-triggered write; nothing here
+/// ever touches the AI sidecar itself (`docs/M2-SPEC.md` §4's boundary rule).
+fn show_promote_keywords_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    key: &str,
+    keywords: Vec<String>,
+) {
+    let existing_tags: Vec<String> = {
+        let s = state.borrow();
+        s.library
+            .as_ref()
+            .and_then(|lib| lib.load_note(key).ok().flatten())
+            .map(|n| n.frontmatter.tags)
+            .unwrap_or_default()
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("AI keywords"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(380, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let add = gtk4::Button::with_label("Add as tags");
+    add.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&add);
+    view.add_top_bar(&header);
+
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list.add_css_class("fond-list");
+    list.set_margin_top(12);
+    list.set_margin_bottom(12);
+    list.set_margin_start(12);
+    list.set_margin_end(12);
+
+    let checks: Vec<(String, gtk4::CheckButton)> = keywords
+        .iter()
+        .map(|kw| {
+            let already = existing_tags.iter().any(|t| t == kw);
+            let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
+            hbox.set_margin_top(4);
+            hbox.set_margin_bottom(4);
+            hbox.set_margin_start(8);
+            hbox.set_margin_end(8);
+            let check = gtk4::CheckButton::with_label(kw);
+            check.set_active(!already);
+            check.set_sensitive(!already);
+            hbox.append(&check);
+            if already {
+                let note = gtk4::Label::new(Some("already a tag"));
+                note.add_css_class("fond-row-meta");
+                hbox.append(&note);
+            }
+            let row = gtk4::ListBoxRow::new();
+            row.add_css_class("fond-row");
+            row.set_activatable(false);
+            row.set_child(Some(&hbox));
+            list.append(&row);
+            (kw.clone(), check)
+        })
+        .collect();
+
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
+    scroll.set_child(Some(&list));
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let key = key.to_string();
+        add.connect_clicked(move |_| {
+            let chosen: Vec<String> = checks
+                .iter()
+                .filter(|(_, c)| c.is_active() && c.is_sensitive())
+                .map(|(kw, _)| kw.clone())
+                .collect();
+            if chosen.is_empty() {
+                dialog.close();
+                return;
+            }
+            let result = {
+                let s = state.borrow();
+                s.library.as_ref().map(|lib| {
+                    let mut note = lib.load_note(&key).ok().flatten().unwrap_or_default();
+                    for kw in &chosen {
+                        if !note.frontmatter.tags.iter().any(|t| t == kw) {
+                            note.frontmatter.tags.push(kw.clone());
+                        }
+                    }
+                    lib.write_note(&key, &note)
+                })
+            };
+            match result {
+                Some(Ok(_)) => {
+                    toast(&widgets, &format!("Added {} tag(s)", chosen.len()));
+                    dialog.close();
+                    refresh_detail(&state, &widgets);
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not save tags: {e}")),
+                None => {}
+            }
+        });
+    }
+
+    dialog.present();
+}
+
 fn open_uri(window: &adw::ApplicationWindow, uri: &str) {
     let launcher = gtk4::UriLauncher::new(uri);
     launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
@@ -3642,6 +3765,26 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         related_button.connect_clicked(move |_| relations_dialog(&state, &widgets, &key));
     }
     actions.append(&related_button);
+    // Promote AI keyword → tag: only shown when there's an ai/<key>.yml sidecar with
+    // keywords to offer. One-directional, user-triggered only — see docs/M2-SPEC.md §4's
+    // boundary rule; nothing here ever writes back into ai/<key>.yml or runs automatically.
+    let ai_keywords = library
+        .load_ai(&key)
+        .ok()
+        .flatten()
+        .map(|ai| ai.keywords)
+        .unwrap_or_default();
+    if !ai_keywords.is_empty() {
+        let ai_button = gtk4::Button::with_label("AI keywords…");
+        ai_button.set_tooltip_text(Some("Promote AI-suggested keywords into tags"));
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        ai_button.connect_clicked(move |_| {
+            show_promote_keywords_dialog(&state, &widgets, &key, ai_keywords.clone())
+        });
+        actions.append(&ai_button);
+    }
     // Author → node: create/link a person node for each author (feature §1 author IDs).
     if !summary.author.is_empty() {
         let author_button = gtk4::Button::with_label("Link author…");
@@ -3722,7 +3865,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     let mut note_body = String::new();
     if let Some(note) = &note {
         if !note.frontmatter.tags.is_empty() {
-            fields.append(&field_row("Tags", &note.frontmatter.tags.join(", ")));
+            fields.append(&tags_row(&note.frontmatter.tags));
         }
         if let Some(status) = note.frontmatter.read_status {
             fields.append(&field_row("Status", &format!("{status:?}").to_lowercase()));
@@ -5739,6 +5882,74 @@ fn field_row(name: &str, value: &str) -> gtk4::Box {
     row.append(&name_label);
     row.append(&value_label);
     row
+}
+
+/// The detail panel's Tags row, grouped by facet (`docs/M2-SPEC.md` §2's `facet:value`
+/// convention — the same one `fond-index`'s search already scopes by `facet:`). Each facet
+/// gets its own small caption and a wrapped row of chips; plain (unfaceted) tags are their
+/// own trailing group with no caption. A flat comma list read fine at three tags; it stopped
+/// scanning as soon as facets and plain topical tags were mixed in the same string.
+fn tags_row(tags: &[String]) -> gtk4::Box {
+    let row = gtk4::Box::new(Orientation::Horizontal, 10);
+    let name_label = gtk4::Label::new(Some("Tags"));
+    name_label.add_css_class("dim-label");
+    name_label.set_xalign(1.0);
+    name_label.set_width_chars(11);
+    name_label.set_valign(gtk4::Align::Start);
+    row.append(&name_label);
+
+    let groups = gtk4::Box::new(Orientation::Vertical, 6);
+    groups.set_hexpand(true);
+
+    // Group into (facet, values), preserving first-seen facet order; unfaceted tags collect
+    // into their own trailing, caption-less group.
+    let mut faceted: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut plain: Vec<&str> = Vec::new();
+    for tag in tags {
+        match fond_bib::split_facet(tag) {
+            (Some(facet), value) => match faceted.iter_mut().find(|(f, _)| *f == facet) {
+                Some((_, values)) => values.push(value),
+                None => faceted.push((facet, vec![value])),
+            },
+            (None, value) => plain.push(value),
+        }
+    }
+    faceted.sort_by_key(|(facet, _)| *facet);
+
+    for (facet, values) in &faceted {
+        groups.append(&chip_group(Some(facet), values));
+    }
+    if !plain.is_empty() {
+        groups.append(&chip_group(None, &plain));
+    }
+
+    row.append(&groups);
+    row
+}
+
+/// One facet's worth of tag chips: an optional small caption, then a wrapped flow of chips.
+fn chip_group(facet: Option<&str>, values: &[&str]) -> gtk4::Box {
+    let col = gtk4::Box::new(Orientation::Vertical, 2);
+    if let Some(facet) = facet {
+        let caption = gtk4::Label::new(Some(facet));
+        caption.add_css_class("dim-label");
+        caption.add_css_class("caption");
+        caption.set_xalign(0.0);
+        col.append(&caption);
+    }
+    let flow = gtk4::FlowBox::new();
+    flow.set_selection_mode(gtk4::SelectionMode::None);
+    flow.set_row_spacing(4);
+    flow.set_column_spacing(4);
+    flow.set_homogeneous(false);
+    flow.set_max_children_per_line(u32::MAX);
+    for value in values {
+        let chip = gtk4::Label::new(Some(value));
+        chip.add_css_class("tag-chip");
+        flow.insert(&chip, -1);
+    }
+    col.append(&flow);
+    col
 }
 
 fn human_size(bytes: u64) -> String {

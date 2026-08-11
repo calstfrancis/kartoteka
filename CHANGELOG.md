@@ -2,6 +2,20 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0-dev13] — 2026-08-11 — Development build
+
+Two more Tier 2 items from `docs/M4-SPEC.md`: facet chip grouping and promote-AI-keyword-to-tag.
+
+### Added — facet chip grouping and promote-AI-keyword-to-tag
+
+- **The detail panel's Tags row now groups faceted tags** (`discipline:theology`) under a
+  small caption per facet, rendered as pill chips, instead of one flat comma-joined string
+  that stopped scanning as soon as facets and plain topical tags mixed together.
+- **An "AI keywords…" button** (shown only when an entry has an `ai/<key>.yml` sidecar with
+  keywords) offers them as tags to add — already-tagged keywords shown disabled, the rest
+  pre-checked. One-directional and user-triggered only; nothing writes back into the AI
+  sidecar. See `docs/M4-SPEC.md` Tier 2.
+
 ## [0.1.0-dev12] — 2026-08-11 — Development build
 
 Two Tier 2 items from `docs/M4-SPEC.md`: progress/cite/task editing in the note editor, and
