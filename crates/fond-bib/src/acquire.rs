@@ -202,6 +202,10 @@ struct AcqEntry {
     date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     publisher: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
     #[serde(rename = "page-total", skip_serializing_if = "Option::is_none")]
     page_total: Option<u64>,
     #[serde(rename = "serial-number", skip_serializing_if = "Option::is_none")]
@@ -211,6 +215,10 @@ struct AcqEntry {
 #[derive(Serialize)]
 struct Serials {
     isbn: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oclc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lccn: Option<String>,
 }
 
 fn to_yaml_doc(entry: AcqEntry) -> Result<String> {
@@ -229,6 +237,8 @@ pub fn minimal_book_yaml(title: &str, author: Option<&str>) -> Result<String> {
         author: author.unwrap_or_default().to_string(),
         date: None,
         publisher: None,
+        location: None,
+        note: None,
         page_total: None,
         serial_number: None,
     })
@@ -352,8 +362,7 @@ pub fn isbn_json_to_yaml(json: &str, isbn: &str) -> Result<String> {
     let date = record
         .get("publish_date")
         .and_then(|v| v.as_str())
-        .and_then(year_from_text)
-        .map(|y| y.to_string());
+        .and_then(openlibrary_date_to_hayagriva);
 
     let publisher = record
         .get("publishers")
@@ -363,7 +372,30 @@ pub fn isbn_json_to_yaml(json: &str, isbn: &str) -> Result<String> {
         .and_then(|n| n.as_str())
         .map(|s| s.to_string());
 
+    let location = record
+        .get("publish_places")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(|s| s.to_string());
+
+    let note = record
+        .get("edition_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     let page_total = record.get("number_of_pages").and_then(|v| v.as_u64());
+
+    let identifiers = record.get("identifiers");
+    let identifier = |key: &str| {
+        identifiers
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
 
     let entry = AcqEntry {
         entry_type: "book".to_string(),
@@ -371,12 +403,68 @@ pub fn isbn_json_to_yaml(json: &str, isbn: &str) -> Result<String> {
         author,
         date,
         publisher,
+        location,
+        note,
         page_total,
         serial_number: Some(Serials {
             isbn: isbn.to_string(),
+            oclc: identifier("oclc"),
+            lccn: identifier("lccn"),
         }),
     };
     to_yaml_doc(entry)
+}
+
+/// Best-effort parse of OpenLibrary's freeform `publish_date` (e.g. `"October 2007"`,
+/// `"Oct 01, 2007"`, `"2007"`) into a string Hayagriva's date parser accepts at whatever
+/// precision the source actually supports: `YYYY-MM-DD`, `YYYY-MM`, or bare `YYYY`. `None`
+/// if no 4-digit year can be found at all.
+fn openlibrary_date_to_hayagriva(text: &str) -> Option<String> {
+    let year = year_from_text(text)?;
+    let mut month: Option<u8> = None;
+    let mut numeric_others: Vec<u8> = Vec::new();
+
+    for word in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        if word.len() == 4 && word.chars().all(|c| c.is_ascii_digit()) {
+            continue; // the year itself
+        }
+        if let Ok(n) = word.parse::<u8>() {
+            numeric_others.push(n);
+            continue;
+        }
+        if month.is_none() {
+            month = month_number(word);
+        }
+    }
+
+    // No month name, but exactly one other number in 1..=12: a numeric month (e.g. "10/2007"),
+    // not a day — a lone day-of-month with no month at all wouldn't appear in the wild.
+    if month.is_none() && numeric_others.len() == 1 && (1..=12).contains(&numeric_others[0]) {
+        month = numeric_others.pop();
+    }
+    let day = numeric_others.into_iter().find(|d| (1..=31).contains(d));
+
+    Some(match (month, day) {
+        (Some(m), Some(d)) => format!("{year:04}-{m:02}-{d:02}"),
+        (Some(m), None) => format!("{year:04}-{m:02}"),
+        _ => format!("{year:04}"),
+    })
+}
+
+/// English month name (or a >=3 letter abbreviation of one) to its 1-12 number.
+fn month_number(word: &str) -> Option<u8> {
+    const NAMES: [&str; 12] = [
+        "january", "february", "march", "april", "may", "june", "july", "august", "september",
+        "october", "november", "december",
+    ];
+    let lower = word.to_ascii_lowercase();
+    if lower.len() < 3 {
+        return None;
+    }
+    NAMES.iter().position(|n| n.starts_with(&lower)).map(|i| (i + 1) as u8)
 }
 
 fn year_from_text(s: &str) -> Option<i32> {
@@ -444,20 +532,45 @@ mod tests {
                 "authors": [{"name": "Plato"}, {"name": "Desmond Lee"}],
                 "publish_date": "October 2007",
                 "publishers": [{"name": "Penguin Classics"}],
-                "number_of_pages": 496
+                "publish_places": [{"name": "London"}],
+                "edition_name": "Revised edition",
+                "number_of_pages": 496,
+                "identifiers": {"oclc": ["123456"], "lccn": ["2007123456"]}
             }
         }"#;
         let yaml = isbn_json_to_yaml(json, "9780140449136").unwrap();
         assert!(yaml.contains("type: book"));
         assert!(yaml.contains("title: The Republic"));
         assert!(yaml.contains("Plato and Desmond Lee"));
+        // Month is preserved, not truncated down to the bare year.
         assert!(
-            yaml.contains("date: '2007'")
-                || yaml.contains("date: \"2007\"")
-                || yaml.contains("date: 2007")
+            yaml.contains("date: 2007-10") || yaml.contains("date: '2007-10'"),
+            "got: {yaml}"
         );
         assert!(yaml.contains("Penguin Classics"));
+        assert!(yaml.contains("location: London"));
+        assert!(yaml.contains("note: Revised edition"));
         assert!(yaml.contains("page-total: 496"));
         assert!(yaml.contains("isbn: '9780140449136'") || yaml.contains("isbn: \"9780140449136\""));
+        assert!(yaml.contains("oclc: '123456'") || yaml.contains("oclc: 123456"));
+        assert!(yaml.contains("lccn: '2007123456'") || yaml.contains("lccn: 2007123456"));
+    }
+
+    #[test]
+    fn openlibrary_date_captures_month_and_day_when_present() {
+        assert_eq!(
+            openlibrary_date_to_hayagriva("October 2007"),
+            Some("2007-10".to_string())
+        );
+        assert_eq!(
+            openlibrary_date_to_hayagriva("Oct 01, 2007"),
+            Some("2007-10-01".to_string())
+        );
+        assert_eq!(
+            openlibrary_date_to_hayagriva("10/2007"),
+            Some("2007-10".to_string())
+        );
+        assert_eq!(openlibrary_date_to_hayagriva("2007"), Some("2007".to_string()));
+        assert_eq!(openlibrary_date_to_hayagriva("no date here"), None);
     }
 }

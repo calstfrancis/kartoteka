@@ -122,6 +122,70 @@ pub fn page_count(pdfium: &Pdfium, bytes: &[u8]) -> Result<u16> {
     Ok(pdfium.load_pdf_from_byte_slice(bytes, None)?.pages().len())
 }
 
+/// Page `index`'s (0-based) size in PDF points (`width`, `height`) — the scale needed to map
+/// between PDF user-space coordinates (where annotation quadpoints live) and a rendered
+/// page's pixel grid.
+pub fn page_size(pdfium: &Pdfium, bytes: &[u8], index: u16) -> Result<(f32, f32)> {
+    let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+    let page = document.pages().get(index)?;
+    Ok((page.width().value, page.height().value))
+}
+
+/// Blend semi-transparent highlight rectangles into an already-rendered page's pixels, given
+/// the page's PDF-space size (so PDF-space quadpoints — the same anchor `fond-bib`'s
+/// `Annotation` stores — can be scaled onto the render's pixel grid) and a straight RGBA
+/// colour. Each quad's axis-aligned bounding box is filled, not the exact quad polygon — fine
+/// for the rectangular highlights this viewer creates; a rotated PDF-native quad would blend
+/// as its bounding box.
+///
+/// Pure pixel math, no PDFium involved — unit-testable without a real PDF.
+pub fn blend_highlights(
+    page: &mut RenderedPage,
+    page_width_pts: f32,
+    page_height_pts: f32,
+    quads: &[[f64; 8]],
+    rgba: [u8; 4],
+) {
+    if page_width_pts <= 0.0 || page_height_pts <= 0.0 || page.width == 0 || page.height == 0 {
+        return;
+    }
+    let scale_x = page.width as f32 / page_width_pts;
+    let scale_y = page.height as f32 / page_height_pts;
+    let alpha = rgba[3] as f32 / 255.0;
+
+    for q in quads {
+        let xs = [q[0], q[2], q[4], q[6]];
+        let ys = [q[1], q[3], q[5], q[7]];
+        let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min) as f32;
+        let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max) as f32;
+        let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min) as f32;
+        let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max) as f32;
+
+        let px0 = (min_x * scale_x).round().clamp(0.0, page.width as f32) as u32;
+        let px1 = (max_x * scale_x).round().clamp(0.0, page.width as f32) as u32;
+        // PDF y is bottom-up; pixel y is top-down.
+        let py0 = ((page_height_pts - max_y) * scale_y)
+            .round()
+            .clamp(0.0, page.height as f32) as u32;
+        let py1 = ((page_height_pts - min_y) * scale_y)
+            .round()
+            .clamp(0.0, page.height as f32) as u32;
+
+        for y in py0..py1 {
+            for x in px0..px1 {
+                let idx = ((y * page.width + x) * 4) as usize;
+                if idx + 3 >= page.rgba.len() {
+                    continue;
+                }
+                for (channel, &fg) in rgba.iter().enumerate().take(3) {
+                    let bg = page.rgba[idx + channel] as f32;
+                    page.rgba[idx + channel] = (bg * (1.0 - alpha) + fg as f32 * alpha).round() as u8;
+                }
+            }
+        }
+    }
+}
+
 /// Scan extracted text for the first DOI (`10.NNNN/...`). Returns it normalized (trailing
 /// punctuation trimmed), or `None`. Dependency-free scanner — no regex crate.
 pub fn find_doi(text: &str) -> Option<String> {
@@ -171,7 +235,7 @@ pub fn extract_text_from_file(pdfium: &Pdfium, path: &Path) -> Result<PdfText> {
 
 #[cfg(test)]
 mod tests {
-    use super::find_doi;
+    use super::{blend_highlights, find_doi, RenderedPage};
 
     #[test]
     fn finds_doi_in_text() {
@@ -186,5 +250,36 @@ mod tests {
         assert_eq!(find_doi("no identifier here"), None);
         // A bare version number must not be mistaken for a DOI.
         assert_eq!(find_doi("version 10.2 of the tool"), None);
+    }
+
+    fn white_page(size: u32) -> RenderedPage {
+        RenderedPage {
+            width: size,
+            height: size,
+            rgba: vec![255; (size * size * 4) as usize],
+        }
+    }
+
+    #[test]
+    fn blend_highlights_tints_the_covered_region() {
+        // A 10x10px render of a 10x10pt page: 1px == 1pt, no scaling to reason about.
+        let mut page = white_page(10);
+        // Quad covers x in [2,8], y in [2,8] in PDF space (bottom-up).
+        let quad = [2.0, 8.0, 8.0, 8.0, 2.0, 2.0, 8.0, 2.0];
+        blend_highlights(&mut page, 10.0, 10.0, &[quad], [255, 200, 0, 128]);
+
+        // Center pixel (5,5) is inside the quad and inside the flipped pixel-space box.
+        let idx = ((5 * page.width + 5) * 4) as usize;
+        assert_ne!(&page.rgba[idx..idx + 3], &[255, 255, 255], "center pixel should be tinted");
+        // Corner pixel (0,0) is outside the quad and must stay untouched.
+        assert_eq!(&page.rgba[0..3], &[255, 255, 255]);
+    }
+
+    #[test]
+    fn blend_highlights_is_a_noop_for_degenerate_page_size() {
+        let mut page = white_page(4);
+        let before = page.rgba.clone();
+        blend_highlights(&mut page, 0.0, 10.0, &[[0.0, 4.0, 4.0, 4.0, 0.0, 0.0, 4.0, 0.0]], [255, 0, 0, 255]);
+        assert_eq!(page.rgba, before);
     }
 }

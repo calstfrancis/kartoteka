@@ -2,7 +2,7 @@
 
 **Read this first when picking up Kartoteka cold** (e.g. after a cleared chat). It records
 where the project actually is, how the docs fit together, and what's committed vs. not.
-Last updated: **2026-07-27.**
+Last updated: **2026-08-11.**
 
 ---
 
@@ -14,10 +14,18 @@ the single most confusing thing about the docs:
 1. **`ROADMAP.md` "Milestone 1–5"** — the *original project brief*. **All done.** The vault
    (M1), Zotero migration (M2), bibliography output (M3), documents/PDF (M4), acquisition
    (M5), and cross-cutting search are all implemented and shipped (see dev1–dev4 history).
+   Note: §4.5 there is itself stale — it says bitmap rendering "not yet needed," but the GTK
+   app has had a working in-app PDF viewer for a while. Worth a cleanup pass independent of
+   the M4 work below.
 
-2. **The knowledge-base extension track — "M1 / M2 / M3"** — a *newer* track that grew out of
-   a large brainstorm (a ChatGPT feature dump, 23 sections). This is what the `M2-SPEC.md`,
-   `M3-SPEC.md`, `DATA-MODEL-EXTENSIONS.md`, and `M2-GUI-PLAN.md` docs describe.
+2. **The knowledge-base extension track — "M1 / M2 / M3 / M4"** — a *newer* track that grew
+   out of a large brainstorm (a ChatGPT feature dump, 23 sections), now extended past the
+   brainstorm's own scope. This is what `M2-SPEC.md`, `M3-SPEC.md`, `M4-SPEC.md`,
+   `DATA-MODEL-EXTENSIONS.md`, and `M2-GUI-PLAN.md` describe.
+   - **Extension-M4** = the map toward a "full-fledged" citation manager beyond the original
+     brief and the brainstorm both — live PDF annotation, Zerkalo vault adoption, and the
+     smaller GUI/platform gaps. **In progress** (`M4-SPEC.md`): 4A Phase 1 (live rectangle
+     highlighting in the built-in PDF viewer) is built and tested; the rest is scoped.
    - **Extension-M1** = the original vault (`DATA-MODEL.md`) — the baseline these extend.
    - **Extension-M2** = typed relations, facets, small note fields, AI sidecar, projects/usage
      — **built and tested** (see below).
@@ -98,11 +106,12 @@ Clean once the dev7 bump is committed.
 | `DATA-MODEL-EXTENSIONS.md` | The 23-section brainstorm mapped to disk + the scope **decisions**. The master "where does each idea land" table lives here. |
 | `M2-SPEC.md` | Extension-M2 implementation spec (relations/facets/fields/AI/projects). Has an "Implementation status" section. |
 | `M2-GUI-PLAN.md` | Extension-M2 GUI + index surfacing plan, with ✅/🔨/⏳ status per item. |
-| `M3-SPEC.md` | Extension-M3 spec (knowledge-graph nodes). Not built yet. |
+| `M3-SPEC.md` | Extension-M3 spec (knowledge-graph nodes). **Complete** — all 8 PRs built and tested. |
+| `M4-SPEC.md` | Extension-M4: the map toward a "full-fledged" citation manager (live PDF annotation, Zerkalo vault adoption, remaining GUI/platform gaps), tiered by how much each blocks the core workflow. **In progress.** |
 | `LICENSES.md` | Licensing (`fond-*` crates MIT; app proprietary). |
 
 **Reading order for a cold start:** this file → `DATA-MODEL-EXTENSIONS.md` (the map) →
-whichever of `M2-SPEC.md` / `M2-GUI-PLAN.md` / `M3-SPEC.md` matches the task.
+whichever of `M2-SPEC.md` / `M2-GUI-PLAN.md` / `M3-SPEC.md` / `M4-SPEC.md` matches the task.
 
 ---
 
@@ -117,14 +126,14 @@ Done and tested (extension-M2), in `crates/fond-bib` + `crates/fond-index` + GUI
 - Projects/usage: `project.rs`, `scan_usage`/`write_usage` → `.kartoteka/usage.json`.
 - Index: `facet` + `ai` fields. GUI: relations display + editing dialog.
 
-Next candidates (pick per Cal):
-- **Extension-M2 leftovers** (`M2-GUI-PLAN.md` §4): "Used in" panel (needs GUI scan trigger +
-  `usage.json` loader), facet chip grouping in the editor, "promote AI keyword → tag", global
-  task view, in-GUI editing of progress/cite/tasks.
-- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **complete (all 8 PRs)**. Possible
-  future extensions (all deferred): a visual graph/neighbours canvas (spec open item 3); a
-  node-side relation editor (relations are currently authored from the entry side only); node
-  deletion with relation cleanup (the Nodes manager has no delete yet — vim/git for now).
+Next candidates (pick per Cal) — **superseded by `M4-SPEC.md`'s tiering**, kept here as a
+one-line pointer rather than duplicated:
+- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **complete (all 8 PRs)**.
+- **Extension-M4** (`M4-SPEC.md`): live PDF annotation (Phase 1 done, Phases 2–3 open),
+  Zerkalo vault adoption, and the Tier 2/3/4 leftovers (used-in panel, facet chip grouping,
+  promote-AI-keyword-to-tag, global task view, progress/cite/tasks in-GUI editing, node
+  deletion, node-side relation editor, Windows UI, and more) — see that doc for the full,
+  tiered list instead of maintaining two copies of it here.
 
 ---
 

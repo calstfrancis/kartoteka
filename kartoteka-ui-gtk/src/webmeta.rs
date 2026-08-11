@@ -10,12 +10,21 @@ pub struct WebMeta {
     pub title: String,
     /// Author names, ideally "Family, Given" (as Highwire emits them).
     pub authors: Vec<String>,
-    pub year: String,
+    /// Whatever precision the source date actually has — `YYYY`, `YYYY-MM`, or
+    /// `YYYY-MM-DD` — all of which Hayagriva's date parser accepts directly.
+    pub date: String,
     /// Journal / book / site title.
     pub container: String,
     pub publisher: String,
     pub doi: String,
     pub isbn: String,
+    pub volume: String,
+    pub issue: String,
+    /// `firstpage-lastpage`, or just `firstpage` if there's no last page.
+    pub pages: String,
+    /// An ISO 639 language code (`citation_language`/`dc.language` are usually already
+    /// this shape, e.g. `en`), which is what Hayagriva's `language` field expects.
+    pub language: String,
     /// A direct PDF link advertised by the page, if any (may be relative).
     pub pdf_url: String,
     /// Hayagriva entry type inferred from the tags.
@@ -42,10 +51,18 @@ impl WebMeta {
                 .collect()
         };
 
+        let first_page = first(&["citation_firstpage"]);
+        let last_page = first(&["citation_lastpage"]);
+        let pages = match (first_page.is_empty(), last_page.is_empty()) {
+            (false, false) => format!("{first_page}-{last_page}"),
+            (false, true) => first_page,
+            _ => first(&["citation_pages"]),
+        };
+
         let mut m = WebMeta {
             title: first(&["citation_title", "dc.title", "og:title", "twitter:title"]),
             authors: all(&["citation_author", "dc.creator", "citation_authors"]),
-            year: String::new(),
+            date: String::new(),
             container: first(&[
                 "citation_journal_title",
                 "citation_conference_title",
@@ -55,6 +72,10 @@ impl WebMeta {
             publisher: first(&["citation_publisher", "dc.publisher"]),
             doi: first(&["citation_doi", "dc.identifier.doi"]),
             isbn: first(&["citation_isbn"]),
+            volume: first(&["citation_volume"]),
+            issue: first(&["citation_issue"]),
+            pages,
+            language: first(&["citation_language", "dc.language"]),
             pdf_url: first(&["citation_pdf_url"]),
             entry_type: String::new(),
         };
@@ -68,7 +89,7 @@ impl WebMeta {
                 .collect();
         }
 
-        // Year from the first 4-digit run in a date meta.
+        // Whatever precision the source date has, not just its year.
         let date = first(&[
             "citation_publication_date",
             "citation_date",
@@ -76,7 +97,7 @@ impl WebMeta {
             "dc.date",
             "article:published_time",
         ]);
-        m.year = four_digit_year(&date);
+        m.date = best_effort_date(&date);
 
         // A bare DOI identifier sometimes hides in dc.identifier.
         if m.doi.is_empty() {
@@ -101,6 +122,36 @@ impl WebMeta {
     /// True when there is enough to make a meaningful entry.
     pub fn is_usable(&self) -> bool {
         !self.title.is_empty()
+    }
+}
+
+/// Turn a citation-metadata date (`2021-03-01`, `2021/3/1`, `2021`, …) into whatever
+/// precision it actually carries, in the form Hayagriva's date parser accepts:
+/// `YYYY-MM-DD`, `YYYY-MM`, or bare `YYYY`. Citation date metadata is near-universally
+/// already numeric/ISO-shaped (unlike OpenLibrary's freeform `publish_date`), so this only
+/// needs to normalize separators and validate ranges, not recognize month names.
+fn best_effort_date(s: &str) -> String {
+    let year = four_digit_year(s);
+    if year.is_empty() {
+        return String::new();
+    }
+    let Some(year_pos) = s.find(&year) else {
+        return year;
+    };
+    let rest = &s[year_pos + 4..];
+    let parts: Vec<&str> = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    let month = parts.first().and_then(|p| p.parse::<u8>().ok()).filter(|m| (1..=12).contains(m));
+    let Some(month) = month else {
+        return year;
+    };
+    let day = parts.get(1).and_then(|p| p.parse::<u8>().ok()).filter(|d| (1..=31).contains(d));
+    match day {
+        Some(day) => format!("{year}-{month:02}-{day:02}"),
+        None => format!("{year}-{month:02}"),
     }
 }
 
@@ -239,6 +290,11 @@ mod tests {
             <meta name="citation_journal_title" content="Journal of Theology">
             <meta name="citation_publication_date" content="1970/03/01">
             <meta name="citation_doi" content="10.1000/xyz">
+            <meta name="citation_volume" content="12">
+            <meta name="citation_issue" content="3">
+            <meta name="citation_firstpage" content="45">
+            <meta name="citation_lastpage" content="67">
+            <meta name="citation_language" content="en">
             <meta name="citation_pdf_url" content="/content/1/1.full.pdf">
             </head></html>
         "#;
@@ -246,10 +302,26 @@ mod tests {
         assert_eq!(m.title, "Black Theology & Power");
         assert_eq!(m.authors, vec!["Cone, James", "Smith, Jane"]);
         assert_eq!(m.container, "Journal of Theology");
-        assert_eq!(m.year, "1970");
+        // Month and day are preserved, not truncated down to the bare year.
+        assert_eq!(m.date, "1970-03-01");
         assert_eq!(m.doi, "10.1000/xyz");
+        assert_eq!(m.volume, "12");
+        assert_eq!(m.issue, "3");
+        assert_eq!(m.pages, "45-67");
+        assert_eq!(m.language, "en");
         assert_eq!(m.entry_type, "article");
         assert!(m.is_usable());
+    }
+
+    #[test]
+    fn best_effort_date_captures_available_precision() {
+        assert_eq!(best_effort_date("1970/03/01"), "1970-03-01");
+        assert_eq!(best_effort_date("1970-03"), "1970-03");
+        assert_eq!(best_effort_date("1970"), "1970");
+        assert_eq!(best_effort_date("no date here"), "");
+        // An out-of-range "month" (not actually a date) degrades to year-only rather than
+        // producing an invalid Hayagriva date.
+        assert_eq!(best_effort_date("1970/99/01"), "1970");
     }
 
     #[test]

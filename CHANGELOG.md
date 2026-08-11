@@ -2,6 +2,38 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0-dev10] — 2026-08-11 — Development build
+
+Live PDF highlighting in the built-in viewer, and richer metadata from the ISBN/URL/manual
+lookups (fuller dates, plus fields that were being scraped but not captured).
+
+### Added — live PDF highlighting
+
+- **The built-in PDF viewer can now create highlights, not just display embedded ones.**
+  Click-drag over a rendered page draws a highlight, saved immediately to the entry's
+  `annots/<key>.json` sidecar and blended back into the page render so it's visible right
+  away. This is the sidecar format's first *writer* — until now, annotations only entered it
+  via importing highlights already embedded in a PDF by another reader.
+  `fond-doc` gains `page_size()` and `blend_highlights()` (pure pixel math, unit-tested);
+  `fond-bib::Annotation` gains a `drawn()` constructor alongside the existing `imported()`.
+  See `docs/M4-SPEC.md` §4A for the phased plan (this is Phase 1 — rectangle highlights only;
+  real text-run selection and an annotation list/edit/delete UI are the follow-ups).
+
+### Added — richer metadata from lookups
+
+- **The ISBN lookup (OpenLibrary) no longer truncates dates to a bare year.** `publish_date`
+  values like "October 2007" or "Oct 01, 2007" now become `2007-10` / `2007-10-01` —
+  whatever precision OpenLibrary actually gave — instead of always dropping to `2007`.
+  It also now captures the place of publication (`location`), the edition statement (as
+  `note`), and OCLC/LCCN identifiers alongside the ISBN, when OpenLibrary has them.
+- **"Add from URL" and the manual "New item" form gain the same date fix**, plus capture
+  volume, issue, page range, and language from Highwire/Dublin-Core meta tags
+  (`citation_volume`, `citation_issue`, `citation_firstpage`/`citation_lastpage`,
+  `citation_language`) — previously discarded entirely.
+- Verified against the real parser, not just string checks: a new `fond-bib` integration
+  test builds an entry from a full OpenLibrary-shaped JSON fixture through
+  `Library::add_from_yaml` and confirms Hayagriva accepts every new field.
+
 ## [0.1.0-dev9] — 2026-07-27 — Development build
 
 Three library-management features: deleting entries, editing citation fields, and importing

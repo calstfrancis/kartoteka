@@ -1270,17 +1270,22 @@ fn scrape_url(url: &str) -> ScrapeResult {
     if !meta.is_usable() {
         return Err("no citation metadata found on that page".to_string());
     }
-    let yaml = build_entry_yaml(
-        &meta.entry_type,
-        &meta.title,
-        &meta.authors.join("; "),
-        &meta.year,
-        &meta.container,
-        &meta.publisher,
-        &meta.doi,
-        &meta.isbn,
+    let authors = meta.authors.join("; ");
+    let yaml = build_entry_yaml(&NewItemFields {
+        ty: &meta.entry_type,
+        title: &meta.title,
+        authors: &authors,
+        date: &meta.date,
+        container: &meta.container,
+        publisher: &meta.publisher,
+        doi: &meta.doi,
+        isbn: &meta.isbn,
         url,
-    );
+        volume: &meta.volume,
+        issue: &meta.issue,
+        pages: &meta.pages,
+        language: &meta.language,
+    });
 
     let pdf = if meta.pdf_url.is_empty() {
         None
@@ -1328,26 +1333,39 @@ fn yaml_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Build a one-entry Hayagriva YAML snippet from the manual form. The placeholder key is
-/// replaced with a generated one by `add_from_yaml`. `authors` is split on `;`/newlines.
-#[allow(clippy::too_many_arguments)]
-fn build_entry_yaml(
-    ty: &str,
-    title: &str,
-    authors: &str,
-    year: &str,
-    container: &str,
-    publisher: &str,
-    doi: &str,
-    isbn: &str,
-    url: &str,
-) -> String {
+/// Fields for a one-entry Hayagriva YAML snippet, from either the manual "New item" form or
+/// a URL scrape. `date` accepts any precision Hayagriva's date parser does (`YYYY`,
+/// `YYYY-MM`, `YYYY-MM-DD`); every other field is a plain string, empty meaning absent.
+#[derive(Default)]
+struct NewItemFields<'a> {
+    ty: &'a str,
+    title: &'a str,
+    /// Split on `;`/newlines into individual names.
+    authors: &'a str,
+    date: &'a str,
+    container: &'a str,
+    publisher: &'a str,
+    doi: &'a str,
+    isbn: &'a str,
+    url: &'a str,
+    volume: &'a str,
+    issue: &'a str,
+    /// `firstpage-lastpage`, or just one page number.
+    pages: &'a str,
+    /// An ISO 639 language code (e.g. `en`).
+    language: &'a str,
+}
+
+/// Build a one-entry Hayagriva YAML snippet. The placeholder key is replaced with a
+/// generated one by `add_from_yaml`.
+fn build_entry_yaml(f: &NewItemFields) -> String {
     let mut out = String::from("new-item:\n");
-    out.push_str(&format!("  type: {ty}\n"));
-    if !title.trim().is_empty() {
-        out.push_str(&format!("  title: {}\n", yaml_quote(title.trim())));
+    out.push_str(&format!("  type: {}\n", f.ty));
+    if !f.title.trim().is_empty() {
+        out.push_str(&format!("  title: {}\n", yaml_quote(f.title.trim())));
     }
-    let names: Vec<&str> = authors
+    let names: Vec<&str> = f
+        .authors
         .split([';', '\n'])
         .map(|n| n.trim())
         .filter(|n| !n.is_empty())
@@ -1358,18 +1376,17 @@ fn build_entry_yaml(
             out.push_str(&format!("    - {}\n", yaml_quote(name)));
         }
     }
-    if !year.trim().is_empty() {
-        // Hayagriva accepts a bare year as a date.
-        out.push_str(&format!("  date: {}\n", year.trim()));
+    if !f.date.trim().is_empty() {
+        out.push_str(&format!("  date: {}\n", f.date.trim()));
     }
-    if !publisher.trim().is_empty() {
-        out.push_str(&format!("  publisher: {}\n", yaml_quote(publisher.trim())));
+    if !f.publisher.trim().is_empty() {
+        out.push_str(&format!("  publisher: {}\n", yaml_quote(f.publisher.trim())));
     }
-    if !url.trim().is_empty() {
-        out.push_str(&format!("  url: {}\n", yaml_quote(url.trim())));
+    if !f.url.trim().is_empty() {
+        out.push_str(&format!("  url: {}\n", yaml_quote(f.url.trim())));
     }
-    let doi = doi.trim();
-    let isbn = isbn.trim();
+    let doi = f.doi.trim();
+    let isbn = f.isbn.trim();
     if !doi.is_empty() || !isbn.is_empty() {
         out.push_str("  serial-number:\n");
         if !doi.is_empty() {
@@ -1379,15 +1396,27 @@ fn build_entry_yaml(
             out.push_str(&format!("    isbn: {}\n", yaml_quote(isbn)));
         }
     }
-    if !container.trim().is_empty() {
-        let parent_ty = match ty {
+    if !f.container.trim().is_empty() {
+        let parent_ty = match f.ty {
             "chapter" | "anthology" => "anthology",
             "conference" => "proceedings",
             _ => "periodical",
         };
         out.push_str("  parent:\n");
         out.push_str(&format!("    type: {parent_ty}\n"));
-        out.push_str(&format!("    title: {}\n", yaml_quote(container.trim())));
+        out.push_str(&format!("    title: {}\n", yaml_quote(f.container.trim())));
+    }
+    if !f.volume.trim().is_empty() {
+        out.push_str(&format!("  volume: {}\n", f.volume.trim()));
+    }
+    if !f.issue.trim().is_empty() {
+        out.push_str(&format!("  issue: {}\n", f.issue.trim()));
+    }
+    if !f.pages.trim().is_empty() {
+        out.push_str(&format!("  page-range: {}\n", yaml_quote(f.pages.trim())));
+    }
+    if !f.language.trim().is_empty() {
+        out.push_str(&format!("  language: {}\n", f.language.trim()));
     }
     out
 }
@@ -1609,17 +1638,18 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 return;
             }
             let ty = ITEM_TYPES[type_drop.selected() as usize].1;
-            let yaml = build_entry_yaml(
+            let yaml = build_entry_yaml(&NewItemFields {
                 ty,
-                &title.text(),
-                &authors.text(),
-                &year.text(),
-                &container.text(),
-                &publisher.text(),
-                &doi.text(),
-                &isbn.text(),
-                &url.text(),
-            );
+                title: &title.text(),
+                authors: &authors.text(),
+                date: &year.text(),
+                container: &container.text(),
+                publisher: &publisher.text(),
+                doi: &doi.text(),
+                isbn: &isbn.text(),
+                url: &url.text(),
+                ..Default::default()
+            });
             let added = {
                 let s = state.borrow();
                 let library = s.library.as_ref().expect("library open");
@@ -3451,7 +3481,8 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
                 .map(|(_, h)| h)
                 .unwrap_or(&att.hash);
             let path = library.attachment_blob_path(hex);
-            path.exists().then(|| (path, att.filename.clone()))
+            path.exists()
+                .then(|| (path, att.filename.clone(), att.hash.clone()))
         })
     });
 
@@ -3488,14 +3519,19 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         cite_button.connect_clicked(move |_| copy_citation(&widgets, &key));
     }
     actions.append(&cite_button);
-    if let Some((path, filename)) = present_pdf {
+    if let Some((path, filename, pdf_hash)) = present_pdf {
         let read_button = gtk4::Button::with_label("Read");
         read_button.set_tooltip_text(Some("Open the built-in PDF reader"));
         {
-            let window = widgets.window.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
             let path = path.clone();
             let title = title_text.to_string();
-            read_button.connect_clicked(move |_| show_pdf_reader(&window, &path, &title));
+            let pdf_hash = pdf_hash.clone();
+            read_button.connect_clicked(move |_| {
+                show_pdf_reader(&state, &widgets, &key, &pdf_hash, &path, &title)
+            });
         }
         actions.append(&read_button);
         let open_button = gtk4::Button::with_label("Open externally");
@@ -3908,13 +3944,36 @@ struct ReaderState {
     count: u16,
     /// Render width in px = `BASE_WIDTH * zoom`.
     zoom: f64,
+    /// This entry's annotation sidecar, loaded once at open and rewritten to disk on every
+    /// highlight added. Held here (not re-read from the library each time) so the in-memory
+    /// list and the on-screen render never disagree mid-session.
+    annotations: fond_bib::AnnotationSidecar,
+    /// The current page's rendered pixel size and PDF-point size, refreshed by `render()` —
+    /// the scale a drag-selected rectangle is converted through when saving a new highlight.
+    render_px: (u32, u32),
+    page_pts: (f32, f32),
 }
 
 const READER_BASE_WIDTH: f64 = 820.0;
+/// Amber at ~35% opacity — a highlight tint, not a solid block.
+const HIGHLIGHT_RGBA: [u8; 4] = [246, 195, 68, 90];
+/// Below this, a drag reads as a stray click, not an intentional highlight.
+const MIN_DRAG_PX: f64 = 6.0;
 
-/// A built-in PDF reader: renders pages with PDFium to RGBA textures, with page navigation
-/// and zoom. No Poppler (GPL) — pure PDFium (BSD), the same binding used for text extraction.
-fn show_pdf_reader(window: &adw::ApplicationWindow, blob: &std::path::Path, title: &str) {
+/// A built-in PDF reader: renders pages with PDFium to RGBA textures, with page navigation,
+/// zoom, and click-drag highlighting. No Poppler (GPL) — pure PDFium (BSD), the same binding
+/// used for text extraction. Highlights are the on-disk `Annotation` sidecar format `fond-bib`
+/// already defines (`annots/<key>.json`) — this is its first writer; until now only PDF
+/// import/export touched it.
+fn show_pdf_reader(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    key: &str,
+    pdf_hash: &str,
+    blob: &std::path::Path,
+    title: &str,
+) {
+    let window = &widgets.window;
     let bytes = match std::fs::read(blob) {
         Ok(b) => b,
         Err(e) => {
@@ -3939,12 +3998,22 @@ fn show_pdf_reader(window: &adw::ApplicationWindow, blob: &std::path::Path, titl
     };
     let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(1).max(1);
 
+    let annotations = state
+        .borrow()
+        .library
+        .as_ref()
+        .and_then(|lib| lib.load_annotations(key).ok().flatten())
+        .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(key));
+
     let reader = Rc::new(RefCell::new(ReaderState {
         pdfium,
         bytes,
         page: 0,
         count,
         zoom: 1.0,
+        annotations,
+        render_px: (0, 0),
+        page_pts: (0.0, 0.0),
     }));
 
     let dialog = adw::Window::new();
@@ -3975,17 +4044,29 @@ fn show_pdf_reader(window: &adw::ApplicationWindow, blob: &std::path::Path, titl
     header.pack_end(&zoom_out);
     view.add_top_bar(&header);
 
+    let hint = gtk4::Label::new(Some("Drag over the page to add a highlight"));
+    hint.add_css_class("dim-label");
+    hint.add_css_class("caption");
+    hint.set_margin_top(4);
+    hint.set_margin_bottom(4);
+
     let picture = gtk4::Picture::new();
     picture.set_halign(gtk4::Align::Center);
     picture.set_valign(gtk4::Align::Start);
+    picture.set_can_target(true);
     let scroll = gtk4::ScrolledWindow::new();
     scroll.set_child(Some(&picture));
     scroll.set_vexpand(true);
     scroll.set_hexpand(true);
-    view.set_content(Some(&scroll));
+
+    let content = gtk4::Box::new(Orientation::Vertical, 0);
+    content.append(&hint);
+    content.append(&scroll);
+    view.set_content(Some(&content));
     dialog.set_content(Some(&view));
 
-    // Render the current page into the Picture and refresh the page label.
+    // Render the current page into the Picture, blending in this page's saved highlights,
+    // and refresh the page label.
     let render = {
         let reader = reader.clone();
         let picture = picture.clone();
@@ -3993,10 +4074,24 @@ fn show_pdf_reader(window: &adw::ApplicationWindow, blob: &std::path::Path, titl
         let prev = prev.clone();
         let next = next.clone();
         Rc::new(move || {
-            let r = reader.borrow();
+            let mut r = reader.borrow_mut();
             let width = (READER_BASE_WIDTH * r.zoom) as u32;
+            let page_pts = fond_doc::page_size(&r.pdfium, &r.bytes, r.page).unwrap_or((0.0, 0.0));
             match fond_doc::render_page(&r.pdfium, &r.bytes, r.page, width) {
-                Ok(rp) => {
+                Ok(mut rp) => {
+                    let current_page = r.page as u32 + 1;
+                    let quads: Vec<[f64; 8]> = r
+                        .annotations
+                        .annotations
+                        .iter()
+                        .filter(|a| a.page == current_page && !a.quadpoints.is_empty())
+                        .flat_map(|a| a.quadpoints.clone())
+                        .collect();
+                    fond_doc::blend_highlights(&mut rp, page_pts.0, page_pts.1, &quads, HIGHLIGHT_RGBA);
+
+                    r.render_px = (rp.width, rp.height);
+                    r.page_pts = page_pts;
+
                     let data = glib::Bytes::from(&rp.rgba);
                     let texture = gdk::MemoryTexture::new(
                         rp.width as i32,
@@ -4016,6 +4111,80 @@ fn show_pdf_reader(window: &adw::ApplicationWindow, blob: &std::path::Path, titl
         })
     };
     render();
+
+    // Click-drag on the page creates a highlight: the dragged rectangle (in the render's own
+    // pixel grid — the Picture is size-requested to exactly that, so widget-local coordinates
+    // from the gesture already are that grid) converts to PDF-space quadpoints via the current
+    // page's point size, and is appended to the sidecar and written straight to disk.
+    {
+        let drag = gtk4::GestureDrag::new();
+        let reader = reader.clone();
+        let render = render.clone();
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let pdf_hash = pdf_hash.to_string();
+        drag.connect_drag_end(move |gesture, offset_x, offset_y| {
+            if offset_x.abs() < MIN_DRAG_PX && offset_y.abs() < MIN_DRAG_PX {
+                return;
+            }
+            let Some((start_x, start_y)) = gesture.start_point() else {
+                return;
+            };
+            let end_x = start_x + offset_x;
+            let end_y = start_y + offset_y;
+
+            let (page, render_w, render_h, page_w_pts, page_h_pts) = {
+                let r = reader.borrow();
+                (r.page, r.render_px.0, r.render_px.1, r.page_pts.0, r.page_pts.1)
+            };
+            if render_w == 0 || render_h == 0 || page_w_pts <= 0.0 || page_h_pts <= 0.0 {
+                return;
+            }
+            let scale_x = render_w as f64 / page_w_pts as f64;
+            let scale_y = render_h as f64 / page_h_pts as f64;
+
+            let px0 = start_x.min(end_x).clamp(0.0, render_w as f64);
+            let px1 = start_x.max(end_x).clamp(0.0, render_w as f64);
+            let py0 = start_y.min(end_y).clamp(0.0, render_h as f64);
+            let py1 = start_y.max(end_y).clamp(0.0, render_h as f64);
+
+            let x0 = px0 / scale_x;
+            let x1 = px1 / scale_x;
+            // PDF y is bottom-up; the drag's y is top-down pixel space.
+            let y_top = page_h_pts as f64 - py0 / scale_y;
+            let y_bottom = page_h_pts as f64 - py1 / scale_y;
+            let quad = [x0, y_top, x1, y_top, x0, y_bottom, x1, y_bottom];
+
+            let annotation = fond_bib::Annotation::drawn(
+                fond_bib::AnnotationKind::Highlight,
+                page as u32 + 1,
+                vec![quad],
+                None,
+            );
+
+            {
+                let mut r = reader.borrow_mut();
+                r.annotations.pdf_hash = Some(pdf_hash.clone());
+                r.annotations.upsert(annotation);
+            }
+
+            let write_result = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+            };
+            match write_result {
+                Some(Ok(_)) => {
+                    render();
+                    toast(&widgets, "Highlight added");
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not save highlight: {e}")),
+                None => toast(&widgets, "No open library — highlight not saved"),
+            }
+        });
+        picture.add_controller(drag);
+    }
 
     {
         let reader = reader.clone();

@@ -26,6 +26,38 @@ fn add_bibtex_generates_fresh_keys() {
 
 #[cfg(feature = "acquire")]
 #[test]
+fn isbn_json_to_yaml_builds_an_entry_that_adds_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(dir.path()).unwrap();
+
+    let json = r#"{
+        "ISBN:9780140449136": {
+            "title": "The Republic",
+            "authors": [{"name": "Plato"}],
+            "publish_date": "Oct 01, 2007",
+            "publishers": [{"name": "Penguin Classics"}],
+            "publish_places": [{"name": "London"}],
+            "edition_name": "Revised edition",
+            "number_of_pages": 496,
+            "identifiers": {"oclc": ["123456"], "lccn": ["2007123456"]}
+        }
+    }"#;
+    let yaml = fond_bib::acquire::isbn_json_to_yaml(json, "9780140449136").unwrap();
+
+    // The real proof: Hayagriva itself accepts every new field (location, note, oclc,
+    // lccn, and the fuller date), not just that the YAML text contains the substrings.
+    let keys = lib.add_from_yaml(&yaml).unwrap();
+    assert_eq!(keys.len(), 1);
+    let entry = lib.load_entry(&keys[0]).unwrap().entry;
+    let f = fond_bib::entry::read_fields(&entry);
+    assert_eq!(f.title, "The Republic");
+    assert_eq!(f.year, "2007");
+    assert_eq!(f.publisher, "Penguin Classics");
+    assert_eq!(f.isbn, "9780140449136");
+}
+
+#[cfg(feature = "acquire")]
+#[test]
 fn book_yaml_builds_multi_author_entry_that_adds_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let lib = Library::init(dir.path()).unwrap();

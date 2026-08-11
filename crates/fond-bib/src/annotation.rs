@@ -9,10 +9,12 @@
 //! `fond-doc`'s job (Milestone 4, needs PDFium).
 
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{BibError, Result};
+use crate::util::today_iso;
 
 /// Current sidecar schema version. Bumped only on a breaking format change.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -103,6 +105,37 @@ impl Annotation {
             note: contents,
             created: None,
             modified: None,
+        }
+    }
+
+    /// Build a fresh, user-drawn annotation from a live selection in the built-in PDF viewer.
+    /// Unlike `imported`, the id is time-seeded rather than content-seeded — a hand-drawn
+    /// highlight has no snippet to derive stability from, and (being newly created, not
+    /// re-imported) has no need for content-based idempotency.
+    pub fn drawn(
+        kind: AnnotationKind,
+        page: u32,
+        quadpoints: Vec<[f64; 8]>,
+        note: Option<String>,
+    ) -> Annotation {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let hex = blake3::hash(&nanos.to_le_bytes()).to_hex();
+        let stamp = today_iso();
+        Annotation {
+            id: format!("hl-{}", &hex.as_str()[..16]),
+            kind,
+            page,
+            quadpoints,
+            snippet: None,
+            snippet_prefix: None,
+            snippet_suffix: None,
+            color: Some("#f6c344".to_string()),
+            note,
+            created: Some(stamp.clone()),
+            modified: Some(stamp),
         }
     }
 }
