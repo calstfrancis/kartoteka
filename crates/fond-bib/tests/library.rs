@@ -661,6 +661,37 @@ fn delete_entry_removes_files_relations_and_collection_membership() {
 }
 
 #[test]
+fn delete_node_removes_file_and_incoming_relations() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a"]);
+    let node = Node::parse(
+        "---\nnode-type: person\nlabel: Origen of Alexandria\n---\nThird-century theologian.\n",
+        std::path::Path::new("nodes/origen.md"),
+    )
+    .unwrap();
+    lib.write_node("origen", &node).unwrap();
+
+    // Entry A relates to the node (authored) — the node gains a maintained inverse edge.
+    lib.add_relation("a", Predicate::Authored, "origen").unwrap();
+    assert!(edges(&lib, "a").iter().any(|(_, t, _)| t == "origen"));
+
+    let report = lib.delete_node("origen").unwrap();
+
+    assert!(!lib.node_path("origen").exists());
+    assert!(report.files_removed.iter().any(|p| p.ends_with("origen.md")));
+    assert!(report.collections_updated.is_empty());
+    assert!(report.blobs_removed.is_empty());
+
+    // A no longer has any edge pointing at the deleted node.
+    assert!(!edges(&lib, "a").iter().any(|(_, t, _)| t == "origen"));
+    assert_eq!(report.relations_cleared, 1, "{report:?}");
+
+    // Deleting again is a harmless no-op.
+    let again = lib.delete_node("origen").unwrap();
+    assert!(again.files_removed.is_empty());
+}
+
+#[test]
 fn delete_entry_gcs_unshared_blob_but_keeps_shared_one() {
     let (dir, lib) = temp_library();
     seed_entries(&lib, &["shared_a", "shared_b", "solo"]);

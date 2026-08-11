@@ -4720,6 +4720,127 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
     meta_row.append(&labeled("Rating", &rating));
     content.append(&meta_row);
 
+    // Progress (page X of Y) and per-entry citation preferences — both empty-by-default,
+    // optional fields that round-tripped on disk only until now.
+    let progress_row = gtk4::Box::new(Orientation::Horizontal, 12);
+    let progress_page = gtk4::Entry::builder()
+        .input_purpose(gtk4::InputPurpose::Digits)
+        .width_chars(6)
+        .build();
+    let progress_of = gtk4::Entry::builder()
+        .input_purpose(gtk4::InputPurpose::Digits)
+        .width_chars(6)
+        .build();
+    if let Some(p) = &note.frontmatter.progress {
+        progress_page.set_text(&p.page.to_string());
+        progress_of.set_text(&p.of.to_string());
+    }
+    progress_row.append(&labeled("Page", &progress_page));
+    progress_row.append(&labeled("Of", &progress_of));
+    content.append(&labeled("Progress", &progress_row));
+
+    let cite_row = gtk4::Box::new(Orientation::Horizontal, 12);
+    let cite_short = gtk4::Entry::builder()
+        .placeholder_text("e.g. Cone, Black Theology")
+        .hexpand(true)
+        .build();
+    cite_short.set_text(note.frontmatter.cite.short.as_deref().unwrap_or(""));
+    const CITE_STYLES: &[&str] = &["(none)", "sbl", "chicago-notes", "chicago-author-date", "apa"];
+    let cite_style = gtk4::DropDown::from_strings(CITE_STYLES);
+    let style_idx = note
+        .frontmatter
+        .cite
+        .preferred_style
+        .as_deref()
+        .and_then(|s| CITE_STYLES.iter().position(|c| *c == s))
+        .unwrap_or(0);
+    cite_style.set_selected(style_idx as u32);
+    cite_row.append(&labeled("Short cite", &cite_short));
+    cite_row.append(&labeled("Preferred style", &cite_style));
+    content.append(&labeled("Cite", &cite_row));
+
+    // Tasks: a small editable list. Rows are built once from the existing tasks, plus an
+    // "Add task" entry that appends a fresh row; Save reads back whatever rows are still
+    // present (a deleted row is simply gone from the list), same as the Tags manager.
+    let tasks_list = gtk4::ListBox::new();
+    tasks_list.set_selection_mode(gtk4::SelectionMode::None);
+    tasks_list.add_css_class("fond-list");
+
+    struct TaskRow {
+        row: gtk4::ListBoxRow,
+        done: gtk4::CheckButton,
+        text: gtk4::Entry,
+        due: gtk4::Entry,
+    }
+    let task_rows: Rc<RefCell<Vec<TaskRow>>> = Rc::new(RefCell::new(Vec::new()));
+
+    fn build_task_row(list: &gtk4::ListBox, task: Option<&fond_bib::Task>) -> TaskRow {
+        let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
+        hbox.set_margin_top(4);
+        hbox.set_margin_bottom(4);
+        hbox.set_margin_start(8);
+        hbox.set_margin_end(8);
+        let done = gtk4::CheckButton::new();
+        done.set_active(task.map(|t| t.done).unwrap_or(false));
+        let text = gtk4::Entry::builder()
+            .placeholder_text("Task")
+            .hexpand(true)
+            .build();
+        text.set_text(task.map(|t| t.text.as_str()).unwrap_or(""));
+        let due = gtk4::Entry::builder()
+            .placeholder_text("due (YYYY-MM-DD)")
+            .width_chars(14)
+            .build();
+        due.set_text(task.and_then(|t| t.due.as_deref()).unwrap_or(""));
+        let delete = gtk4::Button::from_icon_name("user-trash-symbolic");
+        delete.add_css_class("flat");
+        hbox.append(&done);
+        hbox.append(&text);
+        hbox.append(&due);
+        hbox.append(&delete);
+        let row = gtk4::ListBoxRow::new();
+        row.add_css_class("fond-row");
+        row.set_activatable(false);
+        row.set_child(Some(&hbox));
+        list.append(&row);
+        {
+            let list = list.clone();
+            let row = row.clone();
+            delete.connect_clicked(move |_| list.remove(&row));
+        }
+        TaskRow { row, done, text, due }
+    }
+
+    for task in &note.frontmatter.tasks {
+        task_rows
+            .borrow_mut()
+            .push(build_task_row(&tasks_list, Some(task)));
+    }
+
+    let tasks_scroll = gtk4::ScrolledWindow::new();
+    tasks_scroll.add_css_class("fond-ground");
+    tasks_scroll.set_child(Some(&tasks_list));
+    tasks_scroll.set_max_content_height(160);
+    tasks_scroll.set_propagate_natural_height(true);
+
+    let add_task = gtk4::Button::from_icon_name("list-add-symbolic");
+    add_task.set_tooltip_text(Some("Add task"));
+    add_task.set_halign(gtk4::Align::Start);
+    {
+        let tasks_list = tasks_list.clone();
+        let task_rows = task_rows.clone();
+        add_task.connect_clicked(move |_| {
+            let new_row = build_task_row(&tasks_list, None);
+            new_row.text.grab_focus();
+            task_rows.borrow_mut().push(new_row);
+        });
+    }
+
+    let tasks_section = gtk4::Box::new(Orientation::Vertical, 4);
+    tasks_section.append(&tasks_scroll);
+    tasks_section.append(&add_task);
+    content.append(&labeled("Tasks", &tasks_section));
+
     let body = gtk4::TextView::builder()
         .wrap_mode(gtk4::WrapMode::WordChar)
         .left_margin(8)
@@ -4764,6 +4885,42 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
                 n @ 1..=5 => Some(n as u8),
                 _ => None,
             };
+
+            let page: Option<u32> = progress_page.text().trim().parse().ok();
+            let of: Option<u32> = progress_of.text().trim().parse().ok();
+            updated.frontmatter.progress = match (page, of) {
+                (Some(page), Some(of)) => Some(fond_bib::Progress { page, of }),
+                _ => None,
+            };
+
+            let short = cite_short.text().trim().to_string();
+            updated.frontmatter.cite = fond_bib::CitePrefs {
+                short: (!short.is_empty()).then_some(short),
+                preferred_style: match cite_style.selected() {
+                    0 => None,
+                    n => CITE_STYLES.get(n as usize).map(|s| s.to_string()),
+                },
+            };
+
+            // A row still has a parent iff it wasn't removed by its delete button.
+            updated.frontmatter.tasks = task_rows
+                .borrow()
+                .iter()
+                .filter(|t| t.row.parent().is_some())
+                .filter_map(|t| {
+                    let text = t.text.text().trim().to_string();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let due = t.due.text().trim().to_string();
+                    Some(fond_bib::Task {
+                        text,
+                        done: t.done.is_active(),
+                        due: (!due.is_empty()).then_some(due),
+                    })
+                })
+                .collect();
+
             let buffer = body.buffer();
             updated.body = buffer
                 .text(&buffer.start_iter(), &buffer.end_iter(), false)
@@ -4910,6 +5067,57 @@ fn confirm_delete_entry(
                 toast(&widgets, &format!("Deleted {key}"));
             }
             Err(e) => toast(&widgets, &format!("Could not delete {key}: {e}")),
+        }
+    });
+    dialog.present();
+}
+
+/// Confirm and delete a knowledge-graph node from its editor. `editor` is the node editor
+/// window itself (closed on success, alongside the confirmation dialog); `on_saved` is the
+/// Nodes manager's list-refresh callback, reused here since a delete changes that list too.
+fn confirm_delete_node(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    editor: &adw::Window,
+    slug: &str,
+    label: &str,
+    on_saved: Rc<dyn Fn()>,
+) {
+    let dialog = adw::MessageDialog::new(
+        Some(editor),
+        Some("Delete this node?"),
+        Some(&format!(
+            "“{label}” and every relation edge naming it will be permanently removed. \
+             The underlying file is deleted from the library (use git to recover if needed)."
+        )),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("delete", "Delete");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let editor = editor.clone();
+    let slug = slug.to_string();
+    dialog.connect_response(None, move |dlg, response| {
+        dlg.close();
+        if response != "delete" {
+            return;
+        }
+        let result = {
+            let s = state.borrow();
+            s.library.as_ref().map(|lib| lib.delete_node(&slug)).transpose()
+        };
+        match result {
+            Ok(_) => {
+                rebuild_index_silent(&state);
+                on_saved();
+                toast(&widgets, &format!("Deleted {slug}"));
+                editor.close();
+            }
+            Err(e) => toast(&widgets, &format!("Could not delete {slug}: {e}")),
         }
     });
     dialog.present();
@@ -5132,6 +5340,23 @@ fn show_node_editor(
     let save = gtk4::Button::with_label("Save");
     save.add_css_class("suggested-action");
     header.pack_start(&cancel);
+    if let Some(slug) = &slug {
+        let delete_button = gtk4::Button::with_label("Delete…");
+        delete_button.add_css_class("destructive-action");
+        delete_button.set_tooltip_text(Some("Delete this node and its relation edges"));
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let slug = slug.clone();
+            let label = fm.label.clone();
+            let on_saved = on_saved.clone();
+            delete_button.connect_clicked(move |_| {
+                confirm_delete_node(&state, &widgets, &dialog, &slug, &label, on_saved.clone())
+            });
+        }
+        header.pack_start(&delete_button);
+    }
     header.pack_end(&save);
     view.add_top_bar(&header);
 

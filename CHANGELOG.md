@@ -2,6 +2,26 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0-dev12] — 2026-08-11 — Development build
+
+Two Tier 2 items from `docs/M4-SPEC.md`: progress/cite/task editing in the note editor, and
+node deletion.
+
+### Added — progress, cite, and task editing in the note editor
+
+- **The note editor gained three sections that were previously disk-only round-trips:**
+  reading progress (page X of Y), per-entry citation preferences (a short form and a
+  preferred style), and a small editable task list — add a task, check it done, give it a
+  due date, delete it. See `docs/M4-SPEC.md` Tier 2.
+
+### Added — node deletion
+
+- **The Nodes manager can delete a node.** A "Delete…" button in the node editor (only when
+  editing an existing node, matching the entry detail panel's pattern) removes the node file
+  and strips every relation edge naming it from every other entry or node, behind the same
+  confirmation dialog the entry delete flow already uses. `Library::delete_node()` reuses
+  `delete_entry`'s `strip_all_edges_to` cleanup, which already spans notes ∪ nodes.
+
 ## [0.1.0-dev11] — 2026-08-11 — Development build
 
 Finishes live PDF annotation (real text-run selection and an annotation management UI, on

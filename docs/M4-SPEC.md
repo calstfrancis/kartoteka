@@ -128,19 +128,32 @@ adoption path a non-redesign on purpose.
 
 ---
 
-## Tier 2 — already spec'd, not built
+## Tier 2 — already spec'd
 
 Carried forward from `docs/M2-GUI-PLAN.md` §4 and `docs/STATUS.md`'s "next candidates" —
 nothing new decided here, just consolidated:
 
+- **Progress/cite/tasks in-GUI editing — done.** The note editor gained Progress (page/of),
+  Cite (short form + preferred style), and a small editable Tasks list (add/check/set a due
+  date/delete), all previously round-tripped on disk only. Verified end-to-end headless:
+  filled every field, saved, confirmed `notes/<key>.md`'s frontmatter matched exactly,
+  reopened and confirmed it reloaded into the form, deleted a task and confirmed it left the
+  frontmatter entirely (not just marked done).
+- **Node deletion — done.** `Library::delete_node()` mirrors `delete_entry`'s approach —
+  strips every relation edge naming the node (reusing `strip_all_edges_to`, which already
+  spans notes ∪ nodes) then removes `nodes/<slug>.md` — and the node editor gained a
+  "Delete…" button (only when editing an existing node) behind the same confirmation-dialog
+  pattern `confirm_delete_entry` already established. A `fond-bib` test covers the file
+  removal, the relation cleanup, and delete-again-is-a-no-op idempotency. Verified end-to-end
+  headless: deleted a node with an incoming relation from an entry, confirmed the node file,
+  the confirmation dialog, and the Nodes-manager list refresh all worked.
 - **"Used in" panel** — `scan_usage`/`write_usage` exist at the `fond-bib` layer; needs a GUI
   scan trigger (on open/reindex) and a `usage.json` loader on the detail panel.
 - **Facet chip grouping** in the entry editor (the search side, `facet:` scoping, is done).
 - **"Promote AI keyword → tag"** — one-directional, user-triggered only (never automatic, per
   the `ai/<key>.yml` boundary rule).
-- **Global task view** — aggregate note `tasks:` across the library.
-- **Progress/cite/tasks in-GUI editing** — currently round-tripped on disk only.
-- **Node deletion** — the Nodes manager (M3) has no delete yet; vim/git for now.
+- **Global task view** — aggregate note `tasks:` across the library. Now that tasks are
+  GUI-editable (above), this is more worth doing than when tasks were disk-only.
 - **Node-side relation editor** — relations are currently authored from the entry side only.
 
 ## Tier 3 — platform completion

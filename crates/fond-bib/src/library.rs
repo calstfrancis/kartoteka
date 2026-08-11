@@ -785,6 +785,26 @@ impl Library {
         Ok(report)
     }
 
+    /// Delete a knowledge-graph node: strip every relation edge (forward or inverse) naming
+    /// it from every other host, then remove `nodes/<slug>.md`. The simpler subset of
+    /// `delete_entry`'s work — a node has no attachments or collection membership — reusing
+    /// the same `strip_all_edges_to` cleanup (it already spans notes ∪ nodes) and the same
+    /// `DeleteReport` shape, with `collections_updated`/`blobs_removed` always empty. The
+    /// search index is derived state, so the caller reindexes afterward.
+    pub fn delete_node(&self, slug: &str) -> Result<DeleteReport> {
+        let mut report = DeleteReport {
+            relations_cleared: self.strip_all_edges_to(slug)?,
+            ..Default::default()
+        };
+        let path = self.node_path(slug);
+        match fs::remove_file(&path) {
+            Ok(()) => report.files_removed.push(path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(BibError::io(&path, e)),
+        }
+        Ok(report)
+    }
+
     /// Remove every relation edge (forward or inverse) whose target is `key`, from every
     /// relation host (notes ∪ nodes). Returns the number of hosts changed. The host `key`
     /// itself is skipped (its own files are being removed). Unparseable hosts are skipped.
