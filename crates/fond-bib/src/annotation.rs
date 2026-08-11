@@ -108,14 +108,17 @@ impl Annotation {
         }
     }
 
-    /// Build a fresh, user-drawn annotation from a live selection in the built-in PDF viewer.
-    /// Unlike `imported`, the id is time-seeded rather than content-seeded — a hand-drawn
-    /// highlight has no snippet to derive stability from, and (being newly created, not
-    /// re-imported) has no need for content-based idempotency.
+    /// Build a fresh, user-drawn annotation from a live selection in the built-in PDF viewer
+    /// — either real selected text (`snippet` is `Some`, from `fond_doc::select_text_in_rect`)
+    /// or a plain drag rectangle over an area with no text (`snippet` is `None`). Unlike
+    /// `imported`, the id is time-seeded rather than content-seeded: being newly created, not
+    /// re-imported, it has no need for content-based idempotency, and a rectangle-only
+    /// highlight has no content to seed from anyway.
     pub fn drawn(
         kind: AnnotationKind,
         page: u32,
         quadpoints: Vec<[f64; 8]>,
+        snippet: Option<String>,
         note: Option<String>,
     ) -> Annotation {
         let nanos = SystemTime::now()
@@ -129,7 +132,7 @@ impl Annotation {
             kind,
             page,
             quadpoints,
-            snippet: None,
+            snippet,
             snippet_prefix: None,
             snippet_suffix: None,
             color: Some("#f6c344".to_string()),

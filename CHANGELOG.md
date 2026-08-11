@@ -2,6 +2,61 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0-dev11] — 2026-08-11 — Development build
+
+Finishes live PDF annotation (real text-run selection and an annotation management UI, on
+top of `dev10`'s rectangle highlighting) and adopts the Fond suite's shared theming
+throughout the app.
+
+### Added — real text-run selection when highlighting
+
+- **Dragging over text now selects the actual text, not just a rectangle.** The highlight
+  hugs each line's real glyph extent — one quad per line — instead of the drag's own
+  bounding box, and the selected text is captured into the annotation (`Annotation.snippet`),
+  which Phase 1's rectangle highlights couldn't do. Dragging over an area with no text (a
+  figure, a blank margin) still falls back to a plain rectangle, so nothing regressed.
+  `fond_doc::select_text_in_rect()` walks every character on the page and groups the ones
+  under the drag into lines — deliberately not PDFium's `chars_inside_rect()`, which only
+  resolves the two characters nearest the drag's left/right edges and is wrong the moment a
+  selection spans more than one line. Three new `fond-doc` integration tests exercise this
+  against a real two-line PDF (spanning both lines, one line only, and a blank-area miss).
+  See `docs/M4-SPEC.md` §4A Phase 2.
+
+### Added — annotation management
+
+- **The detail panel gains an "Annotations…" button** (shown whenever an entry has any)
+  listing every highlight: page and kind, a "Go to page" button that opens the built-in
+  reader jumped straight to it, an editable note (saves on Enter or on losing focus), and a
+  delete button. This closes the loop opened by `0.1.0-dev10`'s drag-to-highlight — until
+  now there was no way to review, annotate, or remove a highlight once drawn, only a bare
+  count on the detail panel. See `docs/M4-SPEC.md` §4A Phase 3.
+
+### Added — adopted fond-style theming, throughout the app
+
+- **The GTK app now loads the Fond suite's shared stylesheet** (`fond-style`, vendored at
+  `kartoteka-ui-gtk/style/fond.css`) — until this, Kartoteka predated the suite-wide theming
+  work entirely and every window used bare libadwaita defaults. Added
+  `kartoteka/kartoteka-ui-gtk` to `fond-style`'s `sync.sh`/`check.sh` app list so future
+  stylesheet changes reach it the same way they reach
+  Rubric/Zerkalo/Skrizhal/Iskra/Gost/Kopilka/Retseptura/Chered.
+- **Every header bar in the app** (24 of them, across the main window and every dialog) now
+  carries the shared chrome tint instead of Adwaita's plain white.
+- **The main window's three panes** use the suite's surface classes: `.fond-sidebar` on the
+  collections pane, `.fond-ground` on the entries-list pane, `.fond-view` on the detail
+  pane.
+- **Every real row-list in the app** — the entries list, the collections list, the Cite
+  picker, the Relations dialog, the Tags manager, the Nodes manager, and the Annotations
+  dialog — now uses the shared `.fond-list`/`row.fond-row`/`.fond-row-title`/
+  `.fond-row-meta` conventions in place of Adwaita's `navigation-sidebar` (an accent-colour
+  fill) or plain unstyled labels, and the entries list, Tags manager, and Annotations
+  dialog additionally group into `.fond-card` cards with rounded first/last corners.
+  Checklist-style forms (collection membership, link-authors) were deliberately left as
+  plain forms — they're short confirmation lists, not scannable content, so the row/card
+  treatment doesn't fit them the way it fits an actual list.
+- The bottom status bar now carries `.fond-chrome`/`.fond-statusbar` to match.
+- Verified light and dark headless across the main window, the Tags manager, and the Nodes
+  manager.
+
 ## [0.1.0-dev10] — 2026-08-11 — Development build
 
 Live PDF highlighting in the built-in viewer, and richer metadata from the ISBN/URL/manual

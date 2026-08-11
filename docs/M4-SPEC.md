@@ -1,7 +1,8 @@
 # Kartoteka M4 — Map to a Full-Fledged Citation Manager
 
-Status: **in progress.** 4A Phase 1 (live PDF highlighting) is **built and tested** this
-session. Everything else below is scoped, not started.
+Status: **in progress.** All of 4A (live PDF highlighting: rectangle highlights, real
+text-run selection, and annotation list/edit/delete) is **built and tested**. Everything
+else below is scoped, not started.
 
 > **Naming note.** "M4" here is the next step in the **knowledge-base extension track**
 > (M1 = the original vault, M2 = typed relations/facets/AI sidecar/projects, M3 = knowledge-
@@ -66,25 +67,46 @@ only PDF import/export touched it) and immediately visible, blended into the pag
   tests fall back to: opened a throwaway library's PDF, dragged a highlight, confirmed the
   correct quadpoints landed in `annots/<key>.json` on disk and the tint rendered in the
   correct place on re-render.
-- Full workspace gate: **135 tests passing** (up from 127 at session start), 0 clippy
-  warnings.
+**Phase 2 — real text-run selection (done).** A drag now hugs the actual text it covers
+instead of highlighting an axis-aligned rectangle: `fond_doc::select_text_in_rect()` walks
+every character on the page (`PdfPageText::chars()`), filters to the ones whose own bounds
+overlap the drag, and groups consecutive hits into one quad per line (a new line starts
+whenever a hit's vertical range stops overlapping the current line's). This is deliberately
+*not* `chars_inside_rect()` — that method resolves only the two characters nearest the
+rectangle's left/right edges and returns everything between them by document index, correct
+for a single line but wrong the moment a drag spans more than one. The selected text is
+captured into `Annotation.snippet` (Phase 1 always left this `None`, so a Phase-1 highlight
+had no re-anchoring key if the PDF were ever replaced by a differently-produced copy — Phase
+2 highlights do). A drag over an area with no text (a figure, a blank margin) falls back to
+Phase 1's plain rectangle, so nothing regressed. Phase 1's `blend_highlights`/`page_size`
+plumbing carries over unchanged — only the quad-building step changed.
 
-**Phase 2 — real text-run selection (not started).** Phase 1 highlights an axis-aligned
-*rectangle*, not the actual selected text run — good enough for "mark this region" but not
-"highlight this sentence" the way Zotero/a PDF reader does. Needs PDFium's per-character
-bounding boxes (`PdfPageText::chars()`, not yet used anywhere in `fond-doc`) to hit-test a
-drag against the text layer and produce one quad per line the selection spans, plus capture
-the actual selected string into `Annotation.snippet` (currently `None` for drawn highlights —
-Phase 1 has no re-anchoring key if the PDF is later replaced by a differently-produced copy,
-unlike imported annotations). Phase 1's `blend_highlights`/`page_size`/drag-to-quad plumbing
-all carry over unchanged; only the *shape* of what gets captured changes.
+Verified two ways: three new `fond-doc` integration tests against a real two-line synthetic
+PDF (a two-line drag → two quads and both lines' text; a same-line drag → one quad and just
+that line's text; a drag over blank space → `None`, confirming the Phase-1 fallback path is
+reachable) — all real PDFium calls, not string-matching. Then end-to-end headless in the
+live app: dragged over two lines of real rendered text, confirmed `annots/<key>.json` got
+two tightly-fitted quads (not the drag rectangle's bounding box) and the correct
+`"snippet"` text, and confirmed the highlight visually hugs each line on re-render.
 
-**Phase 3 — annotation management UI (not started).** There is still no way to see, edit, or
-delete individual annotations from the GUI — the detail panel shows only a count
-("Annotations: 3"). Needed: a list view (reuse the pattern from the Nodes manager or duplicate
-groups dialog), click to jump to that page/highlight in the reader, edit the `note` field,
-delete. Underlines/strikeouts (already representable in `AnnotationKind`, already
-import/export-capable) have no drawing gesture yet either — Phase 1 only draws highlights.
+Full workspace gate after both phases: **135 tests passing** (up from 127 at session
+start), 0 clippy warnings.
+
+**Phase 3 — annotation management UI (done).** An "Annotations…" button on the detail panel
+(shown whenever the sidecar has entries) opens a list: each row shows page + kind, a "Go to
+page" button that opens the reader jumped to that page (`show_pdf_reader` gained a
+`start_page` parameter), an editable note field (saves on Enter or on losing focus, matching
+the app's other "save as you go" dialogs), and a delete button that removes the annotation
+from both the sidecar on disk and the row on screen immediately. Verified end-to-end
+headless: edited a note and confirmed the new text landed in `annots/<key>.json`; used "Go
+to page" and confirmed the reader opened on the right page with the existing highlight
+already rendered; deleted the annotation and confirmed both the on-disk sidecar and the
+list row were gone.
+
+Underlines/strikeouts (already representable in `AnnotationKind`, already import/export-
+capable) still have no *drawing* gesture — Phase 1's drag gesture only creates highlights.
+That's a small follow-up (a mode toggle or modifier-key variant on the same drag), not
+tracked as its own phase since it reuses everything Phase 1 already built.
 
 ### 4B. Zerkalo doesn't consume the vault yet
 
@@ -139,12 +161,10 @@ nothing new decided here, just consolidated:
 ## Suggested order
 
 1. **4A Phase 1 — done.**
-2. **4A Phase 3 (annotation list/edit/delete)** next — Phase 1 without any way to review or
-   remove what you drew is an unfinished loop; this is small and self-contained.
-3. **4A Phase 2 (real text-run selection)** — bigger (PDFium char-geometry hit-testing), worth
-   doing once Phase 3 proves the sidecar-round-trip UX is right.
-4. **4B (Zerkalo integration)** — highest leverage on the *combined* workflow, but lives in
-   another repo; scope it there when picked up.
+2. **4A Phase 3 — done.**
+3. **4A Phase 2 — done.** All of Tier 1's Kartoteka-side work (4A) is now complete.
+4. **4B (Zerkalo integration)** next — highest leverage on the *combined* workflow, but lives
+   in another repo; scope it there when picked up.
 5. **Tier 2 items** — pick per Cal, same as `M2-GUI-PLAN.md` always said; none block anything
    else.
 6. **Tier 3 (Windows)** — after Tier 1 is actually done on Linux.

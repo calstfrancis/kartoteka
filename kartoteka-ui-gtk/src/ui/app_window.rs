@@ -90,6 +90,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
 
     let toolbar_view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
 
     let title = adw::WindowTitle::new("Kartoteka", "no library open");
     header.set_title_widget(Some(&title));
@@ -119,6 +120,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     // create a new one.
     let collections_box = gtk4::Box::new(Orientation::Vertical, 0);
     collections_box.set_width_request(190);
+    collections_box.add_css_class("fond-sidebar");
     let coll_header = gtk4::Box::new(Orientation::Horizontal, 4);
     coll_header.set_margin_top(6);
     coll_header.set_margin_bottom(2);
@@ -135,7 +137,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     coll_header.append(&coll_title);
     coll_header.append(&coll_add);
     let collections_listbox = gtk4::ListBox::new();
-    collections_listbox.add_css_class("navigation-sidebar");
+    collections_listbox.add_css_class("fond-list");
     let coll_scroll = gtk4::ScrolledWindow::new();
     coll_scroll.set_child(Some(&collections_listbox));
     coll_scroll.set_vexpand(true);
@@ -145,7 +147,9 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     // Sidebar: search entry over a scrolled list.
     let sidebar = gtk4::Box::new(Orientation::Vertical, 0);
     sidebar.set_width_request(300);
+    sidebar.add_css_class("fond-ground");
     let search = gtk4::SearchEntry::new();
+    search.add_css_class("fond-search");
     search.set_placeholder_text(Some("Search — author: title: tag: type: year:"));
     search.set_margin_top(6);
     search.set_margin_bottom(6);
@@ -167,7 +171,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
 
     let listbox = gtk4::ListBox::new();
     listbox.set_selection_mode(gtk4::SelectionMode::Single);
-    listbox.add_css_class("navigation-sidebar");
+    listbox.add_css_class("fond-list");
     let list_scroll = gtk4::ScrolledWindow::new();
     list_scroll.set_child(Some(&listbox));
     list_scroll.set_vexpand(true);
@@ -185,6 +189,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     detail_scroll.set_child(Some(&detail));
     detail_scroll.set_hexpand(true);
     detail_scroll.set_vexpand(true);
+    detail_scroll.add_css_class("fond-view");
 
     let inner_paned = gtk4::Paned::new(Orientation::Horizontal);
     inner_paned.set_start_child(Some(&sidebar));
@@ -204,6 +209,8 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     // button on the right.
     let statusbar = gtk4::Box::new(Orientation::Horizontal, 6);
     statusbar.add_css_class("toolbar");
+    statusbar.add_css_class("fond-chrome");
+    statusbar.add_css_class("fond-statusbar");
     let status_label = gtk4::Label::new(Some("No library open"));
     status_label.add_css_class("dim-label");
     status_label.set_halign(gtk4::Align::Start);
@@ -680,7 +687,9 @@ fn show_changelog(window: &adw::ApplicationWindow) {
         .default_height(580)
         .build();
     let view = adw::ToolbarView::new();
-    view.add_top_bar(&adw::HeaderBar::new());
+    let bare_header = adw::HeaderBar::new();
+    bare_header.add_css_class("fond-chrome");
+    view.add_top_bar(&bare_header);
 
     let text = gtk4::TextView::builder()
         .editable(false)
@@ -1134,6 +1143,7 @@ fn show_add_url_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -1465,6 +1475,7 @@ fn show_cite_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     let search = gtk4::SearchEntry::new();
     search.set_placeholder_text(Some("Search to cite (@key → clipboard)"));
     search.set_width_chars(32);
@@ -1473,8 +1484,9 @@ fn show_cite_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let listbox = gtk4::ListBox::new();
     listbox.set_selection_mode(gtk4::SelectionMode::Single);
-    listbox.add_css_class("navigation-sidebar");
+    listbox.add_css_class("fond-list");
     let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
     scroll.set_child(Some(&listbox));
     scroll.set_vexpand(true);
     view.set_content(Some(&scroll));
@@ -1508,16 +1520,16 @@ fn show_cite_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 title.set_halign(gtk4::Align::Start);
                 title.set_xalign(0.0);
                 title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                title.add_css_class("heading");
+                title.add_css_class("fond-row-title");
                 let meta = gtk4::Label::new(Some(sub));
                 meta.set_halign(gtk4::Align::Start);
                 meta.set_xalign(0.0);
                 meta.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                meta.add_css_class("dim-label");
-                meta.add_css_class("caption");
+                meta.add_css_class("fond-row-meta");
                 vbox.append(&title);
                 vbox.append(&meta);
                 let row = gtk4::ListBoxRow::new();
+                row.add_css_class("fond-row");
                 row.set_child(Some(&vbox));
                 unsafe { row.set_data("cite-key", key.clone()) };
                 listbox.append(&row);
@@ -1575,6 +1587,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -1738,6 +1751,7 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -1900,6 +1914,7 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -2016,7 +2031,9 @@ fn present_device_dialog(widgets: &Rc<Widgets>, device: github::DeviceCodeRespon
     dialog.set_default_size(420, -1);
 
     let view = adw::ToolbarView::new();
-    view.add_top_bar(&adw::HeaderBar::new());
+    let bare_header = adw::HeaderBar::new();
+    bare_header.add_css_class("fond-chrome");
+    view.add_top_bar(&bare_header);
 
     let content = gtk4::Box::new(Orientation::Vertical, 12);
     content.set_margin_top(18);
@@ -2165,6 +2182,7 @@ fn show_webdav_dialog(
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -2340,6 +2358,7 @@ fn show_acquire_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -2616,11 +2635,13 @@ fn collection_row(label: &str, icon: &str) -> gtk4::ListBoxRow {
     hbox.set_margin_end(8);
     let image = gtk4::Image::from_icon_name(icon);
     let text = gtk4::Label::new(Some(label));
+    text.add_css_class("fond-row-title");
     text.set_xalign(0.0);
     text.set_ellipsize(gtk4::pango::EllipsizeMode::End);
     hbox.append(&image);
     hbox.append(&text);
     let row = gtk4::ListBoxRow::new();
+    row.add_css_class("fond-row");
     row.set_child(Some(&hbox));
     row
 }
@@ -2646,7 +2667,9 @@ fn show_duplicates_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) 
     dialog.set_transient_for(Some(&widgets.window));
     dialog.set_default_size(520, 520);
     let view = adw::ToolbarView::new();
-    view.add_top_bar(&adw::HeaderBar::new());
+    let bare_header = adw::HeaderBar::new();
+    bare_header.add_css_class("fond-chrome");
+    view.add_top_bar(&bare_header);
 
     let list = gtk4::Box::new(Orientation::Vertical, 12);
     list.set_margin_top(14);
@@ -2713,6 +2736,7 @@ fn show_duplicates_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) 
     }
 
     let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
     scroll.set_child(Some(&list));
     scroll.set_vexpand(true);
     view.set_content(Some(&scroll));
@@ -2741,19 +2765,26 @@ fn show_tags_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.set_transient_for(Some(&widgets.window));
     dialog.set_default_size(460, 520);
     let view = adw::ToolbarView::new();
-    view.add_top_bar(&adw::HeaderBar::new());
+    let bare_header = adw::HeaderBar::new();
+    bare_header.add_css_class("fond-chrome");
+    view.add_top_bar(&bare_header);
 
-    let list = gtk4::Box::new(Orientation::Vertical, 6);
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list.add_css_class("fond-list");
     list.set_margin_top(14);
     list.set_margin_bottom(14);
     list.set_margin_start(16);
     list.set_margin_end(16);
 
-    for (tag, count) in &tags {
-        let row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let last = tags.len().saturating_sub(1);
+    for (i, (tag, count)) in tags.iter().enumerate() {
+        let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
+        hbox.set_margin_start(4);
+        hbox.set_margin_end(4);
         let entry = gtk4::Entry::builder().text(tag).hexpand(true).build();
         let count_label = gtk4::Label::new(Some(&format!("{count}")));
-        count_label.add_css_class("dim-label");
+        count_label.add_css_class("fond-row-meta");
         let apply = gtk4::Button::from_icon_name("emblem-ok-symbolic");
         apply.set_tooltip_text(Some("Rename / merge (empty = delete)"));
         {
@@ -2779,13 +2810,25 @@ fn show_tags_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 }
             });
         }
-        row.append(&entry);
-        row.append(&count_label);
-        row.append(&apply);
+        hbox.append(&entry);
+        hbox.append(&count_label);
+        hbox.append(&apply);
+        let row = gtk4::ListBoxRow::new();
+        row.set_activatable(false);
+        row.add_css_class("fond-card");
+        row.add_css_class("fond-row");
+        if i == 0 {
+            row.add_css_class("fond-card-first");
+        }
+        if i == last {
+            row.add_css_class("fond-card-last");
+        }
+        row.set_child(Some(&hbox));
         list.append(&row);
     }
 
     let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
     scroll.set_child(Some(&list));
     scroll.set_vexpand(true);
     view.set_content(Some(&scroll));
@@ -2834,6 +2877,7 @@ fn membership_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: 
     dialog.set_default_size(360, -1);
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -2999,6 +3043,7 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
     dialog.set_default_size(520, 480);
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     let save = gtk4::Button::with_label("Save");
     save.add_css_class("suggested-action");
     let search = gtk4::SearchEntry::new();
@@ -3010,7 +3055,9 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
 
     let listbox = gtk4::ListBox::new();
     listbox.set_selection_mode(gtk4::SelectionMode::None);
+    listbox.add_css_class("fond-list");
     let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
     scroll.set_child(Some(&listbox));
     scroll.set_vexpand(true);
     view.set_content(Some(&scroll));
@@ -3072,11 +3119,11 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
                 t.set_halign(gtk4::Align::Start);
                 t.set_xalign(0.0);
                 t.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                t.add_css_class("fond-row-title");
                 let m = gtk4::Label::new(Some(&sub));
                 m.set_halign(gtk4::Align::Start);
                 m.set_xalign(0.0);
-                m.add_css_class("dim-label");
-                m.add_css_class("caption");
+                m.add_css_class("fond-row-meta");
                 text.append(&t);
                 text.append(&m);
                 let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
@@ -3088,6 +3135,7 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
                 hbox.append(&text);
                 hbox.append(&predicate);
                 let row = gtk4::ListBoxRow::new();
+                row.add_css_class("fond-row");
                 row.set_child(Some(&hbox));
                 row.set_activatable(false);
                 listbox.append(&row);
@@ -3163,6 +3211,7 @@ fn save_search_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.set_default_size(380, -1);
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -3227,6 +3276,7 @@ fn new_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.set_default_size(380, -1);
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -3374,9 +3424,17 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     }
     let has_rows = {
         let s = state.borrow();
-        for &idx in &s.visible {
+        let last = s.visible.len().saturating_sub(1);
+        for (i, &idx) in s.visible.iter().enumerate() {
             let e = &s.entries[idx];
-            widgets.listbox.append(&make_row(e));
+            let row = make_row(e);
+            if i == 0 {
+                row.add_css_class("fond-card-first");
+            }
+            if i == last {
+                row.add_css_class("fond-card-last");
+            }
+            widgets.listbox.append(&row);
         }
         !s.visible.is_empty()
     };
@@ -3402,7 +3460,7 @@ fn make_row(e: &EntrySummary) -> gtk4::ListBoxRow {
     title.set_halign(gtk4::Align::Start);
     title.set_xalign(0.0);
     title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-    title.add_css_class("heading");
+    title.add_css_class("fond-row-title");
 
     let meta_text = match (e.author.is_empty(), e.year.is_empty()) {
         (false, false) => format!("{} · {}", e.author, e.year),
@@ -3414,13 +3472,14 @@ fn make_row(e: &EntrySummary) -> gtk4::ListBoxRow {
     meta.set_halign(gtk4::Align::Start);
     meta.set_xalign(0.0);
     meta.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-    meta.add_css_class("dim-label");
-    meta.add_css_class("caption");
+    meta.add_css_class("fond-row-meta");
 
     vbox.append(&title);
     vbox.append(&meta);
 
     let row = gtk4::ListBoxRow::new();
+    row.add_css_class("fond-card");
+    row.add_css_class("fond-row");
     row.set_child(Some(&vbox));
     row
 }
@@ -3530,10 +3589,29 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
             let title = title_text.to_string();
             let pdf_hash = pdf_hash.clone();
             read_button.connect_clicked(move |_| {
-                show_pdf_reader(&state, &widgets, &key, &pdf_hash, &path, &title)
+                show_pdf_reader(&state, &widgets, &key, &pdf_hash, &path, &title, 1)
             });
         }
         actions.append(&read_button);
+        let has_annotations = library
+            .load_annotations(&key)
+            .ok()
+            .flatten()
+            .is_some_and(|s| !s.annotations.is_empty());
+        if has_annotations {
+            let annots_button = gtk4::Button::with_label("Annotations…");
+            annots_button.set_tooltip_text(Some("Review, jump to, or delete highlights"));
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            let path = path.clone();
+            let title = title_text.to_string();
+            let pdf_hash = pdf_hash.clone();
+            annots_button.connect_clicked(move |_| {
+                show_annotations_dialog(&state, &widgets, &key, &pdf_hash, &path, &title)
+            });
+            actions.append(&annots_button);
+        }
         let open_button = gtk4::Button::with_label("Open externally");
         let window = widgets.window.clone();
         open_button.connect_clicked(move |_| open_pdf(&window, &path, &filename));
@@ -3804,6 +3882,7 @@ fn show_export_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -3936,6 +4015,194 @@ fn open_pdf(window: &adw::ApplicationWindow, blob: &std::path::Path, filename: &
     launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
 }
 
+/// List an entry's annotations — page, kind, note — so each can be jumped to in the reader,
+/// have its note edited, or be deleted. Reads and writes the same `annots/<key>.json`
+/// sidecar `show_pdf_reader`'s drag-to-highlight writes to.
+fn show_annotations_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    key: &str,
+    pdf_hash: &str,
+    blob: &std::path::Path,
+    pdf_title: &str,
+) {
+    let sidecar = {
+        let s = state.borrow();
+        s.library
+            .as_ref()
+            .and_then(|lib| lib.load_annotations(key).ok().flatten())
+    };
+    let Some(sidecar) = sidecar else {
+        toast(widgets, "No annotations for this entry");
+        return;
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Annotations"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(480, 560);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    let close_button = gtk4::Button::with_label("Close");
+    {
+        let dialog = dialog.clone();
+        close_button.connect_clicked(move |_| dialog.close());
+    }
+    header.pack_start(&close_button);
+    view.add_top_bar(&header);
+
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list.add_css_class("fond-list");
+    list.set_margin_top(12);
+    list.set_margin_bottom(12);
+    list.set_margin_start(12);
+    list.set_margin_end(12);
+
+    let mut annotations: Vec<fond_bib::Annotation> = sidecar.annotations.clone();
+    annotations.sort_by_key(|a| a.page);
+    let last = annotations.len().saturating_sub(1);
+
+    for (i, annotation) in annotations.into_iter().enumerate() {
+        let row = gtk4::ListBoxRow::new();
+        row.set_activatable(false);
+        row.add_css_class("fond-card");
+        row.add_css_class("fond-row");
+        if i == 0 {
+            row.add_css_class("fond-card-first");
+        }
+        if i == last {
+            row.add_css_class("fond-card-last");
+        }
+
+        let outer = gtk4::Box::new(Orientation::Vertical, 6);
+        outer.set_margin_top(8);
+        outer.set_margin_bottom(8);
+        outer.set_margin_start(10);
+        outer.set_margin_end(10);
+
+        let header_row = gtk4::Box::new(Orientation::Horizontal, 8);
+        let kind_label = gtk4::Label::new(Some(&format!(
+            "Page {} · {:?}",
+            annotation.page, annotation.kind
+        )));
+        kind_label.add_css_class("fond-row-title");
+        kind_label.set_xalign(0.0);
+        kind_label.set_hexpand(true);
+        header_row.append(&kind_label);
+
+        let goto_button = gtk4::Button::with_label("Go to page");
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.to_string();
+            let pdf_hash = pdf_hash.to_string();
+            let blob = blob.to_path_buf();
+            let title = pdf_title.to_string();
+            let page = annotation.page;
+            goto_button.connect_clicked(move |_| {
+                show_pdf_reader(&state, &widgets, &key, &pdf_hash, &blob, &title, page)
+            });
+        }
+        header_row.append(&goto_button);
+
+        let delete_button = gtk4::Button::from_icon_name("user-trash-symbolic");
+        delete_button.add_css_class("flat");
+        delete_button.set_tooltip_text(Some("Delete this annotation"));
+        header_row.append(&delete_button);
+        outer.append(&header_row);
+
+        let note_entry = gtk4::Entry::new();
+        note_entry.set_placeholder_text(Some("No note"));
+        if let Some(note) = &annotation.note {
+            note_entry.set_text(note);
+        }
+        outer.append(&note_entry);
+
+        row.set_child(Some(&outer));
+        list.append(&row);
+
+        // Note edits save on Enter or when the field loses focus, matching the rest of the
+        // app's "save as you go" dialogs rather than needing an explicit Save button.
+        let save_note = {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.to_string();
+            let id = annotation.id.clone();
+            move |text: &str| {
+                let text = text.trim();
+                let s = state.borrow();
+                let Some(library) = s.library.as_ref() else {
+                    return;
+                };
+                let Ok(Some(mut sidecar)) = library.load_annotations(&key) else {
+                    return;
+                };
+                let Some(a) = sidecar.annotations.iter_mut().find(|a| a.id == id) else {
+                    return;
+                };
+                a.note = (!text.is_empty()).then(|| text.to_string());
+                if let Err(e) = library.write_annotations(&sidecar) {
+                    drop(s);
+                    toast(&widgets, &format!("Could not save note: {e}"));
+                }
+            }
+        };
+        {
+            let save_note = save_note.clone();
+            note_entry.connect_activate(move |e| save_note(&e.text()));
+        }
+        {
+            let focus = gtk4::EventControllerFocus::new();
+            let save_note = save_note.clone();
+            let note_entry_weak = note_entry.downgrade();
+            focus.connect_leave(move |_| {
+                if let Some(e) = note_entry_weak.upgrade() {
+                    save_note(&e.text());
+                }
+            });
+            note_entry.add_controller(focus);
+        }
+
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.to_string();
+            let id = annotation.id.clone();
+            let list = list.clone();
+            let row = row.clone();
+            delete_button.connect_clicked(move |_| {
+                let result = {
+                    let s = state.borrow();
+                    s.library.as_ref().and_then(|library| {
+                        let mut sidecar = library.load_annotations(&key).ok().flatten()?;
+                        sidecar.annotations.retain(|a| a.id != id);
+                        Some(library.write_annotations(&sidecar))
+                    })
+                };
+                match result {
+                    Some(Ok(_)) => {
+                        list.remove(&row);
+                        toast(&widgets, "Annotation deleted");
+                    }
+                    Some(Err(e)) => toast(&widgets, &format!("Could not delete: {e}")),
+                    None => toast(&widgets, "No open library"),
+                }
+            });
+        }
+    }
+
+    let scrolled = gtk4::ScrolledWindow::new();
+    scrolled.set_vexpand(true);
+    scrolled.set_child(Some(&list));
+    view.set_content(Some(&scrolled));
+    dialog.set_content(Some(&view));
+    dialog.present();
+}
+
 /// Live state of an open PDF reader window.
 struct ReaderState {
     pdfium: fond_doc::Pdfium,
@@ -3965,6 +4232,8 @@ const MIN_DRAG_PX: f64 = 6.0;
 /// used for text extraction. Highlights are the on-disk `Annotation` sidecar format `fond-bib`
 /// already defines (`annots/<key>.json`) — this is its first writer; until now only PDF
 /// import/export touched it.
+/// `start_page` is 1-based (matching `Annotation.page`), clamped into range; pass `1` to
+/// just open at the first page.
 fn show_pdf_reader(
     state: &Rc<RefCell<AppState>>,
     widgets: &Rc<Widgets>,
@@ -3972,6 +4241,7 @@ fn show_pdf_reader(
     pdf_hash: &str,
     blob: &std::path::Path,
     title: &str,
+    start_page: u32,
 ) {
     let window = &widgets.window;
     let bytes = match std::fs::read(blob) {
@@ -4005,10 +4275,11 @@ fn show_pdf_reader(
         .and_then(|lib| lib.load_annotations(key).ok().flatten())
         .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(key));
 
+    let start_page = start_page.saturating_sub(1).min(count.saturating_sub(1) as u32) as u16;
     let reader = Rc::new(RefCell::new(ReaderState {
         pdfium,
         bytes,
-        page: 0,
+        page: start_page,
         count,
         zoom: 1.0,
         annotations,
@@ -4023,6 +4294,7 @@ fn show_pdf_reader(
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
 
     let prev = gtk4::Button::from_icon_name("go-previous-symbolic");
     prev.set_tooltip_text(Some("Previous page"));
@@ -4153,12 +4425,32 @@ fn show_pdf_reader(
             // PDF y is bottom-up; the drag's y is top-down pixel space.
             let y_top = page_h_pts as f64 - py0 / scale_y;
             let y_bottom = page_h_pts as f64 - py1 / scale_y;
-            let quad = [x0, y_top, x1, y_top, x0, y_bottom, x1, y_bottom];
+
+            // Prefer the actual text under the drag — one quad per line it spans, hugging the
+            // glyphs — over the drag rectangle's own bounding box. Falls back to the plain
+            // rectangle when the drag covers no text (a figure, a blank margin).
+            let (quads, snippet) = {
+                let r = reader.borrow();
+                fond_doc::select_text_in_rect(
+                    &r.pdfium,
+                    &r.bytes,
+                    r.page,
+                    x0 as f32,
+                    y_bottom as f32,
+                    x1 as f32,
+                    y_top as f32,
+                )
+                .ok()
+                .flatten()
+            }
+            .map(|sel| (sel.quads, Some(sel.text)))
+            .unwrap_or_else(|| (vec![[x0, y_top, x1, y_top, x0, y_bottom, x1, y_bottom]], None));
 
             let annotation = fond_bib::Annotation::drawn(
                 fond_bib::AnnotationKind::Highlight,
                 page as u32 + 1,
-                vec![quad],
+                quads,
+                snippet,
                 None,
             );
 
@@ -4277,6 +4569,7 @@ fn show_citation_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, ke
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -4391,6 +4684,7 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -4651,6 +4945,7 @@ fn show_nodes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     let new_btn = gtk4::Button::from_icon_name("list-add-symbolic");
     new_btn.set_tooltip_text(Some("New node"));
     header.pack_start(&new_btn);
@@ -4664,9 +4959,10 @@ fn show_nodes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     search.set_margin_start(6);
     search.set_margin_end(6);
     let listbox = gtk4::ListBox::new();
-    listbox.add_css_class("navigation-sidebar");
+    listbox.add_css_class("fond-list");
     listbox.set_selection_mode(gtk4::SelectionMode::Single);
     let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
     scroll.set_child(Some(&listbox));
     scroll.set_vexpand(true);
     outer.append(&search);
@@ -4711,13 +5007,14 @@ fn show_nodes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                     }
                 }
                 let row = gtk4::ListBoxRow::new();
+                row.add_css_class("fond-row");
                 let b = gtk4::Box::new(Orientation::Vertical, 2);
                 b.set_margin_top(6);
                 b.set_margin_bottom(6);
                 b.set_margin_start(8);
                 b.set_margin_end(8);
                 let title = gtk4::Label::new(Some(&fm.label));
-                title.add_css_class("heading");
+                title.add_css_class("fond-row-title");
                 title.set_xalign(0.0);
                 title.set_halign(gtk4::Align::Start);
                 let sub = gtk4::Label::new(Some(&format!(
@@ -4725,8 +5022,7 @@ fn show_nodes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                     node_type_label(fm.node_type),
                     slug
                 )));
-                sub.add_css_class("dim-label");
-                sub.add_css_class("caption");
+                sub.add_css_class("fond-row-meta");
                 sub.set_xalign(0.0);
                 sub.set_halign(gtk4::Align::Start);
                 b.append(&title);
@@ -4829,6 +5125,7 @@ fn show_node_editor(
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");
@@ -5081,6 +5378,7 @@ fn link_authors_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key
     dialog.set_default_size(460, -1);
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = gtk4::Button::with_label("Cancel");

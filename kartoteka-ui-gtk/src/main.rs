@@ -19,6 +19,7 @@ fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|app| {
+        ui::styles::load_global_css();
         let config = Config::load();
         let window = ui::app_window::build(app, config);
         window.present();

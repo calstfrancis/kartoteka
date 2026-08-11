@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use pdfium_render::prelude::{PdfDocumentMetadataTagType, PdfRenderConfig, Pdfium, Pixels};
+use pdfium_render::prelude::{
+    PdfDocumentMetadataTagType, PdfRect, PdfRenderConfig, Pdfium, Pixels,
+};
 
 use crate::error::{DocError, Result};
 
@@ -129,6 +131,129 @@ pub fn page_size(pdfium: &Pdfium, bytes: &[u8], index: u16) -> Result<(f32, f32)
     let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
     let page = document.pages().get(index)?;
     Ok((page.width().value, page.height().value))
+}
+
+/// A real text-run selection: the covered text (reading order) and one axis-aligned quad
+/// per line it spans, in PDF user-space — the same anchor `fond-bib`'s `Annotation` stores.
+/// Unlike a plain drag-rectangle highlight, this hugs the actual glyphs rather than an
+/// arbitrary screen region.
+#[derive(Debug, Clone)]
+pub struct TextSelection {
+    pub text: String,
+    pub quads: Vec<[f64; 8]>,
+}
+
+/// Find the text under a drag rectangle (`left`/`bottom`/`right`/`top`, in PDF points) on
+/// page `index`, grouped into one quad per line it spans. `None` if the rectangle covers no
+/// text (e.g. a blank margin) — the caller falls back to a plain rectangle highlight in that
+/// case.
+///
+/// Walks every character on the page (`PdfPageText::chars`) rather than
+/// `chars_inside_rect` — that method resolves only the two endpoint characters nearest the
+/// rectangle's left/right edges and returns everything between them by *document* index,
+/// which is correct for a single-line selection but wrong the moment a drag spans more than
+/// one line. Filtering every character's own bounds against the rectangle is the approach a
+/// real PDF viewer's click-drag selection uses, and is the only one that is correct for a
+/// multi-line drag.
+pub fn select_text_in_rect(
+    pdfium: &Pdfium,
+    bytes: &[u8],
+    index: u16,
+    left: f32,
+    bottom: f32,
+    right: f32,
+    top: f32,
+) -> Result<Option<TextSelection>> {
+    let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+    let page = document.pages().get(index)?;
+    let text = page.text()?;
+
+    let (left, right) = (left.min(right), left.max(right));
+    let (bottom, top) = (bottom.min(top), bottom.max(top));
+
+    // One entry per selected character: its bounds and its own string (usually one grapheme).
+    let mut hits: Vec<(PdfRect, String)> = Vec::new();
+    for c in text.chars().iter() {
+        let Ok(bounds) = c.tight_bounds().or_else(|_| c.loose_bounds()) else {
+            continue;
+        };
+        let overlaps = bounds.left().value < right
+            && bounds.right().value > left
+            && bounds.bottom().value < top
+            && bounds.top().value > bottom;
+        if overlaps {
+            hits.push((bounds, c.unicode_string().unwrap_or_default()));
+        }
+    }
+    if hits.is_empty() {
+        return Ok(None);
+    }
+
+    // Group consecutive hits (already in document order, which is reading order for normal
+    // prose) into lines: a new hit starts a new line whenever its vertical range no longer
+    // overlaps the current line's accumulated range.
+    struct Line {
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        text: String,
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    for (bounds, ch) in hits {
+        let (l, r, b, t) = (
+            bounds.left().value,
+            bounds.right().value,
+            bounds.bottom().value,
+            bounds.top().value,
+        );
+        let starts_new_line = match lines.last() {
+            Some(line) => b >= line.top || t <= line.bottom,
+            None => true,
+        };
+        if starts_new_line {
+            lines.push(Line {
+                left: l,
+                right: r,
+                bottom: b,
+                top: t,
+                text: ch,
+            });
+        } else {
+            let line = lines.last_mut().expect("just checked non-empty");
+            line.left = line.left.min(l);
+            line.right = line.right.max(r);
+            line.bottom = line.bottom.min(b);
+            line.top = line.top.max(t);
+            line.text.push_str(&ch);
+        }
+    }
+
+    let quads = lines
+        .iter()
+        .map(|line| {
+            [
+                line.left as f64,
+                line.top as f64,
+                line.right as f64,
+                line.top as f64,
+                line.left as f64,
+                line.bottom as f64,
+                line.right as f64,
+                line.bottom as f64,
+            ]
+        })
+        .collect();
+    let joined_text = lines
+        .iter()
+        .map(|l| l.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    Ok(Some(TextSelection {
+        text: joined_text,
+        quads,
+    }))
 }
 
 /// Blend semi-transparent highlight rectangles into an already-rendered page's pixels, given
