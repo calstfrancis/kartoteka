@@ -467,6 +467,7 @@ fn build_menu() -> gio::Menu {
     actions.append(Some("Find duplicates…"), Some("win.duplicates"));
     actions.append(Some("Manage tags…"), Some("win.tags"));
     actions.append(Some("Nodes…"), Some("win.nodes"));
+    actions.append(Some("Tasks…"), Some("win.tasks"));
     menu.append_section(None, &actions);
 
     let library = gio::Menu::new();
@@ -574,6 +575,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("nodes", None);
         action.connect_activate(move |_, _| show_nodes_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("tasks", None);
+        action.connect_activate(move |_, _| show_global_tasks_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -2836,6 +2844,157 @@ fn show_tags_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.present();
 }
 
+/// Aggregate every note's `tasks:` into one library-wide view — a derived read (and
+/// check/uncheck) over data that's authoritative per-entry (`notes/<key>.md`), matching
+/// `fond_bib::note`'s own doc comment: "a global task view is a derived aggregation over
+/// these." Undone tasks first (nearest due date first, no-due-date last), then done tasks.
+fn show_global_tasks_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    struct GlobalTask {
+        key: String,
+        title: String,
+        index: usize,
+        task: fond_bib::Task,
+    }
+    let mut items: Vec<GlobalTask> = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        let mut items = Vec::new();
+        for e in &s.entries {
+            let Ok(Some(note)) = library.load_note(&e.key) else {
+                continue;
+            };
+            let title = if e.title.is_empty() { e.key.clone() } else { e.title.clone() };
+            for (index, task) in note.frontmatter.tasks.into_iter().enumerate() {
+                items.push(GlobalTask { key: e.key.clone(), title: title.clone(), index, task });
+            }
+        }
+        items
+    };
+    if items.is_empty() {
+        toast(widgets, "No tasks anywhere in this library yet");
+        return;
+    }
+    items.sort_by(|a, b| {
+        a.task
+            .done
+            .cmp(&b.task.done)
+            .then_with(|| a.task.due.cmp(&b.task.due))
+    });
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(&format!("Tasks ({})", items.len())));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(560, 600);
+    let view = adw::ToolbarView::new();
+    let bare_header = adw::HeaderBar::new();
+    bare_header.add_css_class("fond-chrome");
+    view.add_top_bar(&bare_header);
+
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list.add_css_class("fond-list");
+    list.set_margin_top(12);
+    list.set_margin_bottom(12);
+    list.set_margin_start(12);
+    list.set_margin_end(12);
+
+    let last = items.len().saturating_sub(1);
+    for (i, item) in items.into_iter().enumerate() {
+        let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
+        hbox.set_margin_top(6);
+        hbox.set_margin_bottom(6);
+        hbox.set_margin_start(8);
+        hbox.set_margin_end(8);
+
+        let done = gtk4::CheckButton::new();
+        done.set_active(item.task.done);
+        hbox.append(&done);
+
+        let text = gtk4::Box::new(Orientation::Vertical, 0);
+        text.set_hexpand(true);
+        let task_label = gtk4::Label::new(Some(&item.task.text));
+        task_label.add_css_class("fond-row-title");
+        task_label.set_xalign(0.0);
+        task_label.set_halign(gtk4::Align::Start);
+        task_label.set_wrap(true);
+        let meta_text = match &item.task.due {
+            Some(due) => format!("{} · due {}", item.title, due),
+            None => item.title.clone(),
+        };
+        let meta_label = gtk4::Label::new(Some(&meta_text));
+        meta_label.add_css_class("fond-row-meta");
+        meta_label.set_xalign(0.0);
+        meta_label.set_halign(gtk4::Align::Start);
+        text.append(&task_label);
+        text.append(&meta_label);
+        hbox.append(&text);
+
+        let goto = gtk4::Button::with_label("Go to entry");
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let dialog_weak = dialog.downgrade();
+            let key = item.key.clone();
+            goto.connect_clicked(move |_| {
+                select_key(&state, &widgets, &key);
+                if let Some(d) = dialog_weak.upgrade() {
+                    d.close();
+                }
+            });
+        }
+        hbox.append(&goto);
+
+        let row = gtk4::ListBoxRow::new();
+        row.set_activatable(false);
+        row.add_css_class("fond-card");
+        row.add_css_class("fond-row");
+        if i == 0 {
+            row.add_css_class("fond-card-first");
+        }
+        if i == last {
+            row.add_css_class("fond-card-last");
+        }
+        row.set_child(Some(&hbox));
+        list.append(&row);
+
+        // Toggling saves straight back to that task's own note — this view is a lens over
+        // authoritative per-entry data, not a copy of it.
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = item.key.clone();
+            let index = item.index;
+            done.connect_toggled(move |c| {
+                let result = {
+                    let s = state.borrow();
+                    s.library.as_ref().map(|lib| {
+                        let mut note = lib.load_note(&key).ok().flatten().unwrap_or_default();
+                        if let Some(t) = note.frontmatter.tasks.get_mut(index) {
+                            t.done = c.is_active();
+                        }
+                        lib.write_note(&key, &note)
+                    })
+                };
+                if let Some(Err(e)) = result {
+                    toast(&widgets, &format!("Could not save: {e}"));
+                }
+            });
+        }
+    }
+
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
+    scroll.set_child(Some(&list));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+    dialog.present();
+}
+
 /// Offer an entry's `ai/<key>.yml` keywords as tags to add. Checking a keyword and saving
 /// appends it to the note's `tags:` — a one-directional, user-triggered write; nothing here
 /// ever touches the AI sidecar itself (`docs/M2-SPEC.md` §4's boundary rule).
@@ -3899,6 +4058,28 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
                 "Annotations",
                 &sidecar.annotations.len().to_string(),
             ));
+        }
+    }
+    // "Used in": the reverse map from scan_usage() — which declared projects' Typst
+    // documents cite this key. Derived, so scanned live rather than cached; projects are
+    // typically a handful of files, so this is cheap. Nothing to show until a project is
+    // declared (vim/git for now — there's no project-creation GUI yet).
+    if let Ok(usage) = library.scan_usage() {
+        if let Some(uses) = usage.by_key.get(&key) {
+            if !uses.is_empty() {
+                let text = uses
+                    .iter()
+                    .map(|(project, path)| {
+                        let doc = std::path::Path::new(path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(path);
+                        format!("{project} ({doc})")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                fields.append(&field_row("Used in", &text));
+            }
         }
     }
     b.append(&fields);
@@ -5484,6 +5665,24 @@ fn show_node_editor(
     save.add_css_class("suggested-action");
     header.pack_start(&cancel);
     if let Some(slug) = &slug {
+        // Relations from this node's own side — the gap M3 left open ("relations are
+        // authored from the entry side only"). `relations_dialog` is already host-agnostic
+        // (it resolves its `key` through notes ∪ nodes uniformly), so this is the same
+        // dialog the entry detail panel uses, just given a node slug instead of an entry
+        // key. The one imperfection: this editor's own read-only neighbours section below
+        // (built once, when the editor opened) won't reflect a save made through this
+        // button until the node is reopened — same boundary every other dialog in the app
+        // already has with its siblings.
+        let relations_button = gtk4::Button::with_label("Relations…");
+        relations_button.set_tooltip_text(Some("Relate this node to entries or other nodes"));
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let slug = slug.clone();
+            relations_button.connect_clicked(move |_| relations_dialog(&state, &widgets, &slug));
+        }
+        header.pack_start(&relations_button);
+
         let delete_button = gtk4::Button::with_label("Delete…");
         delete_button.add_css_class("destructive-action");
         delete_button.set_tooltip_text(Some("Delete this node and its relation edges"));

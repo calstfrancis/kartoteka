@@ -2,6 +2,32 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0-dev14] — 2026-08-12 — Development build
+
+The last Tier 2 item from `docs/M4-SPEC.md`: the node-side relation editor. Tier 2 is now
+fully built.
+
+### Added — node-side relation editor
+
+- **A node can now relate to another node, or to an entry, without leaving its own editor.**
+  The node editor gained a "Relations…" button that opens the same dialog the entry detail
+  panel already uses — it turned out the library layer (`set_relations`/
+  `forward_relations`) was already host-agnostic since the M3 knowledge-graph work, so this
+  was a missing entry point, not missing plumbing. Closes the one real gap left in the
+  knowledge graph: a node-to-node edge (e.g. "this person influenced that person") had no
+  path to creation other than hand-editing YAML. This was the last item on
+  `docs/M4-SPEC.md` Tier 2 — Tier 2 is now fully built.
+
+### Added — "Used in" panel and a global task view
+
+- **The detail panel shows "Used in: Project (doc.typ)"** whenever a declared project's
+  Typst documents cite the entry's key — the reverse map `scan_usage()` already computed,
+  now actually surfaced.
+- **A "Tasks…" menu item aggregates every note's tasks into one list** — undone first
+  (nearest due date first), then done — with the owning entry, a due date if set, a
+  checkbox that saves straight back to that task's note, and "Go to entry". See
+  `docs/M4-SPEC.md` Tier 2, which is now down to one item (the node-side relation editor).
+
 ## [0.1.0-dev13] — 2026-08-11 — Development build
 
 Two more Tier 2 items from `docs/M4-SPEC.md`: facet chip grouping and promote-AI-keyword-to-tag.

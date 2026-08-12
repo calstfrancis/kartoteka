@@ -1,8 +1,9 @@
 # Kartoteka M4 — Map to a Full-Fledged Citation Manager
 
 Status: **in progress.** All of 4A (live PDF highlighting: rectangle highlights, real
-text-run selection, and annotation list/edit/delete) is **built and tested**. Everything
-else below is scoped, not started.
+text-run selection, and annotation list/edit/delete) and all of Tier 2 are **built and
+tested**. What's left of Tier 1 is 4B (Zerkalo integration, a different repo); Tiers 3–4
+are scoped, not started.
 
 > **Naming note.** "M4" here is the next step in the **knowledge-base extension track**
 > (M1 = the original vault, M2 = typed relations/facets/AI sidecar/projects, M3 = knowledge-
@@ -128,10 +129,10 @@ adoption path a non-redesign on purpose.
 
 ---
 
-## Tier 2 — already spec'd
+## Tier 2 — done
 
 Carried forward from `docs/M2-GUI-PLAN.md` §4 and `docs/STATUS.md`'s "next candidates" —
-nothing new decided here, just consolidated:
+nothing new decided here, just consolidated. All six items are now built.
 
 - **Progress/cite/tasks in-GUI editing — done.** The note editor gained Progress (page/of),
   Cite (short form + preferred style), and a small editable Tasks list (add/check/set a due
@@ -161,11 +162,34 @@ nothing new decided here, just consolidated:
   end-to-end headless: seeded an AI sidecar with one keyword already tagged and two not,
   confirmed the dialog showed that split correctly, and confirmed both new keywords landed
   in `notes/<key>.md` after saving.
-- **"Used in" panel** — `scan_usage`/`write_usage` exist at the `fond-bib` layer; needs a GUI
-  scan trigger (on open/reindex) and a `usage.json` loader on the detail panel.
-- **Global task view** — aggregate note `tasks:` across the library. Now that tasks are
-  GUI-editable (above), this is more worth doing than when tasks were disk-only.
-- **Node-side relation editor** — relations are currently authored from the entry side only.
+- **"Used in" panel — done.** The detail panel shows a "Used in: Project (doc.typ)" row
+  whenever `scan_usage()`'s reverse map has this key. Scanned live on each render rather
+  than reading a cached `usage.json` — a declared project is typically a handful of Typst
+  files, so this is cheap, and live means it can never go stale from a forgotten manual
+  rescan. Nothing shows until a project is declared (`projects/<slug>.yml` is still
+  vim/git-only; there's no project-creation GUI). Verified end-to-end headless: declared a
+  project pointing at a real `.typ` file citing the entry's key, confirmed the row appeared
+  with the right project name and filename.
+- **Global task view — done.** A "Tasks…" menu item aggregates every note's `tasks:` into
+  one list — undone first (nearest due date first, no-due-date last), then done — each row
+  showing the task, which entry it belongs to, a due date if set, a checkbox that saves
+  straight back to that task's own note (a lens over per-entry data, not a copy of it), and
+  a "Go to entry" button that selects the entry in the main window and closes the dialog.
+  Verified end-to-end headless across two entries: confirmed the aggregation, the sort
+  order, and that toggling a checkbox persisted `done: true` to the correct note on disk.
+- **Node-side relation editor — done.** The node editor gained a "Relations…" button next to
+  "Delete…", calling the *same* `relations_dialog` the entry detail panel already uses —
+  it turned out to already be host-agnostic (`Library::forward_relations`/`set_relations`
+  resolve through `RelationHost`, spanning notes ∪ nodes uniformly since M3, and the dialog
+  already excluded the subject from both the entries *and* nodes candidate lists), so the
+  gap was purely a missing entry point, not missing plumbing. This closes the one path that
+  had no GUI story at all before now: a node-to-node edge (e.g. "this person influenced that
+  person") couldn't be created any other way than hand-editing YAML. The node editor's own
+  read-only neighbours section won't reflect a save made through this button until the node
+  is reopened — the same boundary every other dialog in the app already has with its
+  siblings, not a new one. Verified end-to-end headless: created two person nodes, related
+  one to the other, confirmed the forward edge landed on the subject's file *and* the
+  auto-maintained inverse edge landed on the target's file.
 
 ## Tier 3 — platform completion
 
@@ -187,8 +211,8 @@ nothing new decided here, just consolidated:
 1. **4A Phase 1 — done.**
 2. **4A Phase 3 — done.**
 3. **4A Phase 2 — done.** All of Tier 1's Kartoteka-side work (4A) is now complete.
-4. **4B (Zerkalo integration)** next — highest leverage on the *combined* workflow, but lives
-   in another repo; scope it there when picked up.
-5. **Tier 2 items** — pick per Cal, same as `M2-GUI-PLAN.md` always said; none block anything
-   else.
+4. **Tier 2 — done.** All six items built.
+5. **4B (Zerkalo integration)** next — highest leverage on the *combined* workflow, but lives
+   in another repo; scope it there when picked up. The only Tier 1 item left, now that 4A and
+   Tier 2 are both done.
 6. **Tier 3 (Windows)** — after Tier 1 is actually done on Linux.
