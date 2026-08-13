@@ -39,8 +39,16 @@ the single most confusing thing about the docs:
      live drag preview shows the highlight/underline/strikeout region while dragging (not
      just after release), snapshot-based undo/redo covers every annotation mutation
      (Undo/Redo buttons + Ctrl+Z/Ctrl+Shift+Z), and "This page"'s inline annotation list
-     gained editable notes (parity with the whole-document "Annotations…" dialog). Still open:
-     Tier 3's portable annotation export and Tier 4's multi-attachment chooser (`M5-SPEC.md`).
+     gained editable notes (parity with the whole-document "Annotations…" dialog). **Tier 3
+     is also done**: `AnnotationSidecar::to_markdown` (`fond-bib`, UI-agnostic) renders an
+     entry's annotations as portable Markdown — headings per PDF page/EPUB chapter, quoted
+     snippet, note — and an "Export…" button in the "Annotations…" dialog saves it via the
+     same `gtk4::FileDialog` flow "Export bibliography…" uses. **Tier 4 is also done**: an
+     entry with both a PDF and an EPUB attached now gets a "Read" chooser instead of silently
+     opening whichever the attachments list listed first, and the "Annotations…" dialog routes
+     each row's "Go to" to the format that specific annotation actually anchors on rather than
+     one kind fixed for the whole dialog (a latent bug the single-attachment case never
+     exposed). **All four M5 tiers are now complete** (`M5-SPEC.md`).
    - **Extension-M4** = the map toward a "full-fledged" citation manager beyond the original
      brief and the brainstorm both — live PDF annotation, Zerkalo vault adoption, and the
      smaller GUI/platform gaps. **Tier 1's PDF-annotation work (4A, all three phases) and
@@ -164,8 +172,10 @@ one-line pointer rather than duplicated:
   document page numbering (`/PageLabels`-aware display and jump-by-typed-label). A further
   round of PDF reader UX polish also shipped: Contents as a persistent sidebar, a live drag
   preview while highlighting, snapshot-based undo/redo (buttons + Ctrl+Z/Ctrl+Shift+Z), and
-  editable notes in "This page"'s inline annotation list. Still open:
-  Tier 3 (a portable annotation export), Tier 4 (a multi-attachment chooser) — see that doc
+  editable notes in "This page"'s inline annotation list. **Tier 3** (a Markdown annotation
+  export, à la Zotero's "add note from annotations") **and Tier 4** (a "Read"/"Annotations…"
+  chooser for entries with both a PDF and an EPUB attached, instead of silently picking the
+  first-listed attachment) **are also done — all four M5 tiers complete.** See `M5-SPEC.md`
   for the full tiered list.
 
 ---

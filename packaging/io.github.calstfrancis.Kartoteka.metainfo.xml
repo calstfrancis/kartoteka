@@ -46,6 +46,21 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.3.0" date="2026-08-13">
+      <description>
+        <p>0.3.0 "Loose Leaf" — annotations you can read outside Kartoteka, and proper support
+        for entries with more than one readable attachment.</p>
+        <ul>
+          <li>An "Export…" button in the "Annotations…" dialog renders an entry's whole
+          annotation sidecar as a portable Markdown file — one heading per PDF page or EPUB
+          chapter, the highlighted text quoted, then your note below it.</li>
+          <li>An entry with both a PDF and an EPUB attached now gets a "Read" chooser instead
+          of silently opening whichever the attachments list listed first, and the
+          "Annotations…" dialog's "Go to" buttons correctly route each row to the format that
+          specific annotation actually anchors on.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-08-13">
       <description>
         <p>0.2.0 "Marked Folio" — a built-in EPUB reader, and a big round of PDF reader

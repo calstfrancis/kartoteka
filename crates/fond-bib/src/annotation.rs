@@ -236,6 +236,65 @@ impl AnnotationSidecar {
         s.push('\n');
         Ok(s)
     }
+
+    /// Render this entry's annotations as a portable Markdown document — à la Zotero's "add
+    /// note from annotations": one heading per PDF page or EPUB chapter, the highlighted
+    /// text as a blockquote (omitted for a plain drag-rectangle highlight with no text under
+    /// it), then the user's note. Meant to be read with no PDF/EPUB, and no Kartoteka, open
+    /// at all — a plain file in any Markdown viewer or editor.
+    ///
+    /// PDF annotations (page-anchored) are ordered by page; EPUB annotations (chapter-
+    /// anchored, `page` always `None`) are ordered by chapter path, then creation time. The
+    /// two anchor kinds are kept in separate blocks rather than interleaved by a shared sort
+    /// key, since "page 3" and "chapter 3" have no meaningful relative order.
+    pub fn to_markdown(&self, entry_title: &str) -> String {
+        let mut out = format!("# {entry_title}\n\n");
+        if self.annotations.is_empty() {
+            out.push_str("_No annotations._\n");
+            return out;
+        }
+
+        let mut pdf: Vec<&Annotation> = self
+            .annotations
+            .iter()
+            .filter(|a| a.page.is_some())
+            .collect();
+        pdf.sort_by_key(|a| a.page);
+        let mut epub: Vec<&Annotation> = self
+            .annotations
+            .iter()
+            .filter(|a| a.page.is_none())
+            .collect();
+        epub.sort_by(|a, b| a.chapter.cmp(&b.chapter).then(a.created.cmp(&b.created)));
+
+        for annotation in pdf.into_iter().chain(epub) {
+            let location = match (annotation.page, annotation.chapter.as_deref()) {
+                (Some(p), _) => format!("Page {p}"),
+                (None, Some(chapter)) => Path::new(chapter)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| chapter.to_string()),
+                (None, None) => "Unknown location".to_string(),
+            };
+            out.push_str(&format!("## {location} — {:?}\n\n", annotation.kind));
+            if let Some(snippet) = &annotation.snippet {
+                for line in snippet.lines() {
+                    out.push_str("> ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                out.push('\n');
+            }
+            if let Some(note) = &annotation.note {
+                out.push_str(note);
+                out.push_str("\n\n");
+            }
+        }
+        // Every block above ends with a blank line; drop the final one so the file ends with
+        // exactly one trailing newline rather than two.
+        out.pop();
+        out
+    }
 }
 
 #[cfg(test)]
@@ -339,5 +398,85 @@ mod tests {
         assert!(!json.contains("\"page\""));
         assert!(json.contains("\"chapter\":\"OEBPS/chap1.xhtml\""));
         assert!(json.contains("a gospel of liberation"));
+    }
+
+    #[test]
+    fn markdown_export_is_empty_but_titled_with_no_annotations() {
+        let sidecar = AnnotationSidecar::new("k");
+        let md = sidecar.to_markdown("A Book With No Marks");
+        assert_eq!(md, "# A Book With No Marks\n\n_No annotations._\n");
+    }
+
+    #[test]
+    fn markdown_export_renders_a_pdf_highlight_with_quote_and_note() {
+        let sidecar = sample();
+        let md = sidecar.to_markdown("Black Theology and Black Power");
+        assert_eq!(
+            md,
+            "# Black Theology and Black Power\n\n\
+             ## Page 7 — Highlight\n\n\
+             > the gospel of Jesus is a gospel of liberation\n\n\
+             core thesis\n"
+        );
+    }
+
+    #[test]
+    fn markdown_export_omits_quote_block_when_theres_no_snippet() {
+        let mut sidecar = AnnotationSidecar::new("k");
+        sidecar.annotations.push(Annotation {
+            id: "1".into(),
+            kind: AnnotationKind::Note,
+            page: Some(2),
+            chapter: None,
+            quadpoints: vec![],
+            snippet: None,
+            snippet_prefix: None,
+            snippet_suffix: None,
+            color: None,
+            note: Some("just a margin note".into()),
+            created: None,
+            modified: None,
+        });
+        let md = sidecar.to_markdown("Untitled");
+        assert_eq!(md, "# Untitled\n\n## Page 2 — Note\n\njust a margin note\n");
+    }
+
+    #[test]
+    fn markdown_export_orders_pdf_pages_before_epub_chapters() {
+        let mut sidecar = AnnotationSidecar::new("k");
+        sidecar.annotations.push(Annotation::drawn(
+            AnnotationKind::Highlight,
+            9,
+            vec![],
+            Some("late pdf highlight".into()),
+            None,
+            None,
+        ));
+        sidecar.annotations.push(Annotation::drawn(
+            AnnotationKind::Highlight,
+            2,
+            vec![],
+            Some("early pdf highlight".into()),
+            None,
+            None,
+        ));
+        sidecar.annotations.push(Annotation::drawn_epub(
+            AnnotationKind::Highlight,
+            "OEBPS/chap1.xhtml".into(),
+            "an epub highlight".into(),
+            None,
+            None,
+            None,
+        ));
+        let md = sidecar.to_markdown("Mixed Formats");
+        let page2 = md.find("early pdf highlight").unwrap();
+        let page9 = md.find("late pdf highlight").unwrap();
+        let chapter = md.find("an epub highlight").unwrap();
+        assert!(page2 < page9, "page 2 should render before page 9");
+        assert!(
+            page9 < chapter,
+            "PDF pages should render before EPUB chapters"
+        );
+        assert!(md.contains("## chap1.xhtml — Highlight"));
     }
 }

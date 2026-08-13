@@ -1,8 +1,9 @@
 # Kartoteka M5 — The Full Reader: PDF + EPUB Reading & Portable Annotation
 
-Status: **Tier 1 and Tier 2 fully complete (including continuous scroll and Zotero-style page
-numbers), plus a further round of PDF reader UX polish (Contents sidebar, live drag preview,
-undo/redo, editable "This page" notes) — all built and tested. Tier 3–4 not started.**
+Status: **All four tiers complete.** Tier 1 and Tier 2 (including continuous scroll and
+Zotero-style page numbers), a further round of PDF reader UX polish (Contents sidebar, live
+drag preview, undo/redo, editable "This page" notes), Tier 3 (Markdown annotation export), and
+Tier 4 (multi-attachment chooser) — all built and tested end-to-end.
 
 > **Naming note.** "M5" here is the next step in the **knowledge-base extension track**
 > (M2 = typed relations/facets/AI sidecar/projects, M3 = knowledge-graph nodes, M4 = live PDF
@@ -365,26 +366,74 @@ stays disabled), Undo removes it and enables Redo, Redo restores it, and Ctrl+Z 
 button's effect; editing a "This page" note via Enter persists across popover reopens and is
 itself undoable via Ctrl+Z.
 
-## Tier 3 — annotation portability ("read annotations outside the file")
+## Tier 3 — annotation portability ("read annotations outside the file") — **done, verified end-to-end.**
 
-The JSON sidecar is already the authoritative record and already human-readable — the gap
-is a *presented* export, not the underlying data model:
+The JSON sidecar was already the authoritative record and already human-readable — the gap
+was a *presented* export, not the underlying data model:
 
-- A plain-text/Markdown export of an entry's annotations (à la Zotero's "add note from
-  annotations") — one command/button that renders `annots/<key>.json` into readable prose
-  (quote + page/chapter + your note, grouped and ordered), so annotations are consumable
-  without opening the app or reading raw JSON.
-- Once 5C lands, `show_annotations_dialog` should display both PDF- and EPUB-anchored
-  annotations from the same sidecar uniformly (it's already entry-keyed, not
-  attachment-keyed, so this is mostly "don't assume `page`+`quadpoints` are always present").
+- **Markdown export**, à la Zotero's "add note from annotations": `AnnotationSidecar::
+  to_markdown(entry_title)` in `fond-bib` (UI-agnostic, per the crate-boundary rule — no GTK
+  types) renders an entry's whole sidecar into readable prose, one `##` heading per PDF page
+  or EPUB chapter, the highlighted text as a `>` blockquote (omitted for a plain
+  drag-rectangle highlight with no text under it — `snippet` is `None` there), then the note
+  below it. PDF annotations (page-anchored) are ordered by page; EPUB annotations
+  (chapter-anchored, `page` always `None`) are ordered by chapter path then creation time,
+  kept in a separate block after the PDF ones rather than interleaved by a shared sort key,
+  since "page 3" and "chapter 3" have no meaningful relative order. An empty sidecar still
+  renders a titled, `_No annotations._` file rather than nothing. Five `fond-bib` unit tests
+  cover the empty case, quote+note rendering, quote omission with no snippet, and PDF-before-
+  EPUB ordering.
+- An **"Export…" button** in the "Annotations…" dialog's header (`show_annotations_dialog`,
+  `app_window.rs`) reloads the sidecar fresh from disk at click time (not the dialog's own
+  possibly-stale capture, in case a note was edited or an annotation deleted earlier in the
+  same dialog session), renders it via `to_markdown`, and saves through the same
+  `gtk4::FileDialog` save flow "Export bibliography…" already uses, defaulting the filename
+  to `<key>-annotations.md`.
+- `show_annotations_dialog` already displayed both PDF- and EPUB-anchored annotations from
+  the same sidecar uniformly once 5C landed (its `location` match on `page`/`chapter` already
+  handled both) — nothing further needed there.
 
-## Tier 4 — multi-attachment correctness
+## Tier 4 — multi-attachment correctness — **done, verified end-to-end.**
 
-5A already made the reader lookup typed (`ReaderAttachmentKind`, `present_reader_attachment`
-in `app_window.rs`) — what's still open is that it's still a *first-match*, not a chooser: an
-entry with both a PDF and an EPUB of the same work only ever exposes whichever one the
-attachments list happens to list first. Needs a small chooser when more than one readable
-attachment is present, instead of silently picking one.
+5A already made the reader lookup typed (`ReaderAttachmentKind`), but it was still a single
+*first-match* over all attachments (`present_reader_attachment`, singular) — an entry with
+both a PDF and an EPUB of the same work only ever exposed whichever one the attachments list
+happened to list first, silently.
+
+Fixed by looking up each readable kind independently: `readable_attachment_of(wanted:
+ReaderAttachmentKind)` in `show_detail` (`app_window.rs`) is called once for `Pdf` and once
+for `Epub`, giving `pdf_attachment`/`epub_attachment: Option<(PathBuf, filename, hash)>`
+instead of one combined option. Two attachments of the *same* kind (two PDFs) isn't a
+supported case — the sidecar's single `pdf_hash` field can't disambiguate between them — so
+this still takes the first match per kind, not a full list.
+
+- **"Read" button.** Exactly one of the two present → the same plain `Button` as before,
+  unchanged behaviour for the common single-attachment case. Both present → a `MenuButton`
+  with a small hand-built popover ("PDF — `<filename>`" / "EPUB — `<filename>`"), so the user
+  picks instead of Kartoteka silently guessing. Neither present → "Find PDF" (DOI/Unpaywall),
+  unchanged.
+- **`show_annotations_dialog`** now takes `pdf_attachment`/`epub_attachment: Option<(hash,
+  blob)>` independently instead of one `(kind, hash, blob)` for the whole dialog. This also
+  fixed a latent bug the single-attachment case never exposed: every row's "Go to" button used
+  to match on that one dialog-wide `kind`, so on a mixed PDF+EPUB entry *every* row — including
+  the EPUB-anchored ones — would have routed through `show_pdf_reader` with the PDF's
+  hash/blob. Each row now decides its own format from the annotation itself
+  (`annotation.page.is_some()` → PDF, else EPUB) and looks up the matching attachment
+  independently; if that annotation's format's attachment isn't currently present, its "Go
+  to" button is shown disabled with a tooltip explaining why, rather than hidden or (worse)
+  silently wired to the wrong reader.
+- **`has_annotations`** (gating whether the "Annotations…" row appears at all) now checks
+  `pdf_attachment.is_some() || epub_attachment.is_some()` instead of the old single option.
+
+Verified live under Xvfb with a synthetic entry carrying both a real PDF (with an existing
+highlight) and a hand-built minimal EPUB: "Read" rendered as a `MenuButton`, its popover
+listed both filenames by format, clicking "PDF" opened the PDF reader and clicking "EPUB"
+opened the EPUB reader (confirmed by each window's distinct chrome — page-number entry +
+Highlight/Underline/Strikeout mode picker for PDF vs. chapter nav for EPUB). After adding an
+EPUB highlight alongside the existing PDF one, "Annotations…" showed both rows correctly
+labelled ("Page 1 · Highlight" → "Go to page", "chap1.xhtml · Highlight" → "Go to chapter"),
+and clicking "Go to chapter" opened the EPUB reader with that highlight visible — confirming
+per-row routing, not the dialog-wide `kind` the old code used.
 
 ---
 

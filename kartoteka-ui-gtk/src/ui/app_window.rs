@@ -3892,26 +3892,39 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         b.append(&label);
     }
 
-    // First present attachment Kartoteka has a built-in reader for (PDF or EPUB), typed by
-    // filename extension. Previously this was an untyped `find_map` over *any* attachment
-    // (named `present_pdf` but really "first present attachment of any kind") — an EPUB
-    // attachment was picked up identically to a PDF one, so "Read" opened `show_pdf_reader`
-    // against EPUB bytes, which PDFium can't parse: a blank "Page 1 of 1" window with no
-    // error. Typing the lookup here is what lets Read/Annotations route to the right reader
-    // per format (M5-SPEC.md 5A).
-    let present_reader_attachment = note.as_ref().and_then(|n| {
-        n.frontmatter.attachments.iter().find_map(|att| {
-            let kind = ReaderAttachmentKind::from_filename(&att.filename)?;
-            let hex = att
-                .hash
-                .split_once(':')
-                .map(|(_, h)| h)
-                .unwrap_or(&att.hash);
-            let path = library.attachment_blob_path(hex);
-            path.exists()
-                .then(|| (path, att.filename.clone(), att.hash.clone(), kind))
+    // First present attachment of each format Kartoteka has a built-in reader for. Previously
+    // this was one untyped `find_map` over *any* attachment (an EPUB attachment was picked up
+    // identically to a PDF one, so "Read" opened `show_pdf_reader` against EPUB bytes, which
+    // PDFium can't parse: a blank "Page 1 of 1" window with no error — M5-SPEC.md 5A) and
+    // then, once typed, still only the *first* readable attachment of *any* kind (M5-SPEC.md
+    // Tier 4) — an entry with both a PDF and an EPUB of the same work only ever exposed
+    // whichever the attachments list happened to list first, silently. Looking up each kind
+    // independently lets "Read" offer a chooser when both are present, and lets
+    // "Annotations…" route each row's "Go to" to the format that specific annotation actually
+    // anchors on (`page` vs `chapter`) instead of whichever kind the dialog happened to open
+    // with. Two attachments of the *same* kind (two PDFs) isn't a supported case — the
+    // sidecar's single `pdf_hash` field can't disambiguate between them — so this still takes
+    // the first match per kind, not a full list.
+    let readable_attachment_of = |wanted: ReaderAttachmentKind| {
+        note.as_ref().and_then(|n| {
+            n.frontmatter.attachments.iter().find_map(|att| {
+                let kind = ReaderAttachmentKind::from_filename(&att.filename)?;
+                if kind != wanted {
+                    return None;
+                }
+                let hex = att
+                    .hash
+                    .split_once(':')
+                    .map(|(_, h)| h)
+                    .unwrap_or(&att.hash);
+                let path = library.attachment_blob_path(hex);
+                path.exists()
+                    .then(|| (path, att.filename.clone(), att.hash.clone()))
+            })
         })
-    });
+    };
+    let pdf_attachment = readable_attachment_of(ReaderAttachmentKind::Pdf);
+    let epub_attachment = readable_attachment_of(ReaderAttachmentKind::Epub);
     // Still untyped: used only for "Open externally", which works for any file type via the
     // system file launcher and shouldn't be limited to PDF/EPUB.
     let present_any_attachment = note.as_ref().and_then(|n| {
@@ -3943,55 +3956,105 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     let actions = gtk4::Box::new(Orientation::Horizontal, 8);
     actions.set_margin_top(6);
 
-    // Primary: the read action, contextual to whether a PDF/EPUB is attached or a DOI is
-    // known, and to *which* of those formats is attached.
-    if let Some((path, _filename, hash, kind)) = present_reader_attachment.clone() {
-        match kind {
-            ReaderAttachmentKind::Pdf => {
-                let read_button = gtk4::Button::with_label("Read");
-                // Resumes at the saved Progress page, if any — "Read" opening on page 1
-                // every time despite a recorded reading position was the whole gap 5A/M5's
-                // Tier 2 exists to close.
-                let start_page = note
-                    .as_ref()
-                    .and_then(|n| n.frontmatter.progress)
-                    .map(|p| p.page)
-                    .unwrap_or(1);
-                read_button.set_tooltip_text(Some(if start_page > 1 {
-                    "Open the built-in PDF reader, resuming where you left off"
-                } else {
-                    "Open the built-in PDF reader"
-                }));
+    // Primary: the read action, contextual to whether a PDF/EPUB is attached (and which, or
+    // both — M5-SPEC.md Tier 4) or a DOI is known.
+    match (pdf_attachment.clone(), epub_attachment.clone()) {
+        (Some((path, _filename, hash)), None) => {
+            let read_button = gtk4::Button::with_label("Read");
+            // Resumes at the saved Progress page, if any — "Read" opening on page 1 every
+            // time despite a recorded reading position was the whole gap 5A/M5's Tier 2
+            // exists to close.
+            let start_page = note
+                .as_ref()
+                .and_then(|n| n.frontmatter.progress)
+                .map(|p| p.page)
+                .unwrap_or(1);
+            read_button.set_tooltip_text(Some(if start_page > 1 {
+                "Open the built-in PDF reader, resuming where you left off"
+            } else {
+                "Open the built-in PDF reader"
+            }));
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            let title = title_text.to_string();
+            read_button.connect_clicked(move |_| {
+                show_pdf_reader(&state, &widgets, &key, &hash, &path, &title, start_page)
+            });
+            actions.append(&read_button);
+        }
+        (None, Some((path, _filename, hash))) => {
+            let read_button = gtk4::Button::with_label("Read");
+            read_button.set_tooltip_text(Some("Open the built-in EPUB reader"));
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            let title = title_text.to_string();
+            read_button.connect_clicked(move |_| {
+                show_epub_reader(&state, &widgets, &key, &hash, &path, &title, None);
+            });
+            actions.append(&read_button);
+        }
+        (Some((pdf_path, pdf_filename, pdf_hash)), Some((epub_path, epub_filename, epub_hash))) => {
+            // Both a PDF and an EPUB are attached (presumably the same work in two formats)
+            // — a small chooser instead of silently opening whichever the attachments list
+            // happened to list first.
+            let read_button = gtk4::MenuButton::builder().label("Read").build();
+            read_button.set_tooltip_text(Some(
+                "Both a PDF and an EPUB are attached — choose which to open",
+            ));
+            let (popover, rows) = popover_menu(220);
+            let start_page = note
+                .as_ref()
+                .and_then(|n| n.frontmatter.progress)
+                .map(|p| p.page)
+                .unwrap_or(1);
+
+            let row = popover_button(&format!("PDF — {pdf_filename}"), false);
+            {
+                let popover = popover.clone();
                 let state = state.clone();
                 let widgets = widgets.clone();
                 let key = key.clone();
                 let title = title_text.to_string();
-                read_button.connect_clicked(move |_| {
-                    show_pdf_reader(&state, &widgets, &key, &hash, &path, &title, start_page)
+                row.connect_clicked(move |_| {
+                    popover.popdown();
+                    show_pdf_reader(
+                        &state, &widgets, &key, &pdf_hash, &pdf_path, &title, start_page,
+                    );
                 });
-                actions.append(&read_button);
             }
-            ReaderAttachmentKind::Epub => {
-                let read_button = gtk4::Button::with_label("Read");
-                read_button.set_tooltip_text(Some("Open the built-in EPUB reader"));
+            rows.append(&row);
+
+            let row = popover_button(&format!("EPUB — {epub_filename}"), false);
+            {
+                let popover = popover.clone();
                 let state = state.clone();
                 let widgets = widgets.clone();
                 let key = key.clone();
                 let title = title_text.to_string();
-                read_button.connect_clicked(move |_| {
-                    show_epub_reader(&state, &widgets, &key, &hash, &path, &title, None);
+                row.connect_clicked(move |_| {
+                    popover.popdown();
+                    show_epub_reader(&state, &widgets, &key, &epub_hash, &epub_path, &title, None);
                 });
-                actions.append(&read_button);
+            }
+            rows.append(&row);
+
+            read_button.set_popover(Some(&popover));
+            actions.append(&read_button);
+        }
+        (None, None) => {
+            if let Some(doi) = doi.clone() {
+                let find_button = gtk4::Button::with_label("Find PDF");
+                find_button.set_tooltip_text(Some("Search Unpaywall for an open-access PDF"));
+                let state = state.clone();
+                let widgets = widgets.clone();
+                let key = key.clone();
+                find_button
+                    .connect_clicked(move |_| find_pdf_unpaywall(&state, &widgets, &key, &doi));
+                actions.append(&find_button);
             }
         }
-    } else if let Some(doi) = doi.clone() {
-        let find_button = gtk4::Button::with_label("Find PDF");
-        find_button.set_tooltip_text(Some("Search Unpaywall for an open-access PDF"));
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.clone();
-        find_button.connect_clicked(move |_| find_pdf_unpaywall(&state, &widgets, &key, &doi));
-        actions.append(&find_button);
     }
 
     // Edit: one button covering both edit surfaces — the bibliographic fields (title,
@@ -4045,7 +4108,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
 
     // More: everything else, grouped — library organization, then external links, then
     // the destructive action last and set off by its own separator.
-    let has_annotations = present_reader_attachment.is_some()
+    let has_annotations = (pdf_attachment.is_some() || epub_attachment.is_some())
         && library
             .load_annotations(&key)
             .ok()
@@ -4091,7 +4154,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         rows.append(&row);
 
         if has_annotations {
-            if let Some((path, _filename, hash, kind)) = present_reader_attachment.clone() {
+            {
                 let row = popover_button("Annotations…", false);
                 row.set_tooltip_text(Some("Review, jump to, or delete highlights"));
                 let popover = popover.clone();
@@ -4099,9 +4162,22 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
                 let widgets = widgets.clone();
                 let key = key.clone();
                 let title = title_text.to_string();
+                let pdf = pdf_attachment
+                    .clone()
+                    .map(|(path, _filename, hash)| (hash, path));
+                let epub = epub_attachment
+                    .clone()
+                    .map(|(path, _filename, hash)| (hash, path));
                 row.connect_clicked(move |_| {
                     popover.popdown();
-                    show_annotations_dialog(&state, &widgets, &key, kind, &hash, &path, &title);
+                    show_annotations_dialog(
+                        &state,
+                        &widgets,
+                        &key,
+                        pdf.clone(),
+                        epub.clone(),
+                        &title,
+                    );
                 });
                 rows.append(&row);
             }
@@ -4584,9 +4660,12 @@ fn show_annotations_dialog(
     state: &Rc<RefCell<AppState>>,
     widgets: &Rc<Widgets>,
     key: &str,
-    kind: ReaderAttachmentKind,
-    hash: &str,
-    blob: &std::path::Path,
+    // Independent per-format attachment info (hash, blob path) — an entry can have both a
+    // PDF and an EPUB attached, so each annotation row's "Go to" routes to whichever of these
+    // matches that specific annotation's anchor (`page` → PDF, `chapter` → EPUB), not a
+    // single kind fixed for the whole dialog (M5-SPEC.md Tier 4).
+    pdf_attachment: Option<(String, std::path::PathBuf)>,
+    epub_attachment: Option<(String, std::path::PathBuf)>,
     reader_title: &str,
 ) {
     let sidecar = {
@@ -4615,6 +4694,50 @@ fn show_annotations_dialog(
         close_button.connect_clicked(move |_| dialog.close());
     }
     header.pack_start(&close_button);
+    let export_button = gtk4::Button::with_label("Export…");
+    export_button.set_tooltip_text(Some("Save these annotations as a portable Markdown file"));
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.to_string();
+        let reader_title = reader_title.to_string();
+        export_button.connect_clicked(move |_| {
+            // Reload fresh rather than reuse the dialog's own `sidecar` capture — the list
+            // above can go stale if a note was edited or an annotation deleted earlier in
+            // this same dialog session (each of those reloads independently, not through
+            // this closure's binding), so an export should reflect what's actually on disk.
+            let sidecar = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .and_then(|lib| lib.load_annotations(&key).ok().flatten())
+            };
+            let Some(sidecar) = sidecar else {
+                toast(&widgets, "No annotations for this entry");
+                return;
+            };
+            let markdown = sidecar.to_markdown(&reader_title);
+
+            let default_name = format!("{key}-annotations.md");
+            let save = gtk4::FileDialog::builder()
+                .title("Export annotations")
+                .initial_name(&default_name)
+                .build();
+            let widgets = widgets.clone();
+            let parent = widgets.window.clone();
+            save.save(Some(&parent), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result {
+                    if let Some(path) = file.path() {
+                        match std::fs::write(&path, &markdown) {
+                            Ok(()) => toast(&widgets, &format!("Exported to {}", path.display())),
+                            Err(e) => toast(&widgets, &format!("Could not write file: {e}")),
+                        }
+                    }
+                }
+            });
+        });
+    }
+    header.pack_end(&export_button);
     view.add_top_bar(&header);
 
     let list = gtk4::ListBox::new();
@@ -4665,44 +4788,60 @@ fn show_annotations_dialog(
         kind_label.set_hexpand(true);
         header_row.append(&kind_label);
 
-        let goto_label = match kind {
-            ReaderAttachmentKind::Pdf => "Go to page",
-            ReaderAttachmentKind::Epub => "Go to chapter",
+        // Which format this specific annotation anchors on — not a single kind fixed for the
+        // whole dialog, so a mixed PDF+EPUB entry routes each row to the right reader.
+        let is_pdf = annotation.page.is_some();
+        let goto_button = gtk4::Button::with_label(if is_pdf {
+            "Go to page"
+        } else {
+            "Go to chapter"
+        });
+        let attachment_for_row = if is_pdf {
+            pdf_attachment.clone()
+        } else {
+            epub_attachment.clone()
         };
-        let goto_button = gtk4::Button::with_label(goto_label);
-        {
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.to_string();
-            let hash = hash.to_string();
-            let blob = blob.to_path_buf();
-            let title = reader_title.to_string();
-            let page = annotation.page;
-            let annotation_id = annotation.id.clone();
-            goto_button.connect_clicked(move |_| match kind {
-                ReaderAttachmentKind::Pdf => {
-                    // `page` is always `Some` for a PDF-anchored annotation; `unwrap_or(1)`
-                    // is just a defensive fallback, not an expected path.
-                    show_pdf_reader(
-                        &state,
-                        &widgets,
-                        &key,
-                        &hash,
-                        &blob,
-                        &title,
-                        page.unwrap_or(1),
-                    )
-                }
-                ReaderAttachmentKind::Epub => show_epub_reader(
-                    &state,
-                    &widgets,
-                    &key,
-                    &hash,
-                    &blob,
-                    &title,
-                    Some(&annotation_id),
-                ),
-            });
+        match attachment_for_row {
+            Some((hash, blob)) => {
+                let state = state.clone();
+                let widgets = widgets.clone();
+                let key = key.to_string();
+                let title = reader_title.to_string();
+                let page = annotation.page;
+                let annotation_id = annotation.id.clone();
+                goto_button.connect_clicked(move |_| {
+                    if is_pdf {
+                        // `page` is always `Some` for a PDF-anchored annotation;
+                        // `unwrap_or(1)` is just a defensive fallback, not an expected path.
+                        show_pdf_reader(
+                            &state,
+                            &widgets,
+                            &key,
+                            &hash,
+                            &blob,
+                            &title,
+                            page.unwrap_or(1),
+                        )
+                    } else {
+                        show_epub_reader(
+                            &state,
+                            &widgets,
+                            &key,
+                            &hash,
+                            &blob,
+                            &title,
+                            Some(&annotation_id),
+                        )
+                    }
+                });
+            }
+            None => {
+                // That format's attachment isn't currently present (e.g. it was removed
+                // after this annotation was created) — show the button, disabled, rather
+                // than hide it, so the row still reads as "this was a PDF/EPUB highlight".
+                goto_button.set_sensitive(false);
+                goto_button.set_tooltip_text(Some("That attachment is no longer present"));
+            }
         }
         header_row.append(&goto_button);
 

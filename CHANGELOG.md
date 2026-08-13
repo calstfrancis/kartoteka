@@ -2,6 +2,20 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.3.0] "Loose Leaf" — 2026-08-13 — Markdown annotation export, multi-attachment reading
+
+Annotations are now readable without opening Kartoteka at all, à la Zotero's "add note from
+annotations": an **"Export…" button** in the "Annotations…" dialog renders an entry's whole
+annotation sidecar as a portable Markdown file — one heading per PDF page or EPUB chapter,
+the highlighted text quoted, then your note below it — and saves it wherever you choose.
+
+An entry with **both a PDF and an EPUB attached** (the same work in two formats) now gets a
+**"Read" chooser** letting you pick which to open, instead of silently opening whichever the
+attachments list happened to list first. The "Annotations…" dialog's "Go to" buttons are also
+now correctly per-annotation format-aware on such an entry — a PDF-anchored row opens the PDF
+reader, an EPUB-anchored row opens the EPUB reader, instead of every row routing through
+whichever format the dialog happened to open with.
+
 ## [0.2.0] "Marked Folio" — 2026-08-13 — Built-in EPUB reader and PDF reader polish
 
 A built-in EPUB reader, alongside the existing PDF one: chapter navigation, a table-of-
