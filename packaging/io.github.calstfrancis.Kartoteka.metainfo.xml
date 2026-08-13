@@ -46,5 +46,22 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.1.0" date="2026-08-13">
+      <description>
+        <p>0.1.0 "Open Stacks" — first release.</p>
+        <ul>
+          <li>A plain-file library — Hayagriva YAML entries, Markdown notes — that lives in a
+          git repository and stays readable without Kartoteka.</li>
+          <li>Import from Zotero (BetterBibTeX and the Zotero SQLite store), or acquire
+          references by DOI, arXiv, or ISBN. Drop a PDF or EPUB in and it identifies itself.</li>
+          <li>A built-in PDF viewer with highlighting and annotation management.</li>
+          <li>Bibliography output in SBL and Chicago styles, and annotated Typst documents.</li>
+          <li>Full-text search over metadata, notes, annotations, and PDF text.</li>
+          <li>Typed relations and a knowledge-graph layer — link entries to people, concepts,
+          and schools of thought, not just to each other.</li>
+          <li>Sync via git, GitHub, or WebDAV.</li>
+        </ul>
+      </description>
+    </release>
   </releases>
 </component>

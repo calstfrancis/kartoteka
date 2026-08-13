@@ -2,6 +2,36 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0] "Open Stacks" — 2026-08-13 — First release
+
+Kartoteka's first stable release, after seventeen development builds covering the original
+project brief (vault, Zotero migration, bibliography output, documents, acquisition,
+cross-cutting search) and two extension tracks on top of it: typed relations, facets, an AI
+sidecar, and projects/usage (extension-M2); and a knowledge-graph layer of person/concept/
+school nodes with typed edges to entries (extension-M3). The name is a library-science term
+for shelving patrons can browse directly rather than request from a closed stack — apt for a
+plain-file library that stays readable and editable without Kartoteka at all.
+
+### Highlights
+
+- **A plain-file library.** Entries are Hayagriva YAML, notes are Markdown, everything lives
+  in a git repository — nothing locked in an opaque database.
+- **Getting references in.** Import from Zotero (BetterBibTeX or its SQLite store); acquire
+  by DOI, arXiv, or ISBN (the "Acquire…" dialog, Zotero's "Add by identifier" equivalent); or
+  drop a PDF or EPUB in and it identifies itself, enriching via DOI/ISBN lookups where it can.
+- **Working with PDFs.** A built-in viewer with highlighting, annotation management, and
+  live rectangle highlighting.
+- **Getting references out.** Bibliography output in SBL and Chicago styles, and annotated
+  Typst documents that pair each reference with its note.
+- **Finding things again.** Full-text search over metadata, notes, annotations, and PDF text,
+  with field scoping (`author:`, `title:`, `tag:`, `type:`, `year:`).
+  Typed relations, facets, and free-text notes, plus a knowledge-graph layer — link an entry
+  to a person, concept, or school of thought, not just to another entry.
+- **Sync.** Git, GitHub (device-flow sign-in), or WebDAV.
+
+Full development history, including everything above in its original increments, follows
+below.
+
 ## [0.1.0-dev17] — 2026-08-13 — Fix: hamburger menu not opening
 
 dev16's hand-built hamburger popover (~20 rows) had no height cap, unlike the `gio::Menu` it
