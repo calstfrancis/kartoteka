@@ -1,6 +1,7 @@
 # Kartoteka M5 — The Full Reader: PDF + EPUB Reading & Portable Annotation
 
-Status: **Tier 1 and Tier 2 complete, both built and tested. Tier 3–4 not started.**
+Status: **Tier 1 and Tier 2 fully complete (including continuous scroll), both built and
+tested. Tier 3–4 not started.**
 
 > **Naming note.** "M5" here is the next step in the **knowledge-base extension track**
 > (M2 = typed relations/facets/AI sidecar/projects, M3 = knowledge-graph nodes, M4 = live PDF
@@ -266,10 +267,32 @@ compiled:
   `show_annotations_dialog`, which is still the only whole-document view. Confirmed live: a
   green strikeout and a note both appeared in the popover with working delete, and the
   on-disk sidecar recorded `"color": "#8bc34a"` correctly.
-- **Continuous/vertical scroll — not done, deliberately deferred.** This is the one item that
-  isn't "polish" so much as a different rendering architecture — today's reader renders one
-  `Picture` per page, swapped on navigation; continuous scroll needs a virtualized multi-page
-  scroll surface. Worth scoping as its own piece of work rather than folding into this pass.
+- **Continuous/vertical scroll — done, as a toggle alongside the page-by-page view.** A
+  "Continuous" button switches a `gtk4::Stack` between the original single-`Picture`
+  `ScrolledWindow` and a new vertical `Box` of per-page `Picture` widgets in its own
+  `ScrolledWindow`. Deliberately **eager, not virtualized**: on first toggle-on, every page
+  is rendered up front (a one-time, sub-second cost for the page counts this app actually
+  sees — academic papers, book chapters) rather than lazily as pages scroll into view. This
+  trade was made on purpose — it avoids the correctness risk a virtualized `ListView` would
+  carry: each page gets one *permanent* widget, so its drag-to-annotate gesture captures that
+  page's index by value and can never end up stale after a recycled row gets reassigned to a
+  different page. `ReaderState` gained `continuous_pictures`/`continuous_offsets` (each
+  page's cumulative top position, for scroll-to-page and for tracking which page is
+  "current" from scroll position via `vadjustment.connect_value_changed`)/
+  `continuous_rendered`. `render_pdf_page_texture()` was extracted as the one shared
+  rendering path both views call, so they can never visually disagree; `save_drag_annotation()`
+  was similarly extracted so per-page drag handlers in both views share the same coordinate
+  math and sidecar write. Every navigation surface (prev/next, Contents, search jump/prev/
+  next) is mode-aware, branching on `continuous_toggle.is_active()`. Zoom changes tear down
+  and rebuild the continuous view (simpler than resizing in place; zoom changes are
+  infrequent). **Verified end-to-end headless** against a real 6-page PDF: toggled on,
+  scrolled with the mouse wheel and watched the page label track correctly across the
+  page-1/page-2 boundary; drew a highlight directly on page 3 *while the tracked "current"
+  page was 2*, confirming the sidecar recorded `"page": 3` — the exact case a
+  recycled-widget bug would get wrong; ran a search that jumped to page 5 with the match
+  blended in its own colour; toggled back to paged mode and confirmed both the search
+  highlight and the earlier page-3 drawn highlight were still there, correctly rendered by
+  the same shared code path.
 
 ## Tier 3 — annotation portability ("read annotations outside the file")
 
@@ -305,13 +328,11 @@ attachment is present, instead of silently picking one.
    verified end-to-end headless including the ambiguous-snippet disambiguation case.
 4. **5D — done.** EPUB body text into the search index, verified via a new `fond-index` test.
 5. **Tier 1 — done.**
-6. **Tier 2 — done**, except continuous/vertical scroll (deliberately deferred — a rendering
-   architecture change, not polish; see that section). Progress wiring, underline/strikeout/
-   note gestures, outline panel, in-reader search, colour picker + inline per-page annotation
-   list all built and verified end-to-end headless.
+6. **Tier 2 — fully done.** Progress wiring, underline/strikeout/note gestures, outline
+   panel, in-reader search, colour picker + inline per-page annotation list, and
+   continuous/vertical scroll (a toggle alongside the page-by-page view, eagerly rendered
+   rather than virtualized) — all built and verified end-to-end headless.
 7. **Tier 3** — next up. Annotation export (Markdown/plain-text, à la Zotero's "add note from
    annotations"), straightforward now that 5C's schema extension exists for both formats.
 8. **Tier 4** — multi-attachment chooser, small, low urgency until an entry with two
    attachments actually shows up in practice.
-9. **Continuous/vertical scroll** (deferred from Tier 2) — pick up whenever a virtualized
-   multi-page scroll surface is worth the rendering-architecture change.

@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.2.0-dev2] — 2026-08-13 — Built-in EPUB reader and PDF reader polish
+## [0.2.0-dev3] — 2026-08-13 — Built-in EPUB reader and PDF reader polish
 
 A built-in EPUB reader, alongside the existing PDF one: chapter navigation, a table-of-
 contents jump list (from the EPUB3 nav document or the EPUB2 NCX), and proper rendering of
@@ -36,6 +36,9 @@ The PDF reader itself also gained a round of polish:
   no need to open the separate "Annotations…" dialog just to remove a stray highlight.
 - **Reading position is remembered**: "Read" now resumes on the page you left off on, saved
   automatically when the reader closes.
+- **Continuous scroll**: a "Continuous" toggle switches from page-by-page to scrolling
+  smoothly through every page in one view — highlighting, search, and navigation all work
+  the same way in either mode, and switching between them keeps your place.
 
 ## [0.1.1] "Tidy Shelf" — 2026-08-13 — Internal: CI format-check fix
 

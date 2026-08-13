@@ -22,16 +22,17 @@ the single most confusing thing about the docs:
    grew out of a large brainstorm (a ChatGPT feature dump, 23 sections), now extended past
    the brainstorm's own scope. This is what `M2-SPEC.md`, `M3-SPEC.md`, `M4-SPEC.md`,
    `M5-SPEC.md`, `DATA-MODEL-EXTENSIONS.md`, and `M2-GUI-PLAN.md` describe.
-   - **Extension-M5** = the full PDF+EPUB reader. **Tier 1 and Tier 2 are both complete**:
-     Tier 1 — 5A (typed attachment routing, fixing the EPUB-attachment-opens-the-PDF-viewer
-     bug), 5B (EPUB rendering + chapter/TOC navigation via an embedded WebKitGTK 6
-     `WebView`), 5C (EPUB highlighting — chapter+snippet anchor, WebKit-native selection +
-     DOM search-and-wrap), 5D (EPUB body text in the search index). Tier 2 — PDF `Progress`
-     resume/save, underline/strikeout/note drawing gestures, an outline/bookmarks panel, an
-     in-reader text search bar, and a colour picker + inline per-page annotation list.
-     Everything above verified end-to-end, not just compiled. Still open: continuous/vertical
-     scroll (deliberately deferred out of Tier 2 — a rendering-architecture change, not
-     polish) and Tier 3's portable annotation export (`M5-SPEC.md`).
+   - **Extension-M5** = the full PDF+EPUB reader. **Tier 1 and Tier 2 are both fully
+     complete**: Tier 1 — 5A (typed attachment routing, fixing the
+     EPUB-attachment-opens-the-PDF-viewer bug), 5B (EPUB rendering + chapter/TOC navigation
+     via an embedded WebKitGTK 6 `WebView`), 5C (EPUB highlighting — chapter+snippet anchor,
+     WebKit-native selection + DOM search-and-wrap), 5D (EPUB body text in the search
+     index). Tier 2 — PDF `Progress` resume/save, underline/strikeout/note drawing gestures,
+     an outline/bookmarks panel, an in-reader text search bar, a colour picker + inline
+     per-page annotation list, and continuous/vertical scroll (a toggle alongside the
+     page-by-page view, eagerly rendered on first use rather than virtualized). Everything
+     above verified end-to-end headless, not just compiled. Still open: Tier 3's portable
+     annotation export and Tier 4's multi-attachment chooser (`M5-SPEC.md`).
    - **Extension-M4** = the map toward a "full-fledged" citation manager beyond the original
      brief and the brainstorm both — live PDF annotation, Zerkalo vault adoption, and the
      smaller GUI/platform gaps. **Tier 1's PDF-annotation work (4A, all three phases) and
@@ -144,16 +145,16 @@ one-line pointer rather than duplicated:
   all of Tier 2 done**; 4B (Zerkalo vault adoption, a Zerkalo-repo task) is the only open
   Tier 1 item; Tier 3 (Windows UI) and Tier 4 (browser capture, bulk ops, library
   quick-switcher) not started.
-- **Extension-M5** (`M5-SPEC.md`): the full PDF+EPUB reader. **Tier 1 and Tier 2 complete,
-  verified end-to-end headless (real xdotool-driven interaction, not just compiled).** Tier
-  1 — 5A (typed attachment routing), 5B (EPUB rendering + chapter/TOC nav via WebKitGTK 6),
-  5C (EPUB highlighting — chapter+snippet anchor, WebKit-native selection + DOM
-  search-and-wrap), 5D (EPUB text into the search index). Tier 2 — PDF `Progress`
+- **Extension-M5** (`M5-SPEC.md`): the full PDF+EPUB reader. **Tier 1 and Tier 2 both fully
+  complete, verified end-to-end headless (real xdotool-driven interaction, not just
+  compiled).** Tier 1 — 5A (typed attachment routing), 5B (EPUB rendering + chapter/TOC nav
+  via WebKitGTK 6), 5C (EPUB highlighting — chapter+snippet anchor, WebKit-native selection +
+  DOM search-and-wrap), 5D (EPUB text into the search index). Tier 2 — PDF `Progress`
   resume/save, underline/strikeout/note drawing gestures, an outline/bookmarks panel,
-  in-reader text search, and a colour picker + inline per-page annotation list. Still open:
-  continuous/vertical scroll (deliberately deferred — a rendering-architecture change, not
-  polish), Tier 3 (a portable annotation export), Tier 4 (a multi-attachment chooser) — see
-  that doc for the full tiered list.
+  in-reader text search, a colour picker + inline per-page annotation list, and
+  continuous/vertical scroll (a toggle alongside the page-by-page view). Still open: Tier 3
+  (a portable annotation export), Tier 4 (a multi-attachment chooser) — see that doc for the
+  full tiered list.
 
 ---
 

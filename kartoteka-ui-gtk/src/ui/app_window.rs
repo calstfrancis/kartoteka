@@ -4828,6 +4828,16 @@ struct ReaderState {
     /// Hex colour (`#rrggbb`) the next drag saves onto its annotation — set by the colour
     /// `DropDown`, defaulting to the original hardcoded amber.
     draw_color: String,
+    /// Continuous-scroll mode's state — empty until the mode is toggled on for the first
+    /// time (built lazily, not at reader-open, so plain "Read" stays as fast as it always
+    /// was). `continuous_pictures[i]` is page `i`'s permanent `Picture` widget (unlike the
+    /// paged view's single recycled one); `continuous_offsets[i]` is that page's cumulative
+    /// top position in the continuous view, in pixels, for scroll-to-page and for tracking
+    /// which page is "current" from scroll position; `continuous_rendered[i]` avoids
+    /// re-rendering a page that hasn't changed since it was last drawn.
+    continuous_pictures: Vec<gtk4::Picture>,
+    continuous_offsets: Vec<f64>,
+    continuous_rendered: Vec<bool>,
 }
 
 /// The colour `DropDown`'s fixed preset order — a small curated set (like a real
@@ -4876,6 +4886,407 @@ const HIGHLIGHT_RGBA: [u8; 4] = [246, 195, 68, 90];
 const SEARCH_MATCH_RGBA: [u8; 4] = [66, 133, 244, 130];
 /// Below this, a drag reads as a stray click, not an intentional highlight.
 const MIN_DRAG_PX: f64 = 6.0;
+/// Vertical gap between pages in continuous-scroll mode.
+const CONTINUOUS_PAGE_GAP: f64 = 8.0;
+
+/// Render `page` (0-based) to a ready-to-display texture, with this entry's saved
+/// annotations — and, if `page` has the current search match, that match's highlight too —
+/// blended in. Shared by both the page-by-page view and continuous-scroll mode so the two
+/// can never visually disagree about what a page looks like. Returns the texture, its pixel
+/// size, and the page's PDF-point size (the scale a drag-selected rectangle on that page
+/// converts through).
+fn render_pdf_page_texture(
+    r: &ReaderState,
+    page: u16,
+) -> Option<(gdk::Texture, u32, u32, (f32, f32))> {
+    let width = (READER_BASE_WIDTH * r.zoom) as u32;
+    let page_pts = fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0));
+    let mut rp = fond_doc::render_page(&r.pdfium, &r.bytes, page, width).ok()?;
+    let current_page = page as u32 + 1;
+
+    // Note has no quad to draw (it's marginal, not on-page) — only the three drawable kinds
+    // get blended. Each annotation keeps its own colour (from the colour picker at draw
+    // time), so this blends per-annotation rather than batching every quad on the page into
+    // one shared-colour call.
+    for a in r
+        .annotations
+        .annotations
+        .iter()
+        .filter(|a| a.page == Some(current_page) && !a.quadpoints.is_empty())
+    {
+        let kind = match a.kind {
+            fond_bib::AnnotationKind::Highlight => fond_doc::MarkupKind::Highlight,
+            fond_bib::AnnotationKind::Underline => fond_doc::MarkupKind::Underline,
+            fond_bib::AnnotationKind::Strikeout => fond_doc::MarkupKind::Strikeout,
+            fond_bib::AnnotationKind::Note => continue,
+        };
+        let items: Vec<(fond_doc::MarkupKind, [f64; 8])> =
+            a.quadpoints.iter().map(|q| (kind, *q)).collect();
+        fond_doc::blend_annotations(
+            &mut rp,
+            page_pts.0,
+            page_pts.1,
+            &items,
+            annotation_rgba(a.color.as_deref()),
+        );
+    }
+
+    // The current search match, if it's on this page — blended in its own colour, on top of
+    // any saved highlights, so it reads as "found this" and not as another saved annotation.
+    if let Some(current) = r.search_matches.get(r.search_current) {
+        if current.page == page {
+            fond_doc::blend_highlights(
+                &mut rp,
+                page_pts.0,
+                page_pts.1,
+                &current.quads,
+                SEARCH_MATCH_RGBA,
+            );
+        }
+    }
+
+    let data = glib::Bytes::from(&rp.rgba);
+    let texture = gdk::MemoryTexture::new(
+        rp.width as i32,
+        rp.height as i32,
+        gdk::MemoryFormat::R8g8b8a8,
+        &data,
+        (rp.width * 4) as usize,
+    );
+    Some((texture.upcast(), rp.width, rp.height, page_pts))
+}
+
+/// Convert a drag gesture's start/end (widget-local pixel coordinates on `page`'s own
+/// render, at that page's own `render_w`×`render_h` / `page_w_pts`×`page_h_pts` scale) into
+/// PDF-space quadpoints — hugging real text if the drag covers any, same as
+/// `select_text_in_rect` documents — and save a new annotation for it. The shared save path
+/// for both the page-by-page view's drag handler and continuous-scroll mode's per-page ones,
+/// so the two don't duplicate the coordinate math and sidecar write. Returns whether an
+/// annotation was actually saved, so the caller knows whether a redraw is needed.
+/// The geometry a drag gesture needs converted to PDF-space quadpoints: the page's own
+/// rendered pixel size and PDF-point size (its scale), and the drag's start/end in that
+/// pixel space. Grouped into one struct rather than eight loose parameters on
+/// `save_drag_annotation`.
+struct DragGeometry {
+    render_w: u32,
+    render_h: u32,
+    page_w_pts: f32,
+    page_h_pts: f32,
+    start_x: f64,
+    start_y: f64,
+    end_x: f64,
+    end_y: f64,
+}
+
+fn save_drag_annotation(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    reader: &Rc<RefCell<ReaderState>>,
+    pdf_hash: &str,
+    page: u16,
+    geom: DragGeometry,
+) -> bool {
+    let DragGeometry {
+        render_w,
+        render_h,
+        page_w_pts,
+        page_h_pts,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+    } = geom;
+    if render_w == 0 || render_h == 0 || page_w_pts <= 0.0 || page_h_pts <= 0.0 {
+        return false;
+    }
+    let scale_x = render_w as f64 / page_w_pts as f64;
+    let scale_y = render_h as f64 / page_h_pts as f64;
+
+    let px0 = start_x.min(end_x).clamp(0.0, render_w as f64);
+    let px1 = start_x.max(end_x).clamp(0.0, render_w as f64);
+    let py0 = start_y.min(end_y).clamp(0.0, render_h as f64);
+    let py1 = start_y.max(end_y).clamp(0.0, render_h as f64);
+
+    let x0 = px0 / scale_x;
+    let x1 = px1 / scale_x;
+    // PDF y is bottom-up; the drag's y is top-down pixel space.
+    let y_top = page_h_pts as f64 - py0 / scale_y;
+    let y_bottom = page_h_pts as f64 - py1 / scale_y;
+
+    let (draw_kind, draw_color) = {
+        let r = reader.borrow();
+        (r.draw_kind, r.draw_color.clone())
+    };
+
+    // Prefer the actual text under the drag — one quad per line it spans, hugging the
+    // glyphs — over the drag rectangle's own bounding box. Falls back to the plain
+    // rectangle when the drag covers no text (a figure, a blank margin).
+    let (quads, snippet) = {
+        let r = reader.borrow();
+        fond_doc::select_text_in_rect(
+            &r.pdfium,
+            &r.bytes,
+            page,
+            x0 as f32,
+            y_bottom as f32,
+            x1 as f32,
+            y_top as f32,
+        )
+        .ok()
+        .flatten()
+    }
+    .map(|sel| (sel.quads, Some(sel.text)))
+    .unwrap_or_else(|| {
+        (
+            vec![[x0, y_top, x1, y_top, x0, y_bottom, x1, y_bottom]],
+            None,
+        )
+    });
+
+    let annotation = fond_bib::Annotation::drawn(
+        draw_kind,
+        page as u32 + 1,
+        quads,
+        snippet,
+        None,
+        Some(draw_color),
+    );
+
+    {
+        let mut r = reader.borrow_mut();
+        r.annotations.pdf_hash = Some(pdf_hash.to_string());
+        r.annotations.upsert(annotation);
+    }
+
+    let write_result = {
+        let s = state.borrow();
+        s.library
+            .as_ref()
+            .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+    };
+    match write_result {
+        Some(Ok(_)) => {
+            let label = match draw_kind {
+                fond_bib::AnnotationKind::Highlight => "Highlight added",
+                fond_bib::AnnotationKind::Underline => "Underline added",
+                fond_bib::AnnotationKind::Strikeout => "Strikeout added",
+                fond_bib::AnnotationKind::Note => "Annotation added",
+            };
+            toast(widgets, label);
+            true
+        }
+        Some(Err(e)) => {
+            toast(widgets, &format!("Could not save: {e}"));
+            false
+        }
+        None => {
+            toast(widgets, "No open library — not saved");
+            false
+        }
+    }
+}
+
+/// Build continuous-scroll mode's per-page `Picture` widgets, if not already built, and
+/// render every page eagerly. A no-op if `reader.continuous_pictures` is already populated
+/// (from an earlier toggle-on this session).
+///
+/// Eager, not lazy/virtualized: for the page counts this app actually sees (academic
+/// papers, book chapters — tens of pages, rarely hundreds), rendering everything on first
+/// toggle-on is a one-time, well-under-a-second cost, and it keeps this far simpler than a
+/// virtualized alternative — every page gets one *permanent* widget, so its drag-to-annotate
+/// gesture can capture that page's index directly with no risk of a recycled widget later
+/// belonging to a different page (the failure mode a `ListView`-based virtualized version
+/// would have to guard against). A very large PDF would pay a real up-front cost here; not
+/// addressed, since it isn't this app's common case.
+fn build_continuous_view(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    reader: &Rc<RefCell<ReaderState>>,
+    pdf_hash: &str,
+    continuous_box: &gtk4::Box,
+) {
+    if !reader.borrow().continuous_pictures.is_empty() {
+        return;
+    }
+    let (count, zoom) = {
+        let r = reader.borrow();
+        (r.count, r.zoom)
+    };
+
+    let mut pictures = Vec::with_capacity(count as usize);
+    let mut offsets = Vec::with_capacity(count as usize + 1);
+    let mut y = 0.0f64;
+
+    for page in 0..count {
+        let rendered = {
+            let r = reader.borrow();
+            render_pdf_page_texture(&r, page)
+        };
+        let picture = gtk4::Picture::new();
+        picture.set_halign(gtk4::Align::Center);
+        picture.set_can_target(true);
+
+        let (w, h) = match &rendered {
+            Some((texture, w, h, _)) => {
+                picture.set_paintable(Some(texture));
+                (*w, *h)
+            }
+            None => {
+                // Rendering failed for this page — fall back to a plausible size from its
+                // point dimensions alone, so the layout doesn't collapse to zero height.
+                let pts = {
+                    let r = reader.borrow();
+                    fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((612.0, 792.0))
+                };
+                let w = (READER_BASE_WIDTH * zoom) as u32;
+                let h = if pts.0 > 0.0 {
+                    (w as f32 * pts.1 / pts.0) as u32
+                } else {
+                    (w as f32 * 792.0 / 612.0) as u32
+                };
+                (w, h)
+            }
+        };
+        picture.set_size_request(w as i32, h as i32);
+        offsets.push(y);
+        y += h as f64 + CONTINUOUS_PAGE_GAP;
+
+        // Drag-to-annotate on this page's own permanent Picture — `page` is captured by
+        // value, so (unlike a recycled `ListView` row) it can never go stale.
+        {
+            let drag = gtk4::GestureDrag::new();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let reader = reader.clone();
+            let pdf_hash = pdf_hash.to_string();
+            let this_picture = picture.clone();
+            drag.connect_drag_end(move |gesture, offset_x, offset_y| {
+                if offset_x.abs() < MIN_DRAG_PX && offset_y.abs() < MIN_DRAG_PX {
+                    return;
+                }
+                let Some((start_x, start_y)) = gesture.start_point() else {
+                    return;
+                };
+                let end_x = start_x + offset_x;
+                let end_y = start_y + offset_y;
+                let render_w = this_picture.width().max(0) as u32;
+                let render_h = this_picture.height().max(0) as u32;
+                let page_pts = {
+                    let r = reader.borrow();
+                    fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
+                };
+                let saved = save_drag_annotation(
+                    &state,
+                    &widgets,
+                    &reader,
+                    &pdf_hash,
+                    page,
+                    DragGeometry {
+                        render_w,
+                        render_h,
+                        page_w_pts: page_pts.0,
+                        page_h_pts: page_pts.1,
+                        start_x,
+                        start_y,
+                        end_x,
+                        end_y,
+                    },
+                );
+                if saved {
+                    render_continuous_page(&reader, page);
+                }
+            });
+            picture.add_controller(drag);
+        }
+
+        continuous_box.append(&picture);
+        pictures.push(picture);
+    }
+    offsets.push(y); // sentinel: total content height
+
+    let mut r = reader.borrow_mut();
+    r.continuous_pictures = pictures;
+    r.continuous_offsets = offsets;
+    r.continuous_rendered = vec![true; count as usize];
+}
+
+/// Tear down and rebuild continuous-scroll mode's widgets after a zoom change — page pixel
+/// sizes all changed, so every offset is stale too. A no-op if continuous mode was never
+/// built (the next toggle-on will build fresh at the new zoom already). Simpler than
+/// resizing everything in place: zoom changes are infrequent, so paying a full rebuild is a
+/// reasonable trade for not having two code paths (initial build vs. resize-in-place) to
+/// keep in sync.
+fn rebuild_continuous_view_for_zoom(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    reader: &Rc<RefCell<ReaderState>>,
+    pdf_hash: &str,
+    continuous_box: &gtk4::Box,
+) {
+    if reader.borrow().continuous_pictures.is_empty() {
+        return;
+    }
+    while let Some(child) = continuous_box.first_child() {
+        continuous_box.remove(&child);
+    }
+    {
+        let mut r = reader.borrow_mut();
+        r.continuous_pictures.clear();
+        r.continuous_offsets.clear();
+        r.continuous_rendered.clear();
+    }
+    build_continuous_view(state, widgets, reader, pdf_hash, continuous_box);
+}
+
+/// Re-render one page's `Picture` in continuous-scroll mode in place (after an annotation on
+/// it changed) — its position doesn't move, only its content, so this doesn't touch
+/// `continuous_offsets`.
+fn render_continuous_page(reader: &Rc<RefCell<ReaderState>>, page: u16) {
+    let picture = {
+        let r = reader.borrow();
+        r.continuous_pictures.get(page as usize).cloned()
+    };
+    let Some(picture) = picture else {
+        return;
+    };
+    let mut r = reader.borrow_mut();
+    if let Some((texture, w, h, _)) = render_pdf_page_texture(&r, page) {
+        picture.set_paintable(Some(&texture));
+        picture.set_size_request(w as i32, h as i32);
+        if let Some(flag) = r.continuous_rendered.get_mut(page as usize) {
+            *flag = true;
+        }
+    }
+}
+
+/// Scroll continuous-scroll mode's `ScrolledWindow` so `page` is at the top of the viewport.
+fn scroll_continuous_to_page(
+    reader: &Rc<RefCell<ReaderState>>,
+    scroll: &gtk4::ScrolledWindow,
+    page: u16,
+) {
+    let offset = {
+        let r = reader.borrow();
+        r.continuous_offsets
+            .get(page as usize)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    scroll.vadjustment().set_value(offset);
+}
+
+/// Which page's span contains vertical position `y` (both in continuous-scroll pixel space)
+/// — the last page whose own top offset is at or above `y`. `offsets` is
+/// `ReaderState.continuous_offsets`: `count` real page-top offsets plus one trailing
+/// sentinel (the total content height), ascending.
+fn continuous_page_at(offsets: &[f64], y: f64) -> u16 {
+    if offsets.len() < 2 {
+        return 0;
+    }
+    let count = offsets.len() - 1;
+    let i = offsets[..count].partition_point(|&o| o <= y);
+    i.saturating_sub(1).min(count.saturating_sub(1)) as u16
+}
 
 /// A built-in PDF reader: renders pages with PDFium to RGBA textures, with page navigation,
 /// zoom, and click-drag highlighting. No Poppler (GPL) — pure PDFium (BSD), the same binding
@@ -4944,6 +5355,9 @@ fn show_pdf_reader(
         search_matches: Vec::new(),
         search_current: 0,
         draw_color: COLOR_PRESETS[0].1.to_string(),
+        continuous_pictures: Vec::new(),
+        continuous_offsets: Vec::new(),
+        continuous_rendered: Vec::new(),
     }));
 
     let dialog = adw::Window::new();
@@ -4997,14 +5411,21 @@ fn show_pdf_reader(
     let page_annots_button = gtk4::MenuButton::builder().label("This page").build();
     page_annots_button.set_tooltip_text(Some("Annotations on the current page"));
 
+    let continuous_toggle = gtk4::ToggleButton::with_label("Continuous");
+    continuous_toggle.set_tooltip_text(Some(
+        "Scroll continuously through every page, instead of one page at a time",
+    ));
+
     // pack_end order is the reverse of visual order (last-packed ends up leftmost) — same
     // gotcha CLAUDE.md notes for the hamburger menu. Visual order here, left to right:
-    // Contents (if present), This page, mode picker, colour picker, Note, zoom in, zoom out.
+    // Contents (if present), This page, Continuous, mode picker, colour picker, Note,
+    // zoom in, zoom out.
     header.pack_end(&zoom_out);
     header.pack_end(&zoom_in);
     header.pack_end(&note_button);
     header.pack_end(&color_drop);
     header.pack_end(&mode_drop);
+    header.pack_end(&continuous_toggle);
     header.pack_end(&page_annots_button);
     if let Some(contents_button) = &contents_button {
         header.pack_end(contents_button);
@@ -5046,15 +5467,31 @@ fn show_pdf_reader(
     scroll.set_vexpand(true);
     scroll.set_hexpand(true);
 
+    // Continuous-scroll mode's surface: an empty Box for now — populated with one Picture
+    // per page the first time the mode is toggled on (`build_continuous_view` below), not
+    // eagerly here, so a plain "Read" stays exactly as fast as it always was.
+    let continuous_box = gtk4::Box::new(Orientation::Vertical, CONTINUOUS_PAGE_GAP as i32);
+    continuous_box.set_margin_top(CONTINUOUS_PAGE_GAP as i32);
+    continuous_box.set_margin_bottom(CONTINUOUS_PAGE_GAP as i32);
+    let continuous_scroll = gtk4::ScrolledWindow::new();
+    continuous_scroll.set_child(Some(&continuous_box));
+    continuous_scroll.set_vexpand(true);
+    continuous_scroll.set_hexpand(true);
+
+    let view_stack = gtk4::Stack::new();
+    view_stack.add_named(&scroll, Some("paged"));
+    view_stack.add_named(&continuous_scroll, Some("continuous"));
+    view_stack.set_visible_child_name("paged");
+
     let content = gtk4::Box::new(Orientation::Vertical, 0);
     content.append(&search_row);
     content.append(&hint);
-    content.append(&scroll);
+    content.append(&view_stack);
     view.set_content(Some(&content));
     dialog.set_content(Some(&view));
 
-    // Render the current page into the Picture, blending in this page's saved highlights,
-    // and refresh the page label.
+    // Render the current page into the Picture (via the shared helper both this view and
+    // continuous-scroll mode use), and refresh the page label.
     let render = {
         let reader = reader.clone();
         let picture = picture.clone();
@@ -5063,68 +5500,14 @@ fn show_pdf_reader(
         let next = next.clone();
         Rc::new(move || {
             let mut r = reader.borrow_mut();
-            let width = (READER_BASE_WIDTH * r.zoom) as u32;
-            let page_pts = fond_doc::page_size(&r.pdfium, &r.bytes, r.page).unwrap_or((0.0, 0.0));
-            match fond_doc::render_page(&r.pdfium, &r.bytes, r.page, width) {
-                Ok(mut rp) => {
-                    let current_page = r.page as u32 + 1;
-                    // Note has no quad to draw (it's marginal, not on-page) — only the three
-                    // drawable kinds get blended. Each annotation keeps its own colour (from
-                    // the colour picker at draw time), so this blends per-annotation rather
-                    // than batching every quad on the page into one shared-colour call.
-                    for a in r
-                        .annotations
-                        .annotations
-                        .iter()
-                        .filter(|a| a.page == Some(current_page) && !a.quadpoints.is_empty())
-                    {
-                        let kind = match a.kind {
-                            fond_bib::AnnotationKind::Highlight => fond_doc::MarkupKind::Highlight,
-                            fond_bib::AnnotationKind::Underline => fond_doc::MarkupKind::Underline,
-                            fond_bib::AnnotationKind::Strikeout => fond_doc::MarkupKind::Strikeout,
-                            fond_bib::AnnotationKind::Note => continue,
-                        };
-                        let items: Vec<(fond_doc::MarkupKind, [f64; 8])> =
-                            a.quadpoints.iter().map(|q| (kind, *q)).collect();
-                        fond_doc::blend_annotations(
-                            &mut rp,
-                            page_pts.0,
-                            page_pts.1,
-                            &items,
-                            annotation_rgba(a.color.as_deref()),
-                        );
-                    }
-
-                    // The current search match, if it's on this page — blended in its own
-                    // colour, on top of any saved highlights, so it reads as "found this" and
-                    // not as another saved annotation.
-                    if let Some(current) = r.search_matches.get(r.search_current) {
-                        if current.page == r.page {
-                            fond_doc::blend_highlights(
-                                &mut rp,
-                                page_pts.0,
-                                page_pts.1,
-                                &current.quads,
-                                SEARCH_MATCH_RGBA,
-                            );
-                        }
-                    }
-
-                    r.render_px = (rp.width, rp.height);
+            match render_pdf_page_texture(&r, r.page) {
+                Some((texture, w, h, page_pts)) => {
+                    r.render_px = (w, h);
                     r.page_pts = page_pts;
-
-                    let data = glib::Bytes::from(&rp.rgba);
-                    let texture = gdk::MemoryTexture::new(
-                        rp.width as i32,
-                        rp.height as i32,
-                        gdk::MemoryFormat::R8g8b8a8,
-                        &data,
-                        (rp.width * 4) as usize,
-                    );
                     picture.set_paintable(Some(&texture));
-                    picture.set_size_request(rp.width as i32, rp.height as i32);
+                    picture.set_size_request(w as i32, h as i32);
                 }
-                Err(_) => picture.set_paintable(gdk::Paintable::NONE),
+                None => picture.set_paintable(gdk::Paintable::NONE),
             }
             page_label.set_text(&format!("Page {} of {}", r.page + 1, r.count));
             prev.set_sensitive(r.page > 0);
@@ -5154,7 +5537,7 @@ fn show_pdf_reader(
             let end_x = start_x + offset_x;
             let end_y = start_y + offset_y;
 
-            let (page, render_w, render_h, page_w_pts, page_h_pts, draw_kind, draw_color) = {
+            let (page, render_w, render_h, page_w_pts, page_h_pts) = {
                 let r = reader.borrow();
                 (
                     r.page,
@@ -5162,86 +5545,31 @@ fn show_pdf_reader(
                     r.render_px.1,
                     r.page_pts.0,
                     r.page_pts.1,
-                    r.draw_kind,
-                    r.draw_color.clone(),
                 )
             };
-            if render_w == 0 || render_h == 0 || page_w_pts <= 0.0 || page_h_pts <= 0.0 {
-                return;
-            }
-            let scale_x = render_w as f64 / page_w_pts as f64;
-            let scale_y = render_h as f64 / page_h_pts as f64;
-
-            let px0 = start_x.min(end_x).clamp(0.0, render_w as f64);
-            let px1 = start_x.max(end_x).clamp(0.0, render_w as f64);
-            let py0 = start_y.min(end_y).clamp(0.0, render_h as f64);
-            let py1 = start_y.max(end_y).clamp(0.0, render_h as f64);
-
-            let x0 = px0 / scale_x;
-            let x1 = px1 / scale_x;
-            // PDF y is bottom-up; the drag's y is top-down pixel space.
-            let y_top = page_h_pts as f64 - py0 / scale_y;
-            let y_bottom = page_h_pts as f64 - py1 / scale_y;
-
-            // Prefer the actual text under the drag — one quad per line it spans, hugging the
-            // glyphs — over the drag rectangle's own bounding box. Falls back to the plain
-            // rectangle when the drag covers no text (a figure, a blank margin).
-            let (quads, snippet) = {
-                let r = reader.borrow();
-                fond_doc::select_text_in_rect(
-                    &r.pdfium,
-                    &r.bytes,
-                    r.page,
-                    x0 as f32,
-                    y_bottom as f32,
-                    x1 as f32,
-                    y_top as f32,
-                )
-                .ok()
-                .flatten()
-            }
-            .map(|sel| (sel.quads, Some(sel.text)))
-            .unwrap_or_else(|| {
-                (
-                    vec![[x0, y_top, x1, y_top, x0, y_bottom, x1, y_bottom]],
-                    None,
-                )
-            });
-
-            let annotation = fond_bib::Annotation::drawn(
-                draw_kind,
-                page as u32 + 1,
-                quads,
-                snippet,
-                None,
-                Some(draw_color),
+            let saved = save_drag_annotation(
+                &state,
+                &widgets,
+                &reader,
+                &pdf_hash,
+                page,
+                DragGeometry {
+                    render_w,
+                    render_h,
+                    page_w_pts,
+                    page_h_pts,
+                    start_x,
+                    start_y,
+                    end_x,
+                    end_y,
+                },
             );
-
-            {
-                let mut r = reader.borrow_mut();
-                r.annotations.pdf_hash = Some(pdf_hash.clone());
-                r.annotations.upsert(annotation);
-            }
-
-            let write_result = {
-                let s = state.borrow();
-                s.library
-                    .as_ref()
-                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-            };
-            match write_result {
-                Some(Ok(_)) => {
-                    render();
-                    let label = match draw_kind {
-                        fond_bib::AnnotationKind::Highlight => "Highlight added",
-                        fond_bib::AnnotationKind::Underline => "Underline added",
-                        fond_bib::AnnotationKind::Strikeout => "Strikeout added",
-                        fond_bib::AnnotationKind::Note => "Annotation added",
-                    };
-                    toast(&widgets, label);
-                }
-                Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
-                None => toast(&widgets, "No open library — not saved"),
+            if saved {
+                render();
+                // Keep continuous mode's copy of this page in sync too, in case it was
+                // already built from an earlier toggle-on and the user drew this highlight
+                // after switching back to the paged view.
+                render_continuous_page(&reader, page);
             }
         });
         picture.add_controller(drag);
@@ -5250,7 +5578,14 @@ fn show_pdf_reader(
     {
         let reader = reader.clone();
         let render = render.clone();
+        let continuous_toggle = continuous_toggle.clone();
+        let continuous_scroll = continuous_scroll.clone();
         prev.connect_clicked(move |_| {
+            if continuous_toggle.is_active() {
+                let target = reader.borrow().page.saturating_sub(1);
+                scroll_continuous_to_page(&reader, &continuous_scroll, target);
+                return;
+            }
             {
                 let mut r = reader.borrow_mut();
                 if r.page > 0 {
@@ -5263,7 +5598,17 @@ fn show_pdf_reader(
     {
         let reader = reader.clone();
         let render = render.clone();
+        let continuous_toggle = continuous_toggle.clone();
+        let continuous_scroll = continuous_scroll.clone();
         next.connect_clicked(move |_| {
+            if continuous_toggle.is_active() {
+                let target = {
+                    let r = reader.borrow();
+                    (r.page + 1).min(r.count.saturating_sub(1))
+                };
+                scroll_continuous_to_page(&reader, &continuous_scroll, target);
+                return;
+            }
             {
                 let mut r = reader.borrow_mut();
                 if r.page + 1 < r.count {
@@ -5274,25 +5619,93 @@ fn show_pdf_reader(
         });
     }
     {
+        let state = state.clone();
+        let widgets = widgets.clone();
         let reader = reader.clone();
         let render = render.clone();
+        let pdf_hash = pdf_hash.to_string();
+        let continuous_box = continuous_box.clone();
+        let continuous_toggle = continuous_toggle.clone();
+        let continuous_scroll = continuous_scroll.clone();
         zoom_in.connect_clicked(move |_| {
             {
                 let mut r = reader.borrow_mut();
                 r.zoom = (r.zoom * 1.25).min(4.0);
             }
             render();
+            rebuild_continuous_view_for_zoom(&state, &widgets, &reader, &pdf_hash, &continuous_box);
+            if continuous_toggle.is_active() {
+                let page = reader.borrow().page;
+                scroll_continuous_to_page(&reader, &continuous_scroll, page);
+            }
         });
     }
     {
+        let state = state.clone();
+        let widgets = widgets.clone();
         let reader = reader.clone();
         let render = render.clone();
+        let pdf_hash = pdf_hash.to_string();
+        let continuous_box = continuous_box.clone();
+        let continuous_toggle = continuous_toggle.clone();
+        let continuous_scroll = continuous_scroll.clone();
         zoom_out.connect_clicked(move |_| {
             {
                 let mut r = reader.borrow_mut();
                 r.zoom = (r.zoom / 1.25).max(0.35);
             }
             render();
+            rebuild_continuous_view_for_zoom(&state, &widgets, &reader, &pdf_hash, &continuous_box);
+            if continuous_toggle.is_active() {
+                let page = reader.borrow().page;
+                scroll_continuous_to_page(&reader, &continuous_scroll, page);
+            }
+        });
+    }
+    // Tracks which page is "current" from scroll position alone — connected once, works
+    // regardless of whether continuous mode has been built yet (an empty `continuous_offsets`
+    // just makes `continuous_page_at` a no-op returning 0). Keeps `r.page`/the page label/
+    // prev-next sensitivity live while scrolling, the same things the paged view's `render()`
+    // updates on navigation, so "This page"/Progress/Contents-jump-target stay correct no
+    // matter which view is currently visible.
+    {
+        let reader = reader.clone();
+        let page_label = page_label.clone();
+        let prev = prev.clone();
+        let next = next.clone();
+        continuous_scroll
+            .vadjustment()
+            .connect_value_changed(move |adj| {
+                let mut r = reader.borrow_mut();
+                if r.continuous_offsets.len() < 2 {
+                    return;
+                }
+                let page = continuous_page_at(&r.continuous_offsets, adj.value());
+                r.page = page;
+                page_label.set_text(&format!("Page {} of {}", page + 1, r.count));
+                prev.set_sensitive(page > 0);
+                next.set_sensitive(page + 1 < r.count);
+            });
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let reader = reader.clone();
+        let render = render.clone();
+        let pdf_hash = pdf_hash.to_string();
+        let continuous_box = continuous_box.clone();
+        let continuous_scroll = continuous_scroll.clone();
+        let view_stack = view_stack.clone();
+        continuous_toggle.connect_toggled(move |btn| {
+            if btn.is_active() {
+                build_continuous_view(&state, &widgets, &reader, &pdf_hash, &continuous_box);
+                view_stack.set_visible_child_name("continuous");
+                let page = reader.borrow().page;
+                scroll_continuous_to_page(&reader, &continuous_scroll, page);
+            } else {
+                view_stack.set_visible_child_name("paged");
+                render();
+            }
         });
     }
     {
@@ -5413,6 +5826,8 @@ fn show_pdf_reader(
                         match write_result {
                             Some(Ok(_)) => {
                                 render();
+                                let page = reader.borrow().page;
+                                render_continuous_page(&reader, page);
                                 toast(&widgets, "Annotation deleted");
                             }
                             Some(Err(e)) => toast(&widgets, &format!("Could not delete: {e}")),
@@ -5447,13 +5862,20 @@ fn show_pdf_reader(
                 let popover = popover.clone();
                 let reader = reader.clone();
                 let render = render.clone();
+                let continuous_toggle = continuous_toggle.clone();
+                let continuous_scroll = continuous_scroll.clone();
                 row.connect_clicked(move |_| {
                     popover.popdown();
-                    {
-                        let mut r = reader.borrow_mut();
-                        r.page = (page.saturating_sub(1)).min(r.count.saturating_sub(1));
+                    let target = {
+                        let r = reader.borrow();
+                        (page.saturating_sub(1)).min(r.count.saturating_sub(1))
+                    };
+                    if continuous_toggle.is_active() {
+                        scroll_continuous_to_page(&reader, &continuous_scroll, target);
+                    } else {
+                        reader.borrow_mut().page = target;
+                        render();
                     }
-                    render();
                 });
             } else {
                 row.set_sensitive(false);
@@ -5470,9 +5892,32 @@ fn show_pdf_reader(
     // worth doing on every character typed), jumping straight to the first match's page.
     // Prev/Next cycle `search_current` with wraparound; the count label and match highlight
     // (blended in `render()`, a distinct colour from saved highlights) follow along.
-    let run_search = {
+    // Jump to `page` after a search match changes: in continuous mode, scroll there and
+    // re-render both it and the previous match's page (to clear that page's now-stale match
+    // tint — cheap no-op if continuous mode was never built); in paged mode, the shared
+    // `render()` already re-blends the match into whichever page it lands on.
+    let goto_search_match = {
         let reader = reader.clone();
         let render = render.clone();
+        let continuous_toggle = continuous_toggle.clone();
+        let continuous_scroll = continuous_scroll.clone();
+        Rc::new(move |page: u16, previous_page: Option<u16>| {
+            if continuous_toggle.is_active() {
+                scroll_continuous_to_page(&reader, &continuous_scroll, page);
+                render_continuous_page(&reader, page);
+                if let Some(prev_page) = previous_page {
+                    if prev_page != page {
+                        render_continuous_page(&reader, prev_page);
+                    }
+                }
+            } else {
+                render();
+            }
+        })
+    };
+    let run_search = {
+        let reader = reader.clone();
+        let goto_search_match = goto_search_match.clone();
         let search_prev = search_prev.clone();
         let search_next = search_next.clone();
         let search_count = search_count.clone();
@@ -5483,6 +5928,10 @@ fn show_pdf_reader(
             };
             let count = matches.len();
             let first_page = matches.first().map(|m| m.page);
+            let previous_page = {
+                let r = reader.borrow();
+                r.search_matches.get(r.search_current).map(|m| m.page)
+            };
             {
                 let mut r = reader.borrow_mut();
                 r.search_matches = matches;
@@ -5498,7 +5947,9 @@ fn show_pdf_reader(
                 (0, false) => "No matches".to_string(),
                 (n, _) => format!("1 of {n}"),
             });
-            render();
+            if let Some(page) = first_page {
+                goto_search_match(page, previous_page);
+            }
         })
     };
     {
@@ -5515,56 +5966,72 @@ fn show_pdf_reader(
         let search_count = search_count.clone();
         search_entry.connect_search_changed(move |entry| {
             if entry.text().is_empty() {
-                reader.borrow_mut().search_matches.clear();
+                let cleared_page = {
+                    let mut r = reader.borrow_mut();
+                    let page = r.search_matches.get(r.search_current).map(|m| m.page);
+                    r.search_matches.clear();
+                    page
+                };
                 search_prev.set_sensitive(false);
                 search_next.set_sensitive(false);
                 search_count.set_text("");
                 render();
+                if let Some(page) = cleared_page {
+                    render_continuous_page(&reader, page);
+                }
             }
         });
     }
     {
         let reader = reader.clone();
-        let render = render.clone();
+        let goto_search_match = goto_search_match.clone();
         let search_count = search_count.clone();
         search_prev.connect_clicked(move |_| {
-            let mut r = reader.borrow_mut();
-            if r.search_matches.is_empty() {
-                return;
-            }
-            r.search_current = if r.search_current == 0 {
-                r.search_matches.len() - 1
-            } else {
-                r.search_current - 1
+            let (previous_page, page) = {
+                let mut r = reader.borrow_mut();
+                if r.search_matches.is_empty() {
+                    return;
+                }
+                let previous_page = r.search_matches[r.search_current].page;
+                r.search_current = if r.search_current == 0 {
+                    r.search_matches.len() - 1
+                } else {
+                    r.search_current - 1
+                };
+                let page = r.search_matches[r.search_current].page;
+                r.page = page;
+                search_count.set_text(&format!(
+                    "{} of {}",
+                    r.search_current + 1,
+                    r.search_matches.len()
+                ));
+                (previous_page, page)
             };
-            r.page = r.search_matches[r.search_current].page;
-            search_count.set_text(&format!(
-                "{} of {}",
-                r.search_current + 1,
-                r.search_matches.len()
-            ));
-            drop(r);
-            render();
+            goto_search_match(page, Some(previous_page));
         });
     }
     {
         let reader = reader.clone();
-        let render = render.clone();
+        let goto_search_match = goto_search_match.clone();
         let search_count = search_count.clone();
         search_next.connect_clicked(move |_| {
-            let mut r = reader.borrow_mut();
-            if r.search_matches.is_empty() {
-                return;
-            }
-            r.search_current = (r.search_current + 1) % r.search_matches.len();
-            r.page = r.search_matches[r.search_current].page;
-            search_count.set_text(&format!(
-                "{} of {}",
-                r.search_current + 1,
-                r.search_matches.len()
-            ));
-            drop(r);
-            render();
+            let (previous_page, page) = {
+                let mut r = reader.borrow_mut();
+                if r.search_matches.is_empty() {
+                    return;
+                }
+                let previous_page = r.search_matches[r.search_current].page;
+                r.search_current = (r.search_current + 1) % r.search_matches.len();
+                let page = r.search_matches[r.search_current].page;
+                r.page = page;
+                search_count.set_text(&format!(
+                    "{} of {}",
+                    r.search_current + 1,
+                    r.search_matches.len()
+                ));
+                (previous_page, page)
+            };
+            goto_search_match(page, Some(previous_page));
         });
     }
 
