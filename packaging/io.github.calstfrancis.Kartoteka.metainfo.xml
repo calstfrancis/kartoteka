@@ -46,6 +46,15 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.1.1" date="2026-08-13">
+      <description>
+        <p>0.1.1 "Tidy Shelf" — internal build-hygiene fix, no user-facing changes.</p>
+        <ul>
+          <li>Reformatted the codebase with cargo fmt, fixing a long-standing CI
+          format-check failure that had been skipping clippy and tests on every push.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-08-13">
       <description>
         <p>0.1.0 "Open Stacks" — first release.</p>

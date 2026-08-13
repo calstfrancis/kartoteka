@@ -2,6 +2,14 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.1] "Tidy Shelf" — 2026-08-13 — Internal: CI format-check fix
+
+No user-facing changes. The codebase had no `rustfmt.toml` and had never been kept `cargo
+fmt`-clean, so CI's format check had been failing since the earliest run visible in history —
+skipping Clippy and Test on every single push, silently. Reformatted the whole workspace with
+`cargo fmt --all` (pure whitespace/line-wrapping; build, clippy, and both test invocations CI
+runs were re-verified clean before and after) so CI can actually catch something again.
+
 ## [0.1.0] "Open Stacks" — 2026-08-13 — First release
 
 Kartoteka's first stable release, after seventeen development builds covering the original
