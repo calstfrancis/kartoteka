@@ -228,9 +228,14 @@ fn to_yaml_doc(entry: AcqEntry) -> Result<String> {
     })
 }
 
-/// A minimal Hayagriva YAML document (placeholder key `_`) from a title and optional
-/// author — the fallback when a dropped PDF has no DOI but does have embedded metadata.
-pub fn minimal_book_yaml(title: &str, author: Option<&str>) -> Result<String> {
+/// A minimal Hayagriva YAML document (placeholder key `_`) from a title, optional author, and
+/// optional ISBN — the fallback when a dropped PDF has no DOI, or has an ISBN that a network
+/// lookup could not enrich, but does have embedded metadata. `isbn`, when present, is still
+/// recorded under `serial-number` even though the richer OpenLibrary fields (date/publisher/
+/// location/page count) could not be fetched, so it isn't lost and can be matched or looked up
+/// again later.
+pub fn minimal_book_yaml(title: &str, author: Option<&str>, isbn: Option<&str>) -> Result<String> {
+    let isbn = isbn.map(str::trim).filter(|s| !s.is_empty());
     to_yaml_doc(AcqEntry {
         entry_type: "book".to_string(),
         title: title.to_string(),
@@ -240,7 +245,11 @@ pub fn minimal_book_yaml(title: &str, author: Option<&str>) -> Result<String> {
         location: None,
         note: None,
         page_total: None,
-        serial_number: None,
+        serial_number: isbn.map(|i| Serials {
+            isbn: i.to_string(),
+            oclc: None,
+            lccn: None,
+        }),
     })
 }
 
@@ -485,6 +494,23 @@ fn year_from_text(s: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimal_book_yaml_carries_isbn_when_present() {
+        let yaml = minimal_book_yaml("The Republic", Some("Plato"), Some(" 978-0-14-044913-6 "))
+            .unwrap();
+        assert!(yaml.contains("title: The Republic"));
+        assert!(yaml.contains("author: Plato"));
+        assert!(yaml.contains("isbn: 978-0-14-044913-6"), "got: {yaml}");
+        assert!(!yaml.contains("date:"));
+        assert!(!yaml.contains("publisher:"));
+    }
+
+    #[test]
+    fn minimal_book_yaml_omits_serial_number_without_isbn() {
+        let yaml = minimal_book_yaml("Some Book", None, None).unwrap();
+        assert!(!yaml.contains("serial-number"));
+    }
 
     #[test]
     fn normalizes_doi_forms() {

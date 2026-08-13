@@ -752,27 +752,55 @@ fn acquire_one(
         .ok_or_else(|| "acquisition produced no entry".into())
 }
 
-/// Identify a dropped PDF: sniff a DOI from its text, else build a minimal entry from its
-/// embedded metadata. Returns the citation key of the created entry.
+/// Identify a dropped PDF: sniff a DOI from its text (article), else an ISBN (book), else
+/// build a minimal entry from its embedded metadata. Each network step is soft — a lookup
+/// failure (offline, unregistered identifier, ...) falls through to the next signal rather
+/// than failing the whole import, since embedded metadata is usually still enough to create
+/// *something*. Returns the citation key of the created entry.
 fn identify_pdf(library: &Library, path: &std::path::Path) -> CliResult<String> {
     let pdfium = fond_doc::bind_pdfium()
         .map_err(|e| format!("PDFium is needed to identify a PDF without an identifier: {e}"))?;
     let bytes = std::fs::read(path)?;
 
-    if let Ok(text) = fond_doc::extract_text(&pdfium, &bytes) {
-        if let Some(doi) = fond_doc::find_doi(&text.full_text()) {
+    let text = fond_doc::extract_text(&pdfium, &bytes).ok().map(|t| t.full_text());
+    let mut isbn_seen = None;
+
+    if let Some(text) = &text {
+        if let Some(doi) = fond_doc::find_doi(text) {
             eprintln!("sniffed DOI {doi}");
-            let bibtex = fond_bib::acquire::fetch_doi_bibtex(&doi)?;
-            if let Some(key) = library.add_bibtex(&bibtex)?.into_iter().next() {
-                return Ok(key);
+            match fond_bib::acquire::fetch_doi_bibtex(&doi) {
+                Ok(bibtex) => {
+                    if let Some(key) = library.add_bibtex(&bibtex)?.into_iter().next() {
+                        return Ok(key);
+                    }
+                }
+                Err(e) => eprintln!("DOI lookup failed ({e}); trying other signals"),
+            }
+        }
+        if let Some(isbn) = fond_doc::find_isbn(text) {
+            eprintln!("sniffed ISBN {isbn}");
+            match fond_bib::acquire::fetch_isbn_yaml(&isbn) {
+                Ok(yaml) => {
+                    if let Some(key) = library.add_from_yaml(&yaml)?.into_iter().next() {
+                        return Ok(key);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("ISBN lookup failed ({e}); falling back to embedded metadata");
+                    isbn_seen = Some(isbn);
+                }
             }
         }
     }
 
     let meta = fond_doc::extract_metadata(&pdfium, &bytes)?;
     if let Some(title) = meta.title {
-        eprintln!("no DOI found; building an entry from PDF metadata");
-        let yaml = fond_bib::acquire::minimal_book_yaml(&title, meta.author.as_deref())?;
+        eprintln!("no DOI/ISBN lookup succeeded; building an entry from PDF metadata");
+        let yaml = fond_bib::acquire::minimal_book_yaml(
+            &title,
+            meta.author.as_deref(),
+            isbn_seen.as_deref(),
+        )?;
         if let Some(key) = library.add_from_yaml(&yaml)?.into_iter().next() {
             return Ok(key);
         }

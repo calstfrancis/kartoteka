@@ -802,28 +802,44 @@ fn import_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBu
     });
 }
 
-/// Worker-thread identification: sniff a DOI from the PDF text, else build a minimal entry
-/// from embedded metadata. Returns `(is_bibtex, payload, page_count)`.
+/// Worker-thread identification: sniff a DOI from the PDF text (article), else an ISBN
+/// (book), else build a minimal entry from embedded metadata. Each network step is soft — a
+/// lookup failure falls through to the next signal rather than failing the whole import.
+/// Returns `(is_bibtex, payload, page_count)`.
 fn identify_pdf(path: &std::path::Path) -> Result<(bool, String, Option<u32>), String> {
     let pdfium = fond_doc::bind_pdfium().map_err(|e| format!("PDFium unavailable: {e}"))?;
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let pages = fond_doc::page_count(&pdfium, &bytes).ok().map(|n| n as u32);
 
-    if let Ok(text) = fond_doc::extract_text(&pdfium, &bytes) {
-        if let Some(doi) = fond_doc::find_doi(&text.full_text()) {
-            let bibtex = fond_bib::acquire::fetch_doi_bibtex(&doi).map_err(|e| e.to_string())?;
-            return Ok((true, bibtex, pages));
+    let text = fond_doc::extract_text(&pdfium, &bytes).ok().map(|t| t.full_text());
+    let mut isbn_seen = None;
+
+    if let Some(text) = &text {
+        if let Some(doi) = fond_doc::find_doi(text) {
+            if let Ok(bibtex) = fond_bib::acquire::fetch_doi_bibtex(&doi) {
+                return Ok((true, bibtex, pages));
+            }
+        }
+        if let Some(isbn) = fond_doc::find_isbn(text) {
+            match fond_bib::acquire::fetch_isbn_yaml(&isbn) {
+                Ok(yaml) => return Ok((false, yaml, pages)),
+                Err(_) => isbn_seen = Some(isbn),
+            }
         }
     }
 
     let meta = fond_doc::extract_metadata(&pdfium, &bytes).map_err(|e| e.to_string())?;
     if let Some(title) = meta.title {
-        let yaml = fond_bib::acquire::minimal_book_yaml(&title, meta.author.as_deref())
-            .map_err(|e| e.to_string())?;
+        let yaml = fond_bib::acquire::minimal_book_yaml(
+            &title,
+            meta.author.as_deref(),
+            isbn_seen.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
         return Ok((false, yaml, pages));
     }
 
-    Err("could not identify the PDF (no DOI in text, no embedded title)".to_string())
+    Err("could not identify the PDF (no DOI/ISBN in text, no embedded title)".to_string())
 }
 
 fn show_add_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {

@@ -2,7 +2,31 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.1.0-dev14] — 2026-08-12 — Development build
+## [0.1.0-dev15] — 2026-08-13 — Development build
+
+Dropping a book PDF onto Kartoteka scraped noticeably less than Zotero — usually just a
+title and author, missing date and publisher entirely — because the fallback path only ever
+read the PDF's own embedded metadata (which rarely carries more than that), with no attempt
+at the ISBN-based enrichment already used for EPUB. A Zotero-style "Add by identifier" search
+already existed (the "Acquire…" dialog/`kartoteka acquire`, DOI/arXiv/ISBN), so this closes
+the other half: better *automatic* enrichment for dropped PDFs.
+
+### Added — ISBN sniffing for dropped PDFs
+
+- **`fond_doc::find_isbn`** scans a PDF's text layer for a checksum-validated ISBN-10 or
+  ISBN-13 — near an "ISBN" label first (the copyright-page case), falling back to any
+  checksum-valid `978`/`979`-prefixed ISBN-13 found unlabeled. Mirrors `find_doi`'s existing
+  scan-and-checksum approach.
+- **PDF import now tries DOI, then ISBN, then embedded metadata, in order** (CLI `add-pdf`
+  and the GUI's "Add PDF…"), each network step falling through to the next on failure instead
+  of hard-erroring — so a DOI lookup that fails to resolve no longer kills an import that
+  could still have succeeded via ISBN or embedded title/author. An ISBN hit is enriched via
+  the same OpenLibrary lookup EPUB import already uses, pulling in date, publisher, location,
+  and page count that embedded PDF metadata never carries. If the ISBN was found but the
+  network lookup itself failed, it's still kept and written into the fallback entry's
+  `serial-number` rather than silently dropped.
+
+
 
 The last Tier 2 item from `docs/M4-SPEC.md`: the node-side relation editor. Tier 2 is now
 fully built.

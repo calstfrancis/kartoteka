@@ -349,6 +349,144 @@ fn is_doi_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b';' | b'(' | b')' | b'/' | b':')
 }
 
+/// Scan extracted text for an ISBN-10 or ISBN-13, checksum-validated so stray 10/13-digit
+/// numbers (page ranges, figure numbers, other books' ISBNs quoted in a bibliography) are not
+/// mistaken for the document's own identifier. Two passes, first match wins:
+///
+/// 1. Immediately after an "ISBN" label (case-insensitive) — the common case on a copyright
+///    page, e.g. `ISBN 978-0-14-044913-6` or `ISBN-13: 9780140449136`.
+/// 2. Anywhere in the text, for a checksum-valid ISBN-13 starting `978`/`979` — that prefix
+///    plus a passing checksum is specific enough to trust without a label.
+///
+/// An unlabeled ISBN-10 is never accepted: its plain 10-digit form has no distinguishing
+/// prefix, so without a label it's indistinguishable from any other 10-digit number.
+///
+/// Like `find_doi`, this takes the *first* match in document order, so a book's own ISBN
+/// (front matter, within the first few pages) is expected to be found before any ISBN quoted
+/// later in a bibliography or index — the same ordering assumption `find_doi` already relies
+/// on for DOIs.
+pub fn find_isbn(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+
+    let mut search_from = 0;
+    while let Some(pos) = lower[search_from..].find("isbn") {
+        let label_end = search_from + pos + 4;
+        if let Some(isbn) = scan_isbn_candidate(text, label_end) {
+            return Some(isbn);
+        }
+        search_from = label_end;
+    }
+
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let is_prefix = matches!(&bytes[i..i + 3], b"978" | b"979");
+        if is_prefix && (i == 0 || !bytes[i - 1].is_ascii_digit()) {
+            if let Some(isbn) = scan_isbn_candidate(text, i) {
+                if isbn.len() == 13 {
+                    return Some(isbn);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// From byte offset `start` (must be a char boundary) in `text`, skip past label punctuation
+/// and an optional "10"/"13" edition-label token (as in "ISBN-13:"), then greedily consume an
+/// ISBN-shaped run of digits/hyphens/spaces/dashes (with an optional trailing check-digit
+/// `X`), and return it if the first 13 or first 10 digits checksum-validate.
+fn scan_isbn_candidate(text: &str, start: usize) -> Option<String> {
+    let chars: Vec<char> = text[start..].chars().take(40).collect();
+    let mut i = 0;
+    let lead = i;
+    while i < chars.len() && i < lead + 8 && !chars[i].is_ascii_digit() {
+        i += 1;
+    }
+    // Skip a bare "10"/"13" label token (e.g. the "-13" in "ISBN-13:") — distinct from the
+    // real ISBN because it's exactly two digits followed by a non-digit separator.
+    if i + 1 < chars.len() && chars[i].is_ascii_digit() && chars[i + 1].is_ascii_digit() {
+        let two: String = chars[i..i + 2].iter().collect();
+        let after = i + 2;
+        let is_label_token = (two == "10" || two == "13")
+            && chars.get(after).map(|c| !c.is_ascii_digit()).unwrap_or(true);
+        if is_label_token {
+            i = after;
+            let lead2 = i;
+            while i < chars.len() && i < lead2 + 8 && !chars[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+    }
+    if i >= chars.len() {
+        return None;
+    }
+
+    let mut digits = String::new();
+    let mut consumed = 0;
+    while i < chars.len() && consumed < 24 && digits.len() < 13 {
+        let c = chars[i];
+        if c.is_ascii_digit() {
+            digits.push(c);
+        } else if c == 'x' || c == 'X' {
+            digits.push('X');
+        } else if matches!(c, '-' | ' ' | '\u{2013}' | '\u{2014}') {
+            // separator, skip
+        } else {
+            break;
+        }
+        i += 1;
+        consumed += 1;
+    }
+
+    if digits.len() >= 13 && is_valid_isbn13(&digits[..13]) {
+        return Some(digits[..13].to_string());
+    }
+    if digits.len() >= 10 && is_valid_isbn10(&digits[..10]) {
+        return Some(digits[..10].to_string());
+    }
+    None
+}
+
+fn is_valid_isbn13(s: &str) -> bool {
+    if s.len() != 13 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let sum: u32 = s
+        .bytes()
+        .enumerate()
+        .map(|(i, b)| {
+            let d = (b - b'0') as u32;
+            if i % 2 == 0 {
+                d
+            } else {
+                d * 3
+            }
+        })
+        .sum();
+    sum % 10 == 0
+}
+
+fn is_valid_isbn10(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 10 || !bytes[..9].iter().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    if !(bytes[9].is_ascii_digit() || bytes[9] == b'X') {
+        return false;
+    }
+    let sum: u32 = bytes
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| {
+            let d = if b == b'X' { 10 } else { (b - b'0') as u32 };
+            d * (10 - i as u32)
+        })
+        .sum();
+    sum % 11 == 0
+}
+
 /// Extract the text layer from a PDF file on disk.
 pub fn extract_text_from_file(pdfium: &Pdfium, path: &Path) -> Result<PdfText> {
     let bytes = std::fs::read(path).map_err(|e| DocError::LibraryLoad {
@@ -360,7 +498,53 @@ pub fn extract_text_from_file(pdfium: &Pdfium, path: &Path) -> Result<PdfText> {
 
 #[cfg(test)]
 mod tests {
-    use super::{blend_highlights, find_doi, RenderedPage};
+    use super::{blend_highlights, find_doi, find_isbn, RenderedPage};
+
+    #[test]
+    fn finds_labeled_isbn13_with_hyphens() {
+        assert_eq!(
+            find_isbn("Copyright page.\nISBN 978-0-14-044913-6\nPenguin Classics"),
+            Some("9780140449136".to_string())
+        );
+    }
+
+    #[test]
+    fn finds_isbn13_label_after_edition_token() {
+        assert_eq!(
+            find_isbn("ISBN-13: 9780140449136 (paperback)"),
+            Some("9780140449136".to_string())
+        );
+        assert_eq!(
+            find_isbn("ISBN-10: 0141439513"),
+            Some("0141439513".to_string())
+        );
+    }
+
+    #[test]
+    fn finds_labeled_isbn10_with_check_digit_x() {
+        // 043942089X is a real, checksum-valid ISBN-10 (with trailing check digit X).
+        assert_eq!(
+            find_isbn("ISBN: 0-439-42089-X"),
+            Some("043942089X".to_string())
+        );
+    }
+
+    #[test]
+    fn finds_unlabeled_isbn13_by_prefix_and_checksum() {
+        assert_eq!(
+            find_isbn("some text 9780140449136 more text"),
+            Some("9780140449136".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_unlabeled_isbn10_and_bad_checksums() {
+        // No label and no 978/979 prefix: an ISBN-10 alone is not trusted.
+        assert_eq!(find_isbn("call us at 0141439513 today"), None);
+        // Labeled but checksum-invalid (last digit tampered).
+        assert_eq!(find_isbn("ISBN 978-0-14-044913-7"), None);
+        assert_eq!(find_isbn("no identifier here"), None);
+    }
 
     #[test]
     fn finds_doi_in_text() {

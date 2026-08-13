@@ -17,8 +17,8 @@ pub use annotation::{
 pub use error::{DocError, Result};
 pub use pdf::{
     bind_pdfium, blend_highlights, extract_metadata, extract_text, extract_text_from_file,
-    find_doi, page_count, page_size, render_page, select_text_in_rect, PdfMeta, PdfText,
-    RenderedPage, TextSelection,
+    find_doi, find_isbn, page_count, page_size, render_page, select_text_in_rect, PdfMeta,
+    PdfText, RenderedPage, TextSelection,
 };
 
 /// Re-exported so callers can name the binding handle without depending on `pdfium-render`.
