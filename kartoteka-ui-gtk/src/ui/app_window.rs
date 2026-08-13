@@ -105,9 +105,9 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
 
     let menu_button = gtk4::MenuButton::builder()
         .icon_name("open-menu-symbolic")
-        .menu_model(&build_menu())
         .tooltip_text("Main menu")
         .build();
+    menu_button.set_popover(Some(&build_hamburger_popover(&config)));
     header.pack_end(&menu_button);
 
     let reload_button = gtk4::Button::from_icon_name("view-refresh-symbolic");
@@ -451,44 +451,87 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     window
 }
 
-fn build_menu() -> gio::Menu {
-    let menu = gio::Menu::new();
+/// The main hamburger menu: a hand-built popover (house style — see `popover_button`)
+/// rather than a `gio::Menu` model. With well over a dozen actions, a flat menu model read
+/// as one undifferentiated wall of text; grouped rows with visible section breaks scan far
+/// better, and this is the pattern CLAUDE.md's UI standard calls for once a hamburger has
+/// "more than a handful" of actions (Zerkalo's is the reference). Every row still triggers
+/// the same `win.*` `GAction`s `add_window_actions` registers — only the presentation
+/// changed — except the theme rows, which are built directly so they can also update their
+/// own bold/not-bold state on click (the house-style "name-as-label" toggle idiom, used here
+/// in place of a nested Theme submenu).
+fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
+    let (popover, rows) = popover_menu(230);
 
-    let actions = gio::Menu::new();
-    actions.append(Some("Cite…"), Some("win.cite"));
-    actions.append(Some("New item…"), Some("win.new-item"));
-    actions.append(Some("Acquire…"), Some("win.acquire"));
-    actions.append(Some("Add PDF…"), Some("win.add-pdf"));
-    actions.append(Some("Add EPUB…"), Some("win.add-epub"));
-    actions.append(Some("Add folder of PDFs…"), Some("win.add-folder"));
-    actions.append(Some("Add from URL…"), Some("win.add-url"));
-    actions.append(Some("Import…"), Some("win.import"));
-    actions.append(Some("Export bibliography…"), Some("win.export-bib"));
-    actions.append(Some("Find duplicates…"), Some("win.duplicates"));
-    actions.append(Some("Manage tags…"), Some("win.tags"));
-    actions.append(Some("Nodes…"), Some("win.nodes"));
-    actions.append(Some("Tasks…"), Some("win.tasks"));
-    menu.append_section(None, &actions);
+    let activate_row = |rows: &gtk4::Box, popover: &gtk4::Popover, label: &str, action: &str| {
+        let row = popover_button(label, false);
+        let popover = popover.clone();
+        let action = action.to_string();
+        row.connect_clicked(move |b| {
+            popover.popdown();
+            let _ = b.activate_action(&action, None);
+        });
+        rows.append(&row);
+    };
 
-    let library = gio::Menu::new();
-    library.append(Some("Save current search…"), Some("win.save-search"));
-    library.append(Some("Back up (git commit)…"), Some("win.backup"));
-    library.append(Some("Sign in to GitHub…"), Some("win.github-signin"));
-    library.append(Some("Back up to WebDAV…"), Some("win.webdav-backup"));
-    library.append(Some("Reindex search"), Some("win.reindex"));
-    menu.append_section(None, &library);
+    activate_row(&rows, &popover, "New item…", "win.new-item");
+    activate_row(&rows, &popover, "Acquire…", "win.acquire");
+    activate_row(&rows, &popover, "Add PDF…", "win.add-pdf");
+    activate_row(&rows, &popover, "Add EPUB…", "win.add-epub");
+    activate_row(&rows, &popover, "Add folder of PDFs…", "win.add-folder");
+    activate_row(&rows, &popover, "Add from URL…", "win.add-url");
+    activate_row(&rows, &popover, "Import…", "win.import");
+    rows.append(&popover_separator());
+    activate_row(&rows, &popover, "Manage tags…", "win.tags");
+    activate_row(&rows, &popover, "Nodes…", "win.nodes");
+    activate_row(&rows, &popover, "Tasks…", "win.tasks");
+    activate_row(&rows, &popover, "Find duplicates…", "win.duplicates");
+    rows.append(&popover_separator());
+    activate_row(&rows, &popover, "Cite…", "win.cite");
+    activate_row(&rows, &popover, "Export bibliography…", "win.export-bib");
+    rows.append(&popover_separator());
+    activate_row(&rows, &popover, "Save current search…", "win.save-search");
+    activate_row(&rows, &popover, "Back up (git commit)…", "win.backup");
+    activate_row(&rows, &popover, "Sign in to GitHub…", "win.github-signin");
+    activate_row(&rows, &popover, "Back up to WebDAV…", "win.webdav-backup");
+    activate_row(&rows, &popover, "Reindex search", "win.reindex");
+    rows.append(&popover_separator());
 
-    let theme = gio::Menu::new();
-    theme.append(Some("System"), Some("win.theme::system"));
-    theme.append(Some("Light"), Some("win.theme::light"));
-    theme.append(Some("Dark"), Some("win.theme::dark"));
-    menu.append_submenu(Some("Theme"), &theme);
+    let current = config
+        .borrow()
+        .theme
+        .clone()
+        .unwrap_or_else(|| "system".to_string());
+    let theme_buttons: Rc<RefCell<Vec<(String, gtk4::Button)>>> = Rc::new(RefCell::new(Vec::new()));
+    for (label, name) in [("System", "system"), ("Light", "light"), ("Dark", "dark")] {
+        let row = popover_button(label, false);
+        if name == current {
+            row.add_css_class("fond-toggle-active");
+        }
+        rows.append(&row);
+        theme_buttons.borrow_mut().push((name.to_string(), row));
+    }
+    for (name, row) in theme_buttons.borrow().iter() {
+        let popover = popover.clone();
+        let name = name.clone();
+        let all = theme_buttons.clone();
+        row.connect_clicked(move |b| {
+            popover.popdown();
+            let _ = b.activate_action("win.theme", Some(&name.to_variant()));
+            for (n, btn) in all.borrow().iter() {
+                if *n == name {
+                    btn.add_css_class("fond-toggle-active");
+                } else {
+                    btn.remove_css_class("fond-toggle-active");
+                }
+            }
+        });
+    }
+    rows.append(&popover_separator());
 
-    let about = gio::Menu::new();
-    about.append(Some("About Kartoteka"), Some("win.about"));
-    menu.append_section(None, &about);
+    activate_row(&rows, &popover, "About Kartoteka", "win.about");
 
-    menu
+    popover
 }
 
 fn add_window_actions(
@@ -3848,74 +3891,30 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         .ok()
         .and_then(|p| p.entry.doi().map(|d| d.to_string()));
 
-    // Action row: edit note, open PDF.
+    // Action row: a bounded primary set — the PDF action (Read/Find PDF, contextual), Edit,
+    // Cite — plus a "More" popover for everything else. Previously this was a single
+    // non-wrapping Box that could hold up to eleven buttons (Edit note, Edit citation…,
+    // Cite, Read, Annotations…, Open externally, Collections…, Relations…, AI keywords…,
+    // Link author…, Locate, Delete…), which forced the whole detail pane to scroll
+    // horizontally to reach the later ones at any normal window width. Capping the row at
+    // four items — never more, regardless of how many actions an entry has — fixes that
+    // structurally rather than just making the overflow prettier.
     let actions = gtk4::Box::new(Orientation::Horizontal, 8);
     actions.set_margin_top(6);
-    let edit_button = gtk4::Button::with_label("Edit note");
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.clone();
-        edit_button.connect_clicked(move |_| show_note_editor(&state, &widgets, &key));
-    }
-    actions.append(&edit_button);
-    let cite_edit_button = gtk4::Button::with_label("Edit citation…");
-    cite_edit_button.set_tooltip_text(Some("Edit the bibliographic fields (title, author, year…)"));
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.clone();
-        cite_edit_button.connect_clicked(move |_| show_citation_editor(&state, &widgets, &key));
-    }
-    actions.append(&cite_edit_button);
-    let cite_button = gtk4::Button::with_label("Cite");
-    cite_button.set_tooltip_text(Some("Copy the Typst citation (@key)"));
-    {
-        let widgets = widgets.clone();
-        let key = key.clone();
-        cite_button.connect_clicked(move |_| copy_citation(&widgets, &key));
-    }
-    actions.append(&cite_button);
-    if let Some((path, filename, pdf_hash)) = present_pdf {
+
+    // Primary: the PDF action, contextual to whether a PDF is attached or a DOI is known.
+    if let Some((path, _filename, pdf_hash)) = present_pdf.clone() {
         let read_button = gtk4::Button::with_label("Read");
         read_button.set_tooltip_text(Some("Open the built-in PDF reader"));
-        {
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.clone();
-            let path = path.clone();
-            let title = title_text.to_string();
-            let pdf_hash = pdf_hash.clone();
-            read_button.connect_clicked(move |_| {
-                show_pdf_reader(&state, &widgets, &key, &pdf_hash, &path, &title, 1)
-            });
-        }
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        let title = title_text.to_string();
+        read_button.connect_clicked(move |_| {
+            show_pdf_reader(&state, &widgets, &key, &pdf_hash, &path, &title, 1)
+        });
         actions.append(&read_button);
-        let has_annotations = library
-            .load_annotations(&key)
-            .ok()
-            .flatten()
-            .is_some_and(|s| !s.annotations.is_empty());
-        if has_annotations {
-            let annots_button = gtk4::Button::with_label("Annotations…");
-            annots_button.set_tooltip_text(Some("Review, jump to, or delete highlights"));
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.clone();
-            let path = path.clone();
-            let title = title_text.to_string();
-            let pdf_hash = pdf_hash.clone();
-            annots_button.connect_clicked(move |_| {
-                show_annotations_dialog(&state, &widgets, &key, &pdf_hash, &path, &title)
-            });
-            actions.append(&annots_button);
-        }
-        let open_button = gtk4::Button::with_label("Open externally");
-        let window = widgets.window.clone();
-        open_button.connect_clicked(move |_| open_pdf(&window, &path, &filename));
-        actions.append(&open_button);
     } else if let Some(doi) = doi.clone() {
-        // No PDF yet, but we have a DOI — offer an Unpaywall lookup.
         let find_button = gtk4::Button::with_label("Find PDF");
         find_button.set_tooltip_text(Some("Search Unpaywall for an open-access PDF"));
         let state = state.clone();
@@ -3924,23 +3923,65 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         find_button.connect_clicked(move |_| find_pdf_unpaywall(&state, &widgets, &key, &doi));
         actions.append(&find_button);
     }
-    let collect_button = gtk4::Button::with_label("Collections…");
+
+    // Edit: one button covering both edit surfaces — the bibliographic fields (title,
+    // author, year…) and the personal note (tags, status, rating, prose) — via a small
+    // popover, so neither has to lose out on being "the" primary edit action.
+    let edit_button = gtk4::MenuButton::builder().label("Edit").build();
     {
-        let state = state.clone();
+        let (popover, rows) = popover_menu(190);
+        let row = popover_button("Edit citation info…", false);
+        row.set_tooltip_text(Some("Edit the bibliographic fields (title, author, year…)"));
+        {
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                show_citation_editor(&state, &widgets, &key);
+            });
+        }
+        rows.append(&row);
+        let row = popover_button("Edit note…", false);
+        row.set_tooltip_text(Some("Edit tags, status, rating, and your own notes"));
+        {
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                show_note_editor(&state, &widgets, &key);
+            });
+        }
+        rows.append(&row);
+        edit_button.set_popover(Some(&popover));
+    }
+    actions.append(&edit_button);
+
+    // Cite: copies the Typst citation key, the thing this app exists to feed into a
+    // document — not a technical detail, so it stays on the primary row.
+    let cite_button = gtk4::Button::with_label("Cite");
+    cite_button.set_tooltip_text(Some(
+        "Copy this entry's citation key, to reference it in a Typst document (@key)",
+    ));
+    {
         let widgets = widgets.clone();
         let key = key.clone();
-        collect_button.connect_clicked(move |_| membership_dialog(&state, &widgets, &key));
+        cite_button.connect_clicked(move |_| copy_citation(&widgets, &key));
     }
-    actions.append(&collect_button);
-    let related_button = gtk4::Button::with_label("Relations…");
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.clone();
-        related_button.connect_clicked(move |_| relations_dialog(&state, &widgets, &key));
-    }
-    actions.append(&related_button);
-    // Promote AI keyword → tag: only shown when there's an ai/<key>.yml sidecar with
+    actions.append(&cite_button);
+
+    // More: everything else, grouped — library organization, then external links, then
+    // the destructive action last and set off by its own separator.
+    let has_annotations = present_pdf.is_some()
+        && library
+            .load_annotations(&key)
+            .ok()
+            .flatten()
+            .is_some_and(|s| !s.annotations.is_empty());
+    // Promote AI keyword → tag: only offered when there's an ai/<key>.yml sidecar with
     // keywords to offer. One-directional, user-triggered only — see docs/M2-SPEC.md §4's
     // boundary rule; nothing here ever writes back into ai/<key>.yml or runs automatically.
     let ai_keywords = library
@@ -3949,76 +3990,150 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         .flatten()
         .map(|ai| ai.keywords)
         .unwrap_or_default();
-    if !ai_keywords.is_empty() {
-        let ai_button = gtk4::Button::with_label("AI keywords…");
-        ai_button.set_tooltip_text(Some("Promote AI-suggested keywords into tags"));
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.clone();
-        ai_button.connect_clicked(move |_| {
-            show_promote_keywords_dialog(&state, &widgets, &key, ai_keywords.clone())
-        });
-        actions.append(&ai_button);
-    }
-    // Author → node: create/link a person node for each author (feature §1 author IDs).
-    if !summary.author.is_empty() {
-        let author_button = gtk4::Button::with_label("Link author…");
-        author_button.set_tooltip_text(Some("Create or link a person node for each author"));
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.clone();
-        author_button.connect_clicked(move |_| link_authors_dialog(&state, &widgets, &key));
-        actions.append(&author_button);
-    }
-    // "Locate" menu: open DOI / on the web (feature 10).
-    let locate = gtk4::MenuButton::builder().label("Locate").build();
+    let more_button = gtk4::MenuButton::builder().label("More").build();
     {
-        let doi = doi.clone();
-        let title_q = summary.title.clone();
-        let menu = gio::Menu::new();
-        if doi.is_some() {
-            menu.append(Some("Open DOI"), Some("locate.doi"));
+        let (popover, rows) = popover_menu(210);
+
+        let row = popover_button("Collections…", false);
+        {
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                membership_dialog(&state, &widgets, &key);
+            });
         }
-        menu.append(Some("Google Scholar"), Some("locate.scholar"));
-        let group = gio::SimpleActionGroup::new();
-        if let Some(doi) = doi {
-            let a = gio::SimpleAction::new("doi", None);
+        rows.append(&row);
+
+        let row = popover_button("Relations…", false);
+        {
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                relations_dialog(&state, &widgets, &key);
+            });
+        }
+        rows.append(&row);
+
+        if has_annotations {
+            if let Some((path, _filename, pdf_hash)) = present_pdf.clone() {
+                let row = popover_button("Annotations…", false);
+                row.set_tooltip_text(Some("Review, jump to, or delete highlights"));
+                let popover = popover.clone();
+                let state = state.clone();
+                let widgets = widgets.clone();
+                let key = key.clone();
+                let title = title_text.to_string();
+                row.connect_clicked(move |_| {
+                    popover.popdown();
+                    show_annotations_dialog(&state, &widgets, &key, &pdf_hash, &path, &title);
+                });
+                rows.append(&row);
+            }
+        }
+
+        if !ai_keywords.is_empty() {
+            let row = popover_button("AI keywords…", false);
+            row.set_tooltip_text(Some("Promote AI-suggested keywords into tags"));
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            let ai_keywords = ai_keywords.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                show_promote_keywords_dialog(&state, &widgets, &key, ai_keywords.clone());
+            });
+            rows.append(&row);
+        }
+
+        // Author → node: create/link a person node for each author (feature §1 author IDs).
+        if !summary.author.is_empty() {
+            let row = popover_button("Link author…", false);
+            row.set_tooltip_text(Some("Create or link a person node for each author"));
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                link_authors_dialog(&state, &widgets, &key);
+            });
+            rows.append(&row);
+        }
+
+        rows.append(&popover_separator());
+
+        if let Some((path, filename, _)) = present_pdf.clone() {
+            let row = popover_button("Open externally", false);
+            let popover = popover.clone();
             let window = widgets.window.clone();
-            a.connect_activate(move |_, _| open_uri(&window, &format!("https://doi.org/{doi}")));
-            group.add_action(&a);
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                open_pdf(&window, &path, &filename);
+            });
+            rows.append(&row);
+        }
+        if let Some(doi) = doi.clone() {
+            let row = popover_button("Open DOI", false);
+            let popover = popover.clone();
+            let window = widgets.window.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                open_uri(&window, &format!("https://doi.org/{doi}"));
+            });
+            rows.append(&row);
         }
         {
-            let a = gio::SimpleAction::new("scholar", None);
+            let row = popover_button("Google Scholar", false);
+            let popover = popover.clone();
             let window = widgets.window.clone();
-            a.connect_activate(move |_, _| {
+            let title_q = summary.title.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
                 let q = urlencode(&title_q);
-                open_uri(
-                    &window,
-                    &format!("https://scholar.google.com/scholar?q={q}"),
-                );
+                open_uri(&window, &format!("https://scholar.google.com/scholar?q={q}"));
             });
-            group.add_action(&a);
+            rows.append(&row);
         }
-        locate.insert_action_group("locate", Some(&group));
-        locate.set_menu_model(Some(&menu));
+
+        rows.append(&popover_separator());
+
+        // Delete: destructive, so it sits last, behind a menu rather than in the always-
+        // visible row, and still asks for confirmation before doing anything.
+        let row = popover_button("Delete…", true);
+        row.set_tooltip_text(Some("Delete this entry and its note, relations, and attachments"));
+        {
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            let title = title_text.to_string();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                confirm_delete_entry(&state, &widgets, &key, &title);
+            });
+        }
+        rows.append(&row);
+
+        more_button.set_popover(Some(&popover));
     }
-    actions.append(&locate);
-    // Delete: destructive, so it sits at the end and asks for confirmation first.
-    let delete_button = gtk4::Button::with_label("Delete…");
-    delete_button.add_css_class("destructive-action");
-    delete_button.set_tooltip_text(Some("Delete this entry and its note, relations, and attachments"));
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.clone();
-        let title = title_text.to_string();
-        delete_button.connect_clicked(move |_| confirm_delete_entry(&state, &widgets, &key, &title));
-    }
-    actions.append(&delete_button);
+    actions.append(&more_button);
     b.append(&actions);
 
     let fields = gtk4::Box::new(Orientation::Vertical, 4);
     fields.set_margin_top(8);
+    // Rows that are internal/Typst-specific rather than something a reader of the entry
+    // would recognize (the citation key exists to be typed into a document, not to be
+    // read) — tucked behind a collapsed disclosure instead of the main field list, so a
+    // non-technical user sees a clean card by default. Nothing is removed, just one click
+    // further away; see the "Details" expander appended below.
+    let details_fields = gtk4::Box::new(Orientation::Vertical, 4);
 
     // Structured fields from the entry.
     if let Ok(parsed) = library.load_entry(&key) {
@@ -4027,7 +4142,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
             "Type",
             &format!("{:?}", e.entry_type()).to_lowercase(),
         ));
-        fields.append(&field_row("Key", &key));
+        let key_row = field_row("Citation key", &key);
+        key_row.set_tooltip_text(Some(
+            "Used to cite this work in a Typst document, e.g. @key",
+        ));
+        details_fields.append(&key_row);
         if let Some(doi) = e.doi() {
             fields.append(&field_row("DOI", doi));
         }
@@ -4094,11 +4213,17 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                fields.append(&field_row("Used in", &text));
+                details_fields.append(&field_row("Used in", &text));
             }
         }
     }
     b.append(&fields);
+    if details_fields.first_child().is_some() {
+        let details = gtk4::Expander::new(Some("Details"));
+        details.set_margin_top(4);
+        details.set_child(Some(&details_fields));
+        b.append(&details);
+    }
 
     // Relations: typed edges grouped by predicate, each a wrapped row of link buttons that
     // navigate to the linked entry. Legacy untyped `related` is folded into the "Related"
@@ -6075,6 +6200,45 @@ fn link_authors_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key
     dialog.present();
 }
 
+/// A flat, left-aligned row for a hand-built popover menu — house style (see Zerkalo's
+/// hamburger): a `Popover` holding a vertical `Box` of flat buttons, rather than a
+/// `gio::Menu` model. Used for the detail panel's "Edit"/"More" popovers and the main
+/// hamburger, all of which have more items than fit as a flat always-visible row or read
+/// well as one undifferentiated `gio::Menu` section.
+fn popover_button(label: &str, destructive: bool) -> gtk4::Button {
+    let button = gtk4::Button::new();
+    button.add_css_class("flat");
+    if destructive {
+        button.add_css_class("destructive-action");
+    }
+    let lbl = gtk4::Label::new(Some(label));
+    lbl.set_xalign(0.0);
+    lbl.set_halign(gtk4::Align::Start);
+    button.set_child(Some(&lbl));
+    button
+}
+
+/// The shared frame a hand-built popover's rows are appended into: a `Popover` wrapping a
+/// margined vertical `Box`, sized to a minimum width so short labels don't look cramped.
+fn popover_menu(min_width: i32) -> (gtk4::Popover, gtk4::Box) {
+    let rows = gtk4::Box::new(Orientation::Vertical, 2);
+    rows.set_margin_top(6);
+    rows.set_margin_bottom(6);
+    rows.set_margin_start(6);
+    rows.set_margin_end(6);
+    rows.set_width_request(min_width);
+    let popover = gtk4::Popover::new();
+    popover.set_child(Some(&rows));
+    (popover, rows)
+}
+
+fn popover_separator() -> gtk4::Separator {
+    let sep = gtk4::Separator::new(Orientation::Horizontal);
+    sep.set_margin_top(4);
+    sep.set_margin_bottom(4);
+    sep
+}
+
 fn clear_box(b: &gtk4::Box) {
     while let Some(child) = b.first_child() {
         b.remove(&child);
@@ -6086,7 +6250,7 @@ fn field_row(name: &str, value: &str) -> gtk4::Box {
     let name_label = gtk4::Label::new(Some(name));
     name_label.add_css_class("dim-label");
     name_label.set_xalign(1.0);
-    name_label.set_width_chars(11);
+    name_label.set_width_chars(13);
     name_label.set_valign(gtk4::Align::Start);
     let value_label = gtk4::Label::new(Some(value));
     value_label.set_xalign(0.0);
@@ -6109,7 +6273,7 @@ fn tags_row(tags: &[String]) -> gtk4::Box {
     let name_label = gtk4::Label::new(Some("Tags"));
     name_label.add_css_class("dim-label");
     name_label.set_xalign(1.0);
-    name_label.set_width_chars(11);
+    name_label.set_width_chars(13);
     name_label.set_valign(gtk4::Align::Start);
     row.append(&name_label);
 

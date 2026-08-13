@@ -2,7 +2,37 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.1.0-dev15] — 2026-08-13 — Development build
+## [0.1.0-dev16] — 2026-08-13 — Detail panel UX pass
+
+The detail panel's action row had grown to as many as eleven buttons (Edit note, Edit
+citation…, Cite, Read, Annotations…, Open externally, Collections…, Relations…, AI
+keywords…, Link author…, Locate, Delete…) in a single non-wrapping row, which forced the
+whole panel to scroll horizontally to reach the later ones at any normal window width. Fixing
+that properly — rather than just letting the buttons wrap — was also a chance to address a
+broader clarity gap: the panel dumped every field (including Typst-internal ones like the
+citation key) at equal weight, and the hamburger menu's 20-odd actions were one flat
+`gio::Menu` list.
+
+### Changed — action row capped at four items, everything else in a "More" popover
+
+- **The action row is now `[Read/Find PDF] [Edit ▾] [Cite] [More ▾]`**, never more, regardless
+  of how many actions an entry has. "Edit" is a small popover offering both edit surfaces
+  (citation fields vs. personal note); "More" holds Collections…, Relations…, Annotations…,
+  Link author…, AI keywords…, Open externally, Open DOI, Google Scholar, and — set off by its
+  own separator — Delete…, which no longer sits in the always-visible row where a stray click
+  was one motion away.
+- **The hamburger menu is now a hand-built grouped popover** instead of a flat `gio::Menu`
+  model — the same house-style pattern (Zerkalo's hamburger) CLAUDE.md's UI standard calls for
+  once a menu has "more than a handful" of actions. Theme (System/Light/Dark) is now three
+  rows with the active one bold, replacing a nested submenu — the same "name-as-label" toggle
+  idiom the status bar convention already uses elsewhere in the suite.
+- **The detail panel's "Key" and "Used in" rows moved into a collapsed "Details" disclosure**,
+  renamed "Citation key" with a tooltip explaining what it's for — both are Typst-internal
+  concepts a reader of the entry wouldn't recognize, now one click away instead of dumped
+  in the main field list. DOI/ISBN stay visible as-is; they're recognizable identifiers, not
+  jargon.
+
+
 
 Dropping a book PDF onto Kartoteka scraped noticeably less than Zotero — usually just a
 title and author, missing date and publisher entirely — because the fallback path only ever
