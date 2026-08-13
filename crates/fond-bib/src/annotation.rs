@@ -1,12 +1,19 @@
-//! `annots/<key>.json` — the PDF annotation sidecar (highlights and marginalia). See
-//! `docs/DATA-MODEL.md`. This is the authoritative record for annotations; the PDF is the
-//! disposable copy. Anchoring is on page + quadpoints + a text snippet (with surrounding
-//! context) so an annotation can be re-located even on a differently-produced copy of the
-//! same PDF — never on internal PDF object ids.
+//! `annots/<key>.json` — the annotation sidecar (highlights and marginalia), for either a
+//! PDF or an EPUB attachment. See `docs/DATA-MODEL.md`. This is the authoritative record for
+//! annotations; the PDF/EPUB itself is the disposable copy. A PDF annotation anchors on a
+//! page number plus quadpoints plus a text snippet (with surrounding context), so it can be
+//! re-located even on a differently-produced copy of the same PDF — never on internal PDF
+//! object ids. An EPUB has no fixed page grid to hang quadpoints on, so it anchors on chapter
+//! (a zip-internal path) plus that same snippet/prefix/suffix scheme instead
+//! (`docs/M5-SPEC.md` 5C) — `page`/`quadpoints` stay `None`/empty for those. `page` and
+//! `chapter` are mutually exclusive in practice (which one is set says which format authored
+//! the annotation), but both live on one `Annotation` type rather than an enum, so a single
+//! sidecar file and a single annotations-list UI keep working uniformly across formats.
 //!
 //! This module owns the on-disk format only (a plain JSON file, like `note.rs` owns the
 //! note file). Reading annotations out of, and writing them into, actual PDF bytes is
-//! `fond-doc`'s job (Milestone 4, needs PDFium).
+//! `fond-doc`'s job (Milestone 4, needs PDFium); EPUB highlighting is applied live in the
+//! reader UI (WebKit DOM search-and-wrap, not embedded into the EPUB file itself).
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,17 +36,26 @@ pub enum AnnotationKind {
     Note,
 }
 
-/// A single annotation. `quadpoints` is the primary anchor when the PDF matches
-/// `AnnotationSidecar::pdf_hash`; `snippet` (with prefix/suffix context) is the re-anchor
-/// key when it does not.
+/// A single annotation. For a PDF, `quadpoints` is the primary anchor when the PDF matches
+/// `AnnotationSidecar::pdf_hash`, with `snippet` (plus prefix/suffix context) as the
+/// re-anchor key when it does not. For an EPUB (no `quadpoints`, no fixed page grid),
+/// `chapter` + `snippet` (+ context) is the only anchor there is.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Annotation {
     /// App-generated stable id (ULID-style), so an annotation survives edits.
     pub id: String,
     pub kind: AnnotationKind,
-    /// Page the annotation is on. Page numbering is 1-based (guarded by the schema).
-    pub page: u32,
-    /// PDF highlight quads: arrays of 8 floats per rectangle, in PDF user space.
+    /// PDF page the annotation is on (1-based). `None` for an EPUB annotation, which
+    /// anchors on `chapter` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+    /// EPUB chapter the annotation is in, as the zip-internal path
+    /// (`fond_doc::EpubBook::spine`'s own path shape, e.g. `OEBPS/chap1.xhtml`). `None` for
+    /// a PDF annotation, which anchors on `page` + `quadpoints` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter: Option<String>,
+    /// PDF highlight quads: arrays of 8 floats per rectangle, in PDF user space. Always empty
+    /// for an EPUB annotation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quadpoints: Vec<[f64; 8]>,
     /// The highlighted text — the fine re-anchoring key.
@@ -96,7 +112,8 @@ impl Annotation {
         Annotation {
             id: format!("pdf-{}", &hex.as_str()[..16]),
             kind,
-            page,
+            page: Some(page),
+            chapter: None,
             quadpoints,
             snippet,
             snippet_prefix: None,
@@ -130,11 +147,48 @@ impl Annotation {
         Annotation {
             id: format!("hl-{}", &hex.as_str()[..16]),
             kind,
-            page,
+            page: Some(page),
+            chapter: None,
             quadpoints,
             snippet,
             snippet_prefix: None,
             snippet_suffix: None,
+            color: Some("#f6c344".to_string()),
+            note,
+            created: Some(stamp.clone()),
+            modified: Some(stamp),
+        }
+    }
+
+    /// Build a fresh, user-drawn annotation from a live text selection in the built-in EPUB
+    /// reader. Unlike a PDF highlight, there's no fixed page grid to hang quadpoints on, so
+    /// the anchor is `chapter` (a zip-internal path, `fond_doc::EpubBook::spine`'s own shape)
+    /// plus the same snippet/prefix/suffix scheme `imported`/`drawn` use for re-anchoring a
+    /// PDF highlight — here it's the *only* anchor, not a fallback. Id is time-seeded, same
+    /// reasoning as `drawn`: newly created, not re-imported, so no idempotency need.
+    pub fn drawn_epub(
+        kind: AnnotationKind,
+        chapter: String,
+        snippet: String,
+        snippet_prefix: Option<String>,
+        snippet_suffix: Option<String>,
+        note: Option<String>,
+    ) -> Annotation {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let hex = blake3::hash(&nanos.to_le_bytes()).to_hex();
+        let stamp = today_iso();
+        Annotation {
+            id: format!("hl-{}", &hex.as_str()[..16]),
+            kind,
+            page: None,
+            chapter: Some(chapter),
+            quadpoints: Vec::new(),
+            snippet: Some(snippet),
+            snippet_prefix,
+            snippet_suffix,
             color: Some("#f6c344".to_string()),
             note,
             created: Some(stamp.clone()),
@@ -194,7 +248,8 @@ mod tests {
             annotations: vec![Annotation {
                 id: "01J8Z000".into(),
                 kind: AnnotationKind::Highlight,
-                page: 7,
+                page: Some(7),
+                chapter: None,
                 quadpoints: vec![[72.0, 640.1, 523.4, 640.1, 72.0, 628.7, 523.4, 628.7]],
                 snippet: Some("the gospel of Jesus is a gospel of liberation".into()),
                 snippet_prefix: Some("what I mean is that ".into()),
@@ -228,7 +283,8 @@ mod tests {
         sidecar.annotations.push(Annotation {
             id: "1".into(),
             kind: AnnotationKind::Note,
-            page: 1,
+            page: Some(1),
+            chapter: None,
             quadpoints: vec![],
             snippet: None,
             snippet_prefix: None,
@@ -242,6 +298,43 @@ mod tests {
         assert!(!json.contains("quadpoints"));
         assert!(!json.contains("pdf_hash"));
         assert!(!json.contains("\"snippet\""));
+        assert!(!json.contains("chapter"));
         assert!(json.contains("just a margin note"));
+    }
+
+    #[test]
+    fn page_and_chapter_are_mutually_exclusive_omission() {
+        // A PDF annotation omits `chapter`; an EPUB one omits `page`. Confirms the two
+        // formats' anchors don't leak into each other's JSON.
+        let pdf = Annotation {
+            id: "1".into(),
+            kind: AnnotationKind::Highlight,
+            page: Some(3),
+            chapter: None,
+            quadpoints: vec![],
+            snippet: None,
+            snippet_prefix: None,
+            snippet_suffix: None,
+            color: None,
+            note: None,
+            created: None,
+            modified: None,
+        };
+        let json = serde_json::to_string(&pdf).unwrap();
+        assert!(json.contains("\"page\":3"));
+        assert!(!json.contains("chapter"));
+
+        let epub = Annotation::drawn_epub(
+            AnnotationKind::Highlight,
+            "OEBPS/chap1.xhtml".into(),
+            "a gospel of liberation".into(),
+            Some("what I mean is that ".into()),
+            Some(" for the oppressed".into()),
+            None,
+        );
+        let json = serde_json::to_string(&epub).unwrap();
+        assert!(!json.contains("\"page\""));
+        assert!(json.contains("\"chapter\":\"OEBPS/chap1.xhtml\""));
+        assert!(json.contains("a gospel of liberation"));
     }
 }

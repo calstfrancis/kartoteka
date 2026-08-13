@@ -12,6 +12,7 @@ use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib, Orientation};
 use libadwaita as adw;
 use libadwaita::prelude::*;
+use webkit6::prelude::*;
 
 use fond_bib::{entry as bibentry, Library};
 
@@ -716,7 +717,7 @@ fn reindex(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             return;
         };
         let dir = library.root().join(".kartoteka").join("index");
-        fond_index::SearchIndex::rebuild(library, &dir, |_| None)
+        fond_index::SearchIndex::rebuild(library, &dir, |_| None, |_| None)
     };
     match rebuilt {
         Ok(index) => {
@@ -2608,13 +2609,15 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
     // of this fails.
     let index = match fond_index::SearchIndex::open(&index_dir) {
         Ok(idx) => Some(idx),
-        Err(_) => match fond_index::SearchIndex::rebuild(&library, &index_dir, |_| None) {
-            Ok(idx) => Some(idx),
-            Err(e) => {
-                toast(widgets, &format!("Search index unavailable: {e}"));
-                None
+        Err(_) => {
+            match fond_index::SearchIndex::rebuild(&library, &index_dir, |_| None, |_| None) {
+                Ok(idx) => Some(idx),
+                Err(e) => {
+                    toast(widgets, &format!("Search index unavailable: {e}"));
+                    None
+                }
             }
-        },
+        }
     };
 
     let saved_searches = load_saved_searches(&path);
@@ -3889,8 +3892,29 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         b.append(&label);
     }
 
-    // First present PDF attachment (for the Open button).
-    let present_pdf = note.as_ref().and_then(|n| {
+    // First present attachment Kartoteka has a built-in reader for (PDF or EPUB), typed by
+    // filename extension. Previously this was an untyped `find_map` over *any* attachment
+    // (named `present_pdf` but really "first present attachment of any kind") — an EPUB
+    // attachment was picked up identically to a PDF one, so "Read" opened `show_pdf_reader`
+    // against EPUB bytes, which PDFium can't parse: a blank "Page 1 of 1" window with no
+    // error. Typing the lookup here is what lets Read/Annotations route to the right reader
+    // per format (M5-SPEC.md 5A).
+    let present_reader_attachment = note.as_ref().and_then(|n| {
+        n.frontmatter.attachments.iter().find_map(|att| {
+            let kind = ReaderAttachmentKind::from_filename(&att.filename)?;
+            let hex = att
+                .hash
+                .split_once(':')
+                .map(|(_, h)| h)
+                .unwrap_or(&att.hash);
+            let path = library.attachment_blob_path(hex);
+            path.exists()
+                .then(|| (path, att.filename.clone(), att.hash.clone(), kind))
+        })
+    });
+    // Still untyped: used only for "Open externally", which works for any file type via the
+    // system file launcher and shouldn't be limited to PDF/EPUB.
+    let present_any_attachment = note.as_ref().and_then(|n| {
         n.frontmatter.attachments.iter().find_map(|att| {
             let hex = att
                 .hash
@@ -3919,18 +3943,35 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     let actions = gtk4::Box::new(Orientation::Horizontal, 8);
     actions.set_margin_top(6);
 
-    // Primary: the PDF action, contextual to whether a PDF is attached or a DOI is known.
-    if let Some((path, _filename, pdf_hash)) = present_pdf.clone() {
-        let read_button = gtk4::Button::with_label("Read");
-        read_button.set_tooltip_text(Some("Open the built-in PDF reader"));
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.clone();
-        let title = title_text.to_string();
-        read_button.connect_clicked(move |_| {
-            show_pdf_reader(&state, &widgets, &key, &pdf_hash, &path, &title, 1)
-        });
-        actions.append(&read_button);
+    // Primary: the read action, contextual to whether a PDF/EPUB is attached or a DOI is
+    // known, and to *which* of those formats is attached.
+    if let Some((path, _filename, hash, kind)) = present_reader_attachment.clone() {
+        match kind {
+            ReaderAttachmentKind::Pdf => {
+                let read_button = gtk4::Button::with_label("Read");
+                read_button.set_tooltip_text(Some("Open the built-in PDF reader"));
+                let state = state.clone();
+                let widgets = widgets.clone();
+                let key = key.clone();
+                let title = title_text.to_string();
+                read_button.connect_clicked(move |_| {
+                    show_pdf_reader(&state, &widgets, &key, &hash, &path, &title, 1)
+                });
+                actions.append(&read_button);
+            }
+            ReaderAttachmentKind::Epub => {
+                let read_button = gtk4::Button::with_label("Read");
+                read_button.set_tooltip_text(Some("Open the built-in EPUB reader"));
+                let state = state.clone();
+                let widgets = widgets.clone();
+                let key = key.clone();
+                let title = title_text.to_string();
+                read_button.connect_clicked(move |_| {
+                    show_epub_reader(&state, &widgets, &key, &hash, &path, &title, None);
+                });
+                actions.append(&read_button);
+            }
+        }
     } else if let Some(doi) = doi.clone() {
         let find_button = gtk4::Button::with_label("Find PDF");
         find_button.set_tooltip_text(Some("Search Unpaywall for an open-access PDF"));
@@ -3992,7 +4033,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
 
     // More: everything else, grouped — library organization, then external links, then
     // the destructive action last and set off by its own separator.
-    let has_annotations = present_pdf.is_some()
+    let has_annotations = present_reader_attachment.is_some()
         && library
             .load_annotations(&key)
             .ok()
@@ -4038,7 +4079,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         rows.append(&row);
 
         if has_annotations {
-            if let Some((path, _filename, pdf_hash)) = present_pdf.clone() {
+            if let Some((path, _filename, hash, kind)) = present_reader_attachment.clone() {
                 let row = popover_button("Annotations…", false);
                 row.set_tooltip_text(Some("Review, jump to, or delete highlights"));
                 let popover = popover.clone();
@@ -4048,7 +4089,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
                 let title = title_text.to_string();
                 row.connect_clicked(move |_| {
                     popover.popdown();
-                    show_annotations_dialog(&state, &widgets, &key, &pdf_hash, &path, &title);
+                    show_annotations_dialog(&state, &widgets, &key, kind, &hash, &path, &title);
                 });
                 rows.append(&row);
             }
@@ -4086,7 +4127,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
 
         rows.append(&popover_separator());
 
-        if let Some((path, filename, _)) = present_pdf.clone() {
+        if let Some((path, filename, _)) = present_any_attachment.clone() {
             let row = popover_button("Open externally", false);
             let popover = popover.clone();
             let window = widgets.window.clone();
@@ -4487,6 +4528,28 @@ fn refresh_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     }
 }
 
+/// Which built-in reader (if any) an attachment's filename extension maps to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReaderAttachmentKind {
+    Pdf,
+    Epub,
+}
+
+impl ReaderAttachmentKind {
+    fn from_filename(filename: &str) -> Option<ReaderAttachmentKind> {
+        let ext = std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())?;
+        if ext.eq_ignore_ascii_case("pdf") {
+            Some(ReaderAttachmentKind::Pdf)
+        } else if ext.eq_ignore_ascii_case("epub") {
+            Some(ReaderAttachmentKind::Epub)
+        } else {
+            None
+        }
+    }
+}
+
 /// Open an attachment blob in the system PDF viewer. The blob is content-addressed with no
 /// extension, so copy it to a cache file named after the original filename first.
 fn open_pdf(window: &adw::ApplicationWindow, blob: &std::path::Path, filename: &str) {
@@ -4509,9 +4572,10 @@ fn show_annotations_dialog(
     state: &Rc<RefCell<AppState>>,
     widgets: &Rc<Widgets>,
     key: &str,
-    pdf_hash: &str,
+    kind: ReaderAttachmentKind,
+    hash: &str,
     blob: &std::path::Path,
-    pdf_title: &str,
+    reader_title: &str,
 ) {
     let sidecar = {
         let s = state.borrow();
@@ -4572,26 +4636,60 @@ fn show_annotations_dialog(
         outer.set_margin_end(10);
 
         let header_row = gtk4::Box::new(Orientation::Horizontal, 8);
-        let kind_label = gtk4::Label::new(Some(&format!(
-            "Page {} · {:?}",
-            annotation.page, annotation.kind
-        )));
+        // Location text is format-aware: a PDF annotation always has `page`, an EPUB one
+        // always has `chapter` (shown as just the chapter's filename, not the full
+        // zip-internal path — plenty to recognize which chapter, without the clutter).
+        let location = match (annotation.page, annotation.chapter.as_deref()) {
+            (Some(p), _) => format!("Page {p}"),
+            (None, Some(chapter)) => std::path::Path::new(chapter)
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| chapter.to_string()),
+            (None, None) => String::from("Unknown location"),
+        };
+        let kind_label = gtk4::Label::new(Some(&format!("{location} · {:?}", annotation.kind)));
         kind_label.add_css_class("fond-row-title");
         kind_label.set_xalign(0.0);
         kind_label.set_hexpand(true);
         header_row.append(&kind_label);
 
-        let goto_button = gtk4::Button::with_label("Go to page");
+        let goto_label = match kind {
+            ReaderAttachmentKind::Pdf => "Go to page",
+            ReaderAttachmentKind::Epub => "Go to chapter",
+        };
+        let goto_button = gtk4::Button::with_label(goto_label);
         {
             let state = state.clone();
             let widgets = widgets.clone();
             let key = key.to_string();
-            let pdf_hash = pdf_hash.to_string();
+            let hash = hash.to_string();
             let blob = blob.to_path_buf();
-            let title = pdf_title.to_string();
+            let title = reader_title.to_string();
             let page = annotation.page;
-            goto_button.connect_clicked(move |_| {
-                show_pdf_reader(&state, &widgets, &key, &pdf_hash, &blob, &title, page)
+            let annotation_id = annotation.id.clone();
+            goto_button.connect_clicked(move |_| match kind {
+                ReaderAttachmentKind::Pdf => {
+                    // `page` is always `Some` for a PDF-anchored annotation; `unwrap_or(1)`
+                    // is just a defensive fallback, not an expected path.
+                    show_pdf_reader(
+                        &state,
+                        &widgets,
+                        &key,
+                        &hash,
+                        &blob,
+                        &title,
+                        page.unwrap_or(1),
+                    )
+                }
+                ReaderAttachmentKind::Epub => show_epub_reader(
+                    &state,
+                    &widgets,
+                    &key,
+                    &hash,
+                    &blob,
+                    &title,
+                    Some(&annotation_id),
+                ),
             });
         }
         header_row.append(&goto_button);
@@ -4845,7 +4943,7 @@ fn show_pdf_reader(
                         .annotations
                         .annotations
                         .iter()
-                        .filter(|a| a.page == current_page && !a.quadpoints.is_empty())
+                        .filter(|a| a.page == Some(current_page) && !a.quadpoints.is_empty())
                         .flat_map(|a| a.quadpoints.clone())
                         .collect();
                     fond_doc::blend_highlights(
@@ -5034,6 +5132,537 @@ fn show_pdf_reader(
     }
 
     dialog.present();
+}
+
+/// Live state of an open EPUB reader window: the chapter list, current position, and this
+/// entry's annotation sidecar (loaded once at open and rewritten to disk on every highlight
+/// added — the same "hold it in memory, don't re-read the library each time" approach the
+/// PDF reader's `ReaderState` uses).
+struct EpubReaderState {
+    /// Where this EPUB's contents were extracted to (content-addressed by attachment hash,
+    /// so a repeat "Read" reuses the extraction rather than re-unzipping every time).
+    cache_dir: PathBuf,
+    /// Chapter files in reading order, as paths relative to `cache_dir` (same values as
+    /// `fond_doc::EpubBook::spine`).
+    spine: Vec<String>,
+    index: usize,
+    annotations: fond_bib::AnnotationSidecar,
+}
+
+/// One annotation as sent to the reader's highlight-apply JS: just enough to find it in the
+/// rendered DOM (`snippet`, plus `prefix`/`suffix` context to disambiguate a snippet that
+/// appears more than once in the chapter) and mark it (`id`, for the CSS class and as the
+/// optional scroll target).
+#[derive(serde::Serialize)]
+struct EpubHighlightPayload<'a> {
+    id: &'a str,
+    snippet: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prefix: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suffix: Option<&'a str>,
+}
+
+/// What the reader's selection-capture JS reports back: either nothing was meaningfully
+/// selected, or the selected text plus up to 40 characters of surrounding context on each
+/// side — the same prefix/suffix disambiguation scheme the PDF sidecar already uses.
+#[derive(serde::Deserialize)]
+struct EpubSelectionCapture {
+    empty: bool,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    suffix: Option<String>,
+}
+
+/// A JS function *expression* (no trailing call — callers append `(args)`) that finds each
+/// given annotation's snippet text in the current document and wraps it in a
+/// `<mark class="kartoteka-hl">`, clearing any marks left by a previous call first
+/// (idempotent re-apply, so adding a highlight can just re-run this instead of reloading the
+/// page). Scrolls the mark matching `scrollToId` into view, if given. Mirrors
+/// `select_text_in_rect`'s multi-node-aware approach in `fond-doc/src/pdf.rs` — walk every
+/// text node, find the target substring, map it back onto node+offset pairs — just over DOM
+/// text nodes instead of PDF characters, since there's no PDFium text layer here.
+const EPUB_APPLY_HIGHLIGHTS_FN: &str = r#"(function(annotations, scrollToId) {
+  function findTextRange(root, snippet, prefix, suffix) {
+    if (!snippet) return null;
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var nodes = [];
+    var fullText = '';
+    var node;
+    while (node = walker.nextNode()) {
+      nodes.push({ node: node, start: fullText.length });
+      fullText += node.textContent;
+    }
+    var combined = (prefix || '') + snippet + (suffix || '');
+    var idx, endIdx;
+    var combinedIdx = combined.length > snippet.length ? fullText.indexOf(combined) : -1;
+    if (combinedIdx !== -1) {
+      idx = combinedIdx + (prefix || '').length;
+      endIdx = idx + snippet.length;
+    } else {
+      var plainIdx = fullText.indexOf(snippet);
+      if (plainIdx === -1) return null;
+      idx = plainIdx;
+      endIdx = idx + snippet.length;
+    }
+    var startNode = null, startOffset = 0, endNode = null, endOffset = 0;
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var nEnd = n.start + n.node.textContent.length;
+      if (startNode === null && idx >= n.start && idx < nEnd) {
+        startNode = n.node; startOffset = idx - n.start;
+      }
+      if (endIdx > n.start && endIdx <= nEnd) {
+        endNode = n.node; endOffset = endIdx - n.start;
+      }
+    }
+    if (!startNode || !endNode) return null;
+    var range = document.createRange();
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, endOffset);
+    return range;
+  }
+
+  document.querySelectorAll('mark.kartoteka-hl').forEach(function(m) {
+    var parent = m.parentNode;
+    if (!parent) return;
+    while (m.firstChild) parent.insertBefore(m.firstChild, m);
+    parent.removeChild(m);
+    parent.normalize();
+  });
+
+  annotations.forEach(function(a) {
+    var range = findTextRange(document.body, a.snippet, a.prefix, a.suffix);
+    if (!range) return;
+    var mark = document.createElement('mark');
+    mark.className = 'kartoteka-hl';
+    mark.dataset.annotationId = a.id;
+    mark.style.backgroundColor = 'rgba(246, 195, 68, 0.35)';
+    try {
+      range.surroundContents(mark);
+    } catch (e) {
+      var contents = range.extractContents();
+      mark.appendChild(contents);
+      range.insertNode(mark);
+    }
+    if (scrollToId && a.id === scrollToId) {
+      mark.scrollIntoView({ block: 'center' });
+    }
+  });
+})"#;
+
+/// JS that reports the `WebView`'s current text selection (if any) as JSON: `{empty: true}`
+/// if nothing is meaningfully selected, else `{empty: false, text, prefix, suffix}` — the
+/// selected text plus up to 40 characters of context on each side, computed by walking
+/// `document.body`'s text nodes to find the selection's absolute character offset (the same
+/// approach `EPUB_APPLY_HIGHLIGHTS_FN` uses in reverse, to re-locate a snippet later).
+const EPUB_CAPTURE_SELECTION_JS: &str = r#"(function() {
+  var sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.toString().trim()) {
+    return JSON.stringify({ empty: true });
+  }
+  var text = sel.toString();
+  var range = sel.getRangeAt(0);
+  function textOffsetOf(node, offset) {
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    var total = 0, n;
+    while (n = walker.nextNode()) {
+      if (n === node) return total + offset;
+      total += n.textContent.length;
+    }
+    return total;
+  }
+  var fullText = document.body.textContent;
+  var startIdx = textOffsetOf(range.startContainer, range.startOffset);
+  var prefix = fullText.slice(Math.max(0, startIdx - 40), startIdx);
+  var suffix = fullText.slice(startIdx + text.length, startIdx + text.length + 40);
+  sel.removeAllRanges();
+  return JSON.stringify({ empty: false, text: text, prefix: prefix, suffix: suffix });
+})()"#;
+
+/// Serialize the annotations anchored to `chapter` into the JSON array
+/// `EPUB_APPLY_HIGHLIGHTS_FN` expects. An annotation with no `snippet` (shouldn't happen for
+/// an EPUB one — `drawn_epub` always sets it — but the field is `Option` since the type is
+/// shared with PDF annotations) is skipped rather than sent as an unfindable empty search.
+fn epub_highlight_payload_json(sidecar: &fond_bib::AnnotationSidecar, chapter: &str) -> String {
+    let items: Vec<EpubHighlightPayload> = sidecar
+        .annotations
+        .iter()
+        .filter(|a| a.chapter.as_deref() == Some(chapter))
+        .filter_map(|a| {
+            a.snippet.as_deref().map(|s| EpubHighlightPayload {
+                id: &a.id,
+                snippet: s,
+                prefix: a.snippet_prefix.as_deref(),
+                suffix: a.snippet_suffix.as_deref(),
+            })
+        })
+        .collect();
+    serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Run `EPUB_APPLY_HIGHLIGHTS_FN` against the currently-loaded chapter, scrolling
+/// `scroll_to_id`'s mark into view if given. Called after every chapter load (so navigating
+/// away and back keeps showing highlights) and right after adding a new highlight (so it
+/// appears immediately, no reload needed).
+fn epub_apply_highlights(
+    view: &webkit6::WebView,
+    state: &Rc<RefCell<EpubReaderState>>,
+    scroll_to_id: Option<&str>,
+) {
+    let payload_json = {
+        let r = state.borrow();
+        match r.spine.get(r.index) {
+            Some(chapter) => epub_highlight_payload_json(&r.annotations, chapter),
+            None => return,
+        }
+    };
+    let scroll_json = match scroll_to_id {
+        Some(id) => serde_json::to_string(id).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let script = format!("{EPUB_APPLY_HIGHLIGHTS_FN}({payload_json}, {scroll_json})");
+    view.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+}
+
+/// A built-in EPUB reader: renders each chapter with WebKitGTK (`webkit6`), which — unlike
+/// PDFium for the PDF reader — handles an XHTML+CSS chapter's layout, images, and text
+/// selection natively, so this only has to handle chapter/TOC navigation plus highlighting.
+/// `hash` is the attachment's content hash (`blake3:…`), used to pick a stable extraction
+/// cache directory — the EPUB zip is extracted to disk once per unique file (not re-unzipped
+/// on every "Read") so chapter-relative links to sibling images/CSS resolve the normal
+/// browser way over `file://`, rather than needing a custom URI scheme handler.
+///
+/// Highlighting (M5-SPEC.md 5C) reuses the `WebView`'s own native text selection — the user
+/// drags to select the ordinary browser way, then "Highlight" captures it via
+/// `EPUB_CAPTURE_SELECTION_JS` and saves a `fond_bib::Annotation::drawn_epub` (chapter +
+/// snippet + context; no page/quadpoints — there's no fixed page grid to hang those on) into
+/// the same `annots/<key>.json` sidecar the PDF reader writes. Applying saved highlights back
+/// onto the page is a live DOM search-and-wrap (`epub_apply_highlights`) run after every
+/// chapter load, not a raster blend like the PDF reader's `blend_highlights` — there's no
+/// bitmap to blend into here, WebKit owns the actual rendering.
+///
+/// `start_annotation_id`, if given, opens on that annotation's chapter and scrolls it into
+/// view once highlights are applied — the EPUB equivalent of the PDF reader's `start_page`.
+fn show_epub_reader(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    key: &str,
+    hash: &str,
+    blob: &std::path::Path,
+    title: &str,
+    start_annotation_id: Option<&str>,
+) {
+    let window = &widgets.window;
+
+    let book = match fond_doc::open_book(blob) {
+        Ok(b) => b,
+        Err(e) => {
+            gtk4::AlertDialog::builder()
+                .message("Could not open EPUB")
+                .detail(e.to_string())
+                .build()
+                .show(Some(window));
+            return;
+        }
+    };
+
+    let hex = hash.split_once(':').map(|(_, h)| h).unwrap_or(hash);
+    let cache_dir = glib::user_cache_dir()
+        .join("kartoteka")
+        .join("epub")
+        .join(hex);
+    if !cache_dir.exists() {
+        let extracted = std::fs::create_dir_all(&cache_dir)
+            .map_err(|e| e.to_string())
+            .and_then(|_| fond_doc::extract_epub(blob, &cache_dir).map_err(|e| e.to_string()));
+        if let Err(e) = extracted {
+            gtk4::AlertDialog::builder()
+                .message("Could not open EPUB")
+                .detail(e)
+                .build()
+                .show(Some(window));
+            return;
+        }
+    }
+
+    let annotations = state
+        .borrow()
+        .library
+        .as_ref()
+        .and_then(|lib| lib.load_annotations(key).ok().flatten())
+        .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(key));
+
+    let start_index = start_annotation_id
+        .and_then(|id| annotations.annotations.iter().find(|a| a.id == id))
+        .and_then(|a| a.chapter.as_deref())
+        .and_then(|chapter| book.spine.iter().position(|p| p == chapter))
+        .unwrap_or(0);
+
+    let reader = Rc::new(RefCell::new(EpubReaderState {
+        cache_dir,
+        spine: book.spine,
+        index: start_index,
+        annotations,
+    }));
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(title));
+    dialog.set_transient_for(Some(window));
+    dialog.set_default_size(900, 820);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+
+    let prev = gtk4::Button::from_icon_name("go-previous-symbolic");
+    prev.set_tooltip_text(Some("Previous chapter"));
+    let next = gtk4::Button::from_icon_name("go-next-symbolic");
+    next.set_tooltip_text(Some("Next chapter"));
+    let chapter_label = gtk4::Label::new(None);
+    chapter_label.add_css_class("dim-label");
+    let nav = gtk4::Box::new(Orientation::Horizontal, 6);
+    nav.append(&prev);
+    nav.append(&chapter_label);
+    nav.append(&next);
+    header.set_title_widget(Some(&nav));
+
+    let web_view = webkit6::WebView::new();
+    web_view.set_vexpand(true);
+    web_view.set_hexpand(true);
+
+    let hint = gtk4::Label::new(Some("Select text, then click Highlight"));
+    hint.add_css_class("dim-label");
+    hint.add_css_class("caption");
+    hint.set_margin_top(4);
+    hint.set_margin_bottom(4);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 0);
+    content.append(&hint);
+    content.append(&web_view);
+
+    // pack_end order is the reverse of visual order — Highlight is packed first so it ends
+    // up rightmost, Contents to its left (same gotcha CLAUDE.md notes for the hamburger menu).
+    let highlight_button = gtk4::Button::with_label("Highlight");
+    highlight_button.set_tooltip_text(Some("Highlight the selected text"));
+    header.pack_end(&highlight_button);
+
+    if !book.toc.is_empty() {
+        let contents_button = gtk4::MenuButton::builder().label("Contents").build();
+        let (popover, rows) = popover_menu(260);
+        let last = book.toc.len().saturating_sub(1);
+        for (i, entry) in book.toc.iter().enumerate() {
+            let row = popover_button(&entry.label, false);
+            {
+                let popover = popover.clone();
+                let reader = reader.clone();
+                let view = web_view.clone();
+                let prev = prev.clone();
+                let next = next.clone();
+                let chapter_label = chapter_label.clone();
+                let target = entry.target.clone();
+                row.connect_clicked(move |_| {
+                    popover.popdown();
+                    epub_go_to(&reader, &view, &prev, &next, &chapter_label, &target);
+                });
+            }
+            rows.append(&row);
+            if i != last {
+                rows.append(&popover_separator());
+            }
+        }
+        contents_button.set_popover(Some(&popover));
+        header.pack_end(&contents_button);
+    }
+    view.add_top_bar(&header);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    // Re-apply saved highlights after every chapter load (initial load, TOC jump, prev/next
+    // — all funnel through `epub_go_to`'s `load_uri`, so one handler here covers all of
+    // them), scrolling to `start_annotation_id`'s highlight the first time only.
+    {
+        let reader = reader.clone();
+        let scroll_once = Rc::new(RefCell::new(start_annotation_id.map(|s| s.to_string())));
+        web_view.connect_load_changed(move |view, event| {
+            if event == webkit6::LoadEvent::Finished {
+                let scroll_to = scroll_once.borrow_mut().take();
+                epub_apply_highlights(view, &reader, scroll_to.as_deref());
+            }
+        });
+    }
+
+    // Load the first chapter up front (the TOC/prev/next handlers all reuse this same
+    // navigation path for consistency, but chapter 0 has to start somewhere).
+    let first_chapter = reader.borrow().spine.get(start_index).cloned();
+    if let Some(first) = first_chapter {
+        epub_go_to(&reader, &web_view, &prev, &next, &chapter_label, &first);
+    }
+
+    {
+        let reader = reader.clone();
+        let view = web_view.clone();
+        let prev_for_handler = prev.clone();
+        let next = next.clone();
+        let chapter_label = chapter_label.clone();
+        prev.connect_clicked(move |_| {
+            let target = {
+                let r = reader.borrow();
+                (r.index > 0).then(|| r.spine[r.index - 1].clone())
+            };
+            if let Some(target) = target {
+                epub_go_to(
+                    &reader,
+                    &view,
+                    &prev_for_handler,
+                    &next,
+                    &chapter_label,
+                    &target,
+                );
+            }
+        });
+    }
+    {
+        let reader = reader.clone();
+        let view = web_view.clone();
+        let prev = prev.clone();
+        let next_for_handler = next.clone();
+        let chapter_label = chapter_label.clone();
+        next.connect_clicked(move |_| {
+            let target = {
+                let r = reader.borrow();
+                (r.index + 1 < r.spine.len()).then(|| r.spine[r.index + 1].clone())
+            };
+            if let Some(target) = target {
+                epub_go_to(
+                    &reader,
+                    &view,
+                    &prev,
+                    &next_for_handler,
+                    &chapter_label,
+                    &target,
+                );
+            }
+        });
+    }
+
+    {
+        let reader = reader.clone();
+        let view = web_view.clone();
+        let state = state.clone();
+        let widgets = widgets.clone();
+        highlight_button.connect_clicked(move |_| {
+            let reader = reader.clone();
+            let view_for_apply = view.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            view.evaluate_javascript(
+                EPUB_CAPTURE_SELECTION_JS,
+                None,
+                None,
+                gio::Cancellable::NONE,
+                move |result| {
+                    let raw = match result {
+                        Ok(v) => v.to_str().to_string(),
+                        Err(e) => {
+                            toast(&widgets, &format!("Could not read selection: {e}"));
+                            return;
+                        }
+                    };
+                    let capture: EpubSelectionCapture = match serde_json::from_str(&raw) {
+                        Ok(c) => c,
+                        Err(_) => {
+                            toast(&widgets, "Could not read selection");
+                            return;
+                        }
+                    };
+                    let snippet = capture.text.filter(|t| !t.trim().is_empty());
+                    let Some(snippet) = (!capture.empty).then_some(snippet).flatten() else {
+                        toast(&widgets, "Select some text first");
+                        return;
+                    };
+
+                    let chapter = {
+                        let r = reader.borrow();
+                        r.spine.get(r.index).cloned()
+                    };
+                    let Some(chapter) = chapter else {
+                        return;
+                    };
+
+                    let annotation = fond_bib::Annotation::drawn_epub(
+                        fond_bib::AnnotationKind::Highlight,
+                        chapter,
+                        snippet,
+                        capture.prefix,
+                        capture.suffix,
+                        None,
+                    );
+                    let id = annotation.id.clone();
+                    reader.borrow_mut().annotations.upsert(annotation);
+
+                    let write_result = {
+                        let s = state.borrow();
+                        s.library
+                            .as_ref()
+                            .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+                    };
+                    match write_result {
+                        Some(Ok(_)) => {
+                            epub_apply_highlights(&view_for_apply, &reader, Some(&id));
+                            toast(&widgets, "Highlight added");
+                        }
+                        Some(Err(e)) => toast(&widgets, &format!("Could not save highlight: {e}")),
+                        None => toast(&widgets, "No open library — highlight not saved"),
+                    }
+                },
+            );
+        });
+    }
+
+    dialog.present();
+}
+
+/// Navigate the EPUB reader's `WebView` to `target` (a zip-internal path, optionally with a
+/// `#fragment` for an in-chapter anchor — the same shape `fond_doc::EpubBook::spine`/`toc`
+/// entries use). Updates `state.index` when `target`'s path (fragment stripped) matches a
+/// spine entry, so the chapter label and prev/next sensitivity stay correct whether the jump
+/// came from a TOC entry, the prev/next buttons, or the initial chapter-0 load — all three
+/// funnel through here rather than duplicating the URI-building and label/button refresh.
+fn epub_go_to(
+    state: &Rc<RefCell<EpubReaderState>>,
+    view: &webkit6::WebView,
+    prev: &gtk4::Button,
+    next: &gtk4::Button,
+    chapter_label: &gtk4::Label,
+    target: &str,
+) {
+    let (path, fragment) = target
+        .split_once('#')
+        .map_or((target, None), |(p, f)| (p, Some(f)));
+
+    let cache_dir = {
+        let mut r = state.borrow_mut();
+        if let Some(idx) = r.spine.iter().position(|p| p == path) {
+            r.index = idx;
+        }
+        r.cache_dir.clone()
+    };
+
+    let mut uri = gio::File::for_path(cache_dir.join(path)).uri().to_string();
+    if let Some(fragment) = fragment {
+        uri.push('#');
+        uri.push_str(fragment);
+    }
+    view.load_uri(&uri);
+
+    let r = state.borrow();
+    chapter_label.set_text(&format!("Chapter {} of {}", r.index + 1, r.spine.len()));
+    prev.set_sensitive(r.index > 0);
+    next.set_sensitive(r.index + 1 < r.spine.len());
 }
 
 /// Edit an entry's note: tags, read status, rating, and prose. Writes `notes/<key>.md`.
@@ -5648,7 +6277,7 @@ fn rebuild_index_silent(state: &Rc<RefCell<AppState>>) {
         let s = state.borrow();
         s.library.as_ref().map(|lib| {
             let dir = lib.root().join(".kartoteka").join("index");
-            fond_index::SearchIndex::rebuild(lib, &dir, |_| None)
+            fond_index::SearchIndex::rebuild(lib, &dir, |_| None, |_| None)
         })
     };
     if let Some(Ok(index)) = rebuilt {

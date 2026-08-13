@@ -2,6 +2,25 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.2.0-dev1] — 2026-08-13 — Built-in EPUB reader, with highlighting
+
+A built-in EPUB reader, alongside the existing PDF one: chapter navigation, a table-of-
+contents jump list (from the EPUB3 nav document or the EPUB2 NCX), and proper rendering of
+each chapter's text, images, and stylesheet via an embedded WebKitGTK view — not just the
+metadata-only import EPUB had before.
+
+EPUB pages can now be highlighted, same as PDF: select text and click "Highlight" to save it
+to the entry's annotation sidecar (chapter + snippet, since an EPUB has no fixed page grid to
+anchor a PDF-style quadpoint to), with saved highlights reapplied automatically on every
+chapter load. The "Annotations…" list and "Go to" now work for both formats, jumping into
+the right chapter and scrolling straight to the highlight for an EPUB entry.
+
+EPUB chapter text is also now indexed for full-text search, alongside PDF text (previously
+only an EPUB's bibliographic metadata was searchable, never its actual content).
+
+Also fixed: an EPUB attachment no longer routes into the PDF reader and fails silently on
+"Read" — attachments are now identified by type before deciding which reader to open.
+
 ## [0.1.1] "Tidy Shelf" — 2026-08-13 — Internal: CI format-check fix
 
 No user-facing changes. The codebase had no `rustfmt.toml` and had never been kept `cargo

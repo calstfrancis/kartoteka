@@ -34,7 +34,7 @@ fn index_dir(lib: &Library) -> std::path::PathBuf {
 #[test]
 fn free_text_search_hits_title_and_note() {
     let (_dir, lib) = seed();
-    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None).unwrap();
+    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None, |_| None).unwrap();
 
     let hits = idx.search("liberation", 10).unwrap();
     assert!(
@@ -50,7 +50,7 @@ fn free_text_search_hits_title_and_note() {
 #[test]
 fn field_scoped_queries() {
     let (_dir, lib) = seed();
-    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None).unwrap();
+    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None, |_| None).unwrap();
 
     assert_eq!(
         idx.search("author:cone", 10).unwrap()[0].key,
@@ -71,9 +71,14 @@ fn field_scoped_queries() {
 #[test]
 fn indexes_supplied_pdf_text() {
     let (_dir, lib) = seed();
-    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |key| {
-        (key == "berdyaev1937destiny").then(|| "existential freedom and the person".to_string())
-    })
+    let idx = SearchIndex::rebuild(
+        &lib,
+        &index_dir(&lib),
+        |key| {
+            (key == "berdyaev1937destiny").then(|| "existential freedom and the person".to_string())
+        },
+        |_| None,
+    )
     .unwrap();
 
     let hits = idx.search("existential", 10).unwrap();
@@ -82,15 +87,31 @@ fn indexes_supplied_pdf_text() {
 }
 
 #[test]
+fn indexes_supplied_epub_text() {
+    let (_dir, lib) = seed();
+    let idx = SearchIndex::rebuild(
+        &lib,
+        &index_dir(&lib),
+        |_| None,
+        |key| (key == "cone1970black").then(|| "the gospel of liberation".to_string()),
+    )
+    .unwrap();
+
+    let hits = idx.search("gospel", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].key, "cone1970black");
+}
+
+#[test]
 fn rebuild_from_scratch_after_deletion_is_consistent() {
     let (_dir, lib) = seed();
     let dir = index_dir(&lib);
-    let idx = SearchIndex::rebuild(&lib, &dir, |_| None).unwrap();
+    let idx = SearchIndex::rebuild(&lib, &dir, |_| None, |_| None).unwrap();
     let before = idx.search("theology", 10).unwrap().len();
 
     // Nuke the derived index and rebuild — identical results.
     fs::remove_dir_all(&dir).unwrap();
-    let idx = SearchIndex::rebuild(&lib, &dir, |_| None).unwrap();
+    let idx = SearchIndex::rebuild(&lib, &dir, |_| None, |_| None).unwrap();
     let after = idx.search("theology", 10).unwrap().len();
     assert_eq!(before, after);
     assert!(after >= 1);
@@ -118,7 +139,7 @@ fn facet_scoping_and_ai_text_are_indexed() {
     ai.keywords = vec!["soteriology".into()];
     lib.write_ai("cone1970black", &ai).unwrap();
 
-    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None).unwrap();
+    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None, |_| None).unwrap();
 
     // `facet:discipline` finds the item carrying that facet.
     assert_eq!(
@@ -147,7 +168,7 @@ fn nodes_are_indexed_and_scopable() {
         "---\nnode-type: person\nlabel: Augustine of Hippo\naliases: [Aurelius Augustinus]\nidentifiers:\n  wikidata: Q8018\n---\nBishop of Hippo and Doctor of the Church.\n",
     )
     .unwrap();
-    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None).unwrap();
+    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None, |_| None).unwrap();
 
     // Free-text on the label finds the node, and the hit is tagged kind=node.
     let hits = idx.search("augustine", 10).unwrap();

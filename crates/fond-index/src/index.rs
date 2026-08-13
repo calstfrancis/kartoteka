@@ -3,9 +3,9 @@
 //! (`docs/ARCHITECTURE.md` §1). It only ever *caches* what the files already say.
 //!
 //! Indexed fields: `kind`, `key`, `type`, `author`, `title`, `year`, `tag`, `facet`, plus the
-//! un-stored bulk text (`alias`, `identifier`, `note`, `annotation`, `pdftext`, `ai`). A bare
-//! query searches the text fields; field scoping works via the field names, e.g.
-//! `author:cone tag:christology facet:discipline year:1970`. AI-generated text is a
+//! un-stored bulk text (`alias`, `identifier`, `note`, `annotation`, `pdftext`, `epubtext`,
+//! `ai`). A bare query searches the text fields; field scoping works via the field names,
+//! e.g. `author:cone tag:christology facet:discipline year:1970`. AI-generated text is a
 //! separate `ai:` field so results from it can be filtered/scoped apart from curated text.
 //!
 //! Both `entries/` and `nodes/` are indexed into one schema, discriminated by `kind`
@@ -50,6 +50,7 @@ struct Fields {
     note: Field,
     annotation: Field,
     pdftext: Field,
+    epubtext: Field,
     ai: Field,
 }
 
@@ -68,6 +69,7 @@ fn build_schema() -> Schema {
     b.add_text_field("note", TEXT);
     b.add_text_field("annotation", TEXT);
     b.add_text_field("pdftext", TEXT);
+    b.add_text_field("epubtext", TEXT);
     b.add_text_field("ai", TEXT);
     b.build()
 }
@@ -97,6 +99,7 @@ impl Fields {
             note: f("note")?,
             annotation: f("annotation")?,
             pdftext: f("pdftext")?,
+            epubtext: f("epubtext")?,
             ai: f("ai")?,
         })
     }
@@ -134,11 +137,20 @@ impl SearchIndex {
     }
 
     /// Rebuild the index from scratch out of the library's authoritative files. `pdf_text`
-    /// supplies extracted PDF text per key (so PDFium stays out of this crate); return
-    /// `None` to index no PDF text for a key.
-    pub fn rebuild<F>(library: &Library, dir: &Path, mut pdf_text: F) -> Result<SearchIndex>
+    /// supplies extracted PDF text per key (so PDFium stays out of this crate) and
+    /// `epub_text` supplies extracted EPUB chapter text per key (so `zip`/`quick-xml`
+    /// parsing stays out of this crate too); return `None` from either to index no such text
+    /// for a key — an entry with neither attachment (or an unavailable extractor) just gets
+    /// an empty field, same as always.
+    pub fn rebuild<F, G>(
+        library: &Library,
+        dir: &Path,
+        mut pdf_text: F,
+        mut epub_text: G,
+    ) -> Result<SearchIndex>
     where
         F: FnMut(&str) -> Option<String>,
+        G: FnMut(&str) -> Option<String>,
     {
         if dir.exists() {
             std::fs::remove_dir_all(dir).map_err(|e| IndexError::Io {
@@ -214,6 +226,7 @@ impl SearchIndex {
                 .unwrap_or_default();
 
             let pdf = pdf_text(&key).unwrap_or_default();
+            let epub = epub_text(&key).unwrap_or_default();
 
             writer.add_document(doc!(
                 fields.kind => "entry",
@@ -227,6 +240,7 @@ impl SearchIndex {
                 fields.note => note_body,
                 fields.annotation => annotation,
                 fields.pdftext => pdf,
+                fields.epubtext => epub,
                 fields.ai => ai_text,
             ))?;
         }
@@ -281,6 +295,7 @@ impl SearchIndex {
             self.fields.note,
             self.fields.annotation,
             self.fields.pdftext,
+            self.fields.epubtext,
             self.fields.ai,
         ];
         let parser = QueryParser::for_index(&self.index, default_fields);

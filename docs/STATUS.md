@@ -18,14 +18,22 @@ the single most confusing thing about the docs:
    app has had a working in-app PDF viewer for a while. Worth a cleanup pass independent of
    the M4 work below.
 
-2. **The knowledge-base extension track — "M1 / M2 / M3 / M4"** — a *newer* track that grew
-   out of a large brainstorm (a ChatGPT feature dump, 23 sections), now extended past the
-   brainstorm's own scope. This is what `M2-SPEC.md`, `M3-SPEC.md`, `M4-SPEC.md`,
-   `DATA-MODEL-EXTENSIONS.md`, and `M2-GUI-PLAN.md` describe.
+2. **The knowledge-base extension track — "M1 / M2 / M3 / M4 / M5"** — a *newer* track that
+   grew out of a large brainstorm (a ChatGPT feature dump, 23 sections), now extended past
+   the brainstorm's own scope. This is what `M2-SPEC.md`, `M3-SPEC.md`, `M4-SPEC.md`,
+   `M5-SPEC.md`, `DATA-MODEL-EXTENSIONS.md`, and `M2-GUI-PLAN.md` describe.
+   - **Extension-M5** = the full PDF+EPUB reader. **Tier 1 is complete**: 5A (typed
+     attachment routing, fixing the EPUB-attachment-opens-the-PDF-viewer bug), 5B (EPUB
+     rendering + chapter/TOC navigation via an embedded WebKitGTK 6 `WebView`), 5C (EPUB
+     highlighting — chapter+snippet anchor, WebKit-native selection + DOM search-and-wrap),
+     and 5D (EPUB body text in the search index) are all built and verified end-to-end.
+     PDF reading is solid but still missing search/outline/underline-strikeout gestures
+     (Tier 2), and annotations need a portable export (Tier 3) (`M5-SPEC.md`).
    - **Extension-M4** = the map toward a "full-fledged" citation manager beyond the original
      brief and the brainstorm both — live PDF annotation, Zerkalo vault adoption, and the
-     smaller GUI/platform gaps. **In progress** (`M4-SPEC.md`): 4A Phase 1 (live rectangle
-     highlighting in the built-in PDF viewer) is built and tested; the rest is scoped.
+     smaller GUI/platform gaps. **Tier 1's PDF-annotation work (4A, all three phases) and
+     all of Tier 2 are done** (`M4-SPEC.md`); 4B (Zerkalo vault adoption) is the only Tier 1
+     item still open, and is Zerkalo-repo work.
    - **Extension-M1** = the original vault (`DATA-MODEL.md`) — the baseline these extend.
    - **Extension-M2** = typed relations, facets, small note fields, AI sidecar, projects/usage
      — **built and tested** (see below).
@@ -129,11 +137,17 @@ Done and tested (extension-M2), in `crates/fond-bib` + `crates/fond-index` + GUI
 Next candidates (pick per Cal) — **superseded by `M4-SPEC.md`'s tiering**, kept here as a
 one-line pointer rather than duplicated:
 - **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **complete (all 8 PRs)**.
-- **Extension-M4** (`M4-SPEC.md`): live PDF annotation (Phase 1 done, Phases 2–3 open),
-  Zerkalo vault adoption, and the Tier 2/3/4 leftovers (used-in panel, facet chip grouping,
-  promote-AI-keyword-to-tag, global task view, progress/cite/tasks in-GUI editing, node
-  deletion, node-side relation editor, Windows UI, and more) — see that doc for the full,
-  tiered list instead of maintaining two copies of it here.
+- **Extension-M4** (`M4-SPEC.md`): live PDF annotation — **Tier 1's 4A (all 3 phases) and
+  all of Tier 2 done**; 4B (Zerkalo vault adoption, a Zerkalo-repo task) is the only open
+  Tier 1 item; Tier 3 (Windows UI) and Tier 4 (browser capture, bulk ops, library
+  quick-switcher) not started.
+- **Extension-M5** (`M5-SPEC.md`): the full PDF+EPUB reader. **Tier 1 complete and verified
+  end-to-end headless** — 5A (typed attachment routing), 5B (EPUB rendering + chapter/TOC
+  nav via WebKitGTK 6), 5C (EPUB highlighting — chapter+snippet anchor, WebKit-native
+  selection + DOM search-and-wrap, including a two-paragraph ambiguous-snippet test), 5D
+  (EPUB text into the search index). Still open: Tier 2 (PDF reader polish — search, outline,
+  underline/strikeout gestures, `Progress` wiring), Tier 3 (a portable annotation export),
+  Tier 4 (a multi-attachment chooser) — see that doc for the full tiered list.
 
 ---
 

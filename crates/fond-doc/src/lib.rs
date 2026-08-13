@@ -9,7 +9,10 @@ pub mod epub;
 pub mod error;
 pub mod pdf;
 
-pub use epub::{extract_metadata as extract_epub_metadata, EpubMetadata};
+pub use epub::{
+    extract_all as extract_epub, extract_metadata as extract_epub_metadata,
+    extract_text as extract_epub_text, open_book, EpubBook, EpubMetadata, TocEntry,
+};
 
 pub use annotation::{
     embed_highlights, extract_annotations, AnnotationToEmbed, PdfAnnotation, PdfAnnotationKind,
