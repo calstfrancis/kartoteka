@@ -1,7 +1,8 @@
 # Kartoteka M5 — The Full Reader: PDF + EPUB Reading & Portable Annotation
 
-Status: **Tier 1 and Tier 2 fully complete (including continuous scroll), both built and
-tested. Tier 3–4 not started.**
+Status: **Tier 1 and Tier 2 fully complete (including continuous scroll and Zotero-style page
+numbers), plus a further round of PDF reader UX polish (Contents sidebar, live drag preview,
+undo/redo, editable "This page" notes) — all built and tested. Tier 3–4 not started.**
 
 > **Naming note.** "M5" here is the next step in the **knowledge-base extension track**
 > (M2 = typed relations/facets/AI sidecar/projects, M3 = knowledge-graph nodes, M4 = live PDF
@@ -293,6 +294,76 @@ compiled:
   blended in its own colour; toggled back to paged mode and confirmed both the search
   highlight and the earlier page-3 drawn highlight were still there, correctly rendered by
   the same shared code path.
+- **Document page numbering — done, verified end-to-end (added beyond the original Tier 2
+  list, prompted by "Zotero shows the document's own printed page number, not the raw file
+  position — can Kartoteka?").** PDFium already wraps this directly: a PDF's `/PageLabels`
+  catalog entry (a number tree mapping page ranges to a numbering style — decimal, upper/
+  lower-case roman, upper/lower-case letters — plus an optional prefix and start value) is
+  exposed as `PdfPage::label()`. `fond_doc::pdf::page_labels()` reads every page's label
+  once at reader-open (`None` where the PDF defines none — most PDFs). The static "Page X of
+  Y" label became an editable `Entry` showing the *document's* printed number (falling back
+  to the raw file position when there's no `/PageLabels`, identical to the old behaviour) —
+  the entry's tooltip always gives the raw number too, since `Annotation.page`/search
+  matches/Contents targets all mean the raw position internally, never the printed one.
+  Typing a value and pressing Enter jumps to it: an exact label match first
+  (case-insensitive, so a roman numeral typed in the wrong case still resolves), falling
+  back to parsing it as a raw 1-based page number — so a PDF with no custom numbering
+  navigates exactly as before. Shared by both the paged view's `render()` and continuous
+  mode's scroll-position tracker via one `update_page_display()` helper, so the two can't
+  disagree. Two new `fond-doc` tests against a hand-built PDF with a real `/PageLabels` tree
+  (mixed roman front matter + arabic body restarting at 1, and the no-labels case). Verified
+  live: a 4-page test PDF showed "i", "ii", "1", "2" correctly across its pages (not "1",
+  "2", "3", "4"); typing "ii" jumped straight to the Table of Contents page; typing "3" (no
+  page is labelled "3" in this document) correctly fell back to the raw file position,
+  landing on the page labelled "1".
+
+## PDF reader UX round 2 — sidebar, live preview, undo/redo, editable notes — **done, verified end-to-end.**
+
+Prompted by Cal after Tier 2 shipped: "contents nav should be in a sidebar. there needs to be
+a better indication of what you're highlighting when highlighting — right now the highlight
+appears after you finish dragging and let go. make sure there are undo/redo functions, and
+the ability to edit and remove highlights and notes/annotations." Four PDF-reader-scoped
+changes (EPUB's own separate reader/Contents popover was left as-is — this request was about
+the PDF reader specifically, matching the whole conversation's focus):
+
+- **Contents sidebar.** The header `MenuButton`+`Popover` outline list became a persistent
+  `gtk4::Paned`, toggled by a new headerbar button (`sidebar-show-symbolic`) at the *start* of
+  the headerbar, per the house sidebar style — collapsed by default, stays open across page
+  jumps instead of closing after every click. Implementation note: `content` (the search
+  bar + hint + page/continuous view stack) must *not* be parented into the `ToolbarView` before
+  being reparented into the `Paned`'s end-child — `Paned::set_end_child` asserts the child has
+  no existing parent, so `view.set_content(&content)` is skipped whenever a sidebar exists,
+  deferred until the `Paned` itself becomes the view's content.
+- **Live drag preview.** Both the paged view's `Picture` and each continuous-mode page's
+  `Picture` are now wrapped in a `gtk4::Overlay` with a semi-transparent, non-targetable
+  `DrawingArea` on top (`build_drag_preview_overlay`), fed by a shared `Rc<Cell<Option<(f64,
+  f64, f64, f64)>>>` rectangle that `connect_drag_begin`/`connect_drag_update` update and
+  `queue_draw()` on — so the drag rectangle is visible in the current draw colour throughout
+  the gesture, not just after `drag_end`. The preview draws the raw drag rectangle (not the
+  final narrowed underline/strikeout band `blend_annotations` produces) — close enough to show
+  intent without duplicating that geometry.
+- **Undo/redo.** Snapshot-based: `ReaderState` gained `undo_stack`/`redo_stack: Vec<
+  AnnotationSidecar>` (capped at `UNDO_HISTORY_LIMIT = 50`). `push_undo_snapshot()` is called
+  at the top of every mutation site — drag-created highlight/underline/strikeout
+  (`save_drag_annotation`), a note added via the "Note…" dialog, an annotation deleted from
+  "This page", and a note edited from "This page" — and clears the redo stack (standard editor
+  convention: a fresh edit invalidates pending redo). Undo/Redo header buttons
+  (`edit-undo-symbolic`/`edit-redo-symbolic`) plus Ctrl+Z / Ctrl+Shift+Z via an
+  `EventControllerKey` on the reader window; `sync_undo_redo_buttons()` keeps their
+  sensitivity current after every mutation. A snapshot doesn't record which page(s) it
+  touched, so undo/redo re-renders every page (`rerender_all_pages`) — cheap, since each
+  page's blend is just a texture re-render, not a re-parse of the PDF.
+- **Editable "This page" notes.** The inline per-page annotation list gained the same
+  save-on-Enter/blur note `Entry` the whole-document "Annotations…" dialog already had,
+  closing the parity gap between the two — previously "This page" could only show a note
+  preview and delete, not edit one.
+
+Verified live under Xvfb: sidebar toggle shows/hides and its row clicks jump pages correctly
+while staying open; a slow multi-step drag shows the live amber rectangle mid-gesture and
+resolves into the normal saved highlight on release; creating a highlight enables Undo (Redo
+stays disabled), Undo removes it and enables Redo, Redo restores it, and Ctrl+Z reproduces the
+button's effect; editing a "This page" note via Enter persists across popover reopens and is
+itself undoable via Ctrl+Z.
 
 ## Tier 3 — annotation portability ("read annotations outside the file")
 

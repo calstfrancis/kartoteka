@@ -29,10 +29,18 @@ the single most confusing thing about the docs:
      WebKit-native selection + DOM search-and-wrap), 5D (EPUB body text in the search
      index). Tier 2 — PDF `Progress` resume/save, underline/strikeout/note drawing gestures,
      an outline/bookmarks panel, an in-reader text search bar, a colour picker + inline
-     per-page annotation list, and continuous/vertical scroll (a toggle alongside the
-     page-by-page view, eagerly rendered on first use rather than virtualized). Everything
-     above verified end-to-end headless, not just compiled. Still open: Tier 3's portable
-     annotation export and Tier 4's multi-attachment chooser (`M5-SPEC.md`).
+     per-page annotation list, continuous/vertical scroll (a toggle alongside the
+     page-by-page view, eagerly rendered on first use rather than virtualized), and
+     Zotero-style document page numbering (shows/navigates by a PDF's own `/PageLabels`
+     printed page number, not just the raw file position — added beyond the original Tier 2
+     list, on request). Everything above verified end-to-end headless, not just compiled.
+     A further round of PDF reader UX polish also shipped on request, beyond both tiers'
+     original lists: the Contents outline became a persistent sidebar instead of a popover, a
+     live drag preview shows the highlight/underline/strikeout region while dragging (not
+     just after release), snapshot-based undo/redo covers every annotation mutation
+     (Undo/Redo buttons + Ctrl+Z/Ctrl+Shift+Z), and "This page"'s inline annotation list
+     gained editable notes (parity with the whole-document "Annotations…" dialog). Still open:
+     Tier 3's portable annotation export and Tier 4's multi-attachment chooser (`M5-SPEC.md`).
    - **Extension-M4** = the map toward a "full-fledged" citation manager beyond the original
      brief and the brainstorm both — live PDF annotation, Zerkalo vault adoption, and the
      smaller GUI/platform gaps. **Tier 1's PDF-annotation work (4A, all three phases) and
@@ -151,10 +159,14 @@ one-line pointer rather than duplicated:
   via WebKitGTK 6), 5C (EPUB highlighting — chapter+snippet anchor, WebKit-native selection +
   DOM search-and-wrap), 5D (EPUB text into the search index). Tier 2 — PDF `Progress`
   resume/save, underline/strikeout/note drawing gestures, an outline/bookmarks panel,
-  in-reader text search, a colour picker + inline per-page annotation list, and
-  continuous/vertical scroll (a toggle alongside the page-by-page view). Still open: Tier 3
-  (a portable annotation export), Tier 4 (a multi-attachment chooser) — see that doc for the
-  full tiered list.
+  in-reader text search, a colour picker + inline per-page annotation list,
+  continuous/vertical scroll (a toggle alongside the page-by-page view), and Zotero-style
+  document page numbering (`/PageLabels`-aware display and jump-by-typed-label). A further
+  round of PDF reader UX polish also shipped: Contents as a persistent sidebar, a live drag
+  preview while highlighting, snapshot-based undo/redo (buttons + Ctrl+Z/Ctrl+Shift+Z), and
+  editable notes in "This page"'s inline annotation list. Still open:
+  Tier 3 (a portable annotation export), Tier 4 (a multi-attachment chooser) — see that doc
+  for the full tiered list.
 
 ---
 

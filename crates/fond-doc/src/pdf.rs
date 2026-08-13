@@ -176,6 +176,25 @@ pub fn outline(pdfium: &Pdfium, bytes: &[u8]) -> Result<Vec<PdfOutlineEntry>> {
     Ok(out)
 }
 
+/// Read every page's *document* page label — the PDF's own printed numbering (`/PageLabels`
+/// in the catalog: e.g. lowercase-roman front matter — "i", "ii" — followed by arabic body
+/// pages restarting at "1"), as opposed to the raw 1-based position of the page within the
+/// file. Most PDFs have no `/PageLabels` at all, in which case every entry is `None` and a
+/// caller should fall back to the raw page number — this is what lets a reader show (and let
+/// you type in) the same page number the document itself prints on the page, the way Zotero
+/// does, instead of always the raw file position.
+///
+/// One entry per page, in document order; index `i` is 0-based, matching `render_page`'s own
+/// indexing (not `PdfOutlineEntry.page`, which is 1-based).
+pub fn page_labels(pdfium: &Pdfium, bytes: &[u8]) -> Result<Vec<Option<String>>> {
+    let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+    let mut out = Vec::with_capacity(document.pages().len() as usize);
+    for page in document.pages().iter() {
+        out.push(page.label().map(|s| s.to_string()));
+    }
+    Ok(out)
+}
+
 /// One match from `search_document`: the 0-based page it's on (matching `render_page`'s own
 /// indexing) and one quad per line the match spans, in PDF user-space — the same shape
 /// `Annotation.quadpoints`/`select_text_in_rect` use, so a match can be blended onto a

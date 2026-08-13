@@ -46,6 +46,26 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.2.0" date="2026-08-13">
+      <description>
+        <p>0.2.0 "Marked Folio" — a built-in EPUB reader, and a big round of PDF reader
+        polish.</p>
+        <ul>
+          <li>A built-in EPUB reader alongside the existing PDF one — chapter navigation, a
+          table-of-contents jump list, and proper rendering of text, images, and stylesheets
+          via an embedded WebKitGTK view, not just metadata-only import.</li>
+          <li>EPUB highlighting, with saved highlights reapplied automatically on every
+          chapter load, and EPUB chapter text now indexed for full-text search.</li>
+          <li>The PDF reader gained underline and strikeout, freestanding notes, a colour
+          picker, an outline/bookmarks panel (now a persistent sidebar), an in-reader search
+          bar, an inline per-page annotation list with editable notes, remembered reading
+          position, continuous scroll, and Zotero-style document page numbering.</li>
+          <li>A live preview while dragging to highlight/underline/strikeout, and
+          snapshot-based undo/redo for every annotation change (buttons plus
+          Ctrl+Z/Ctrl+Shift+Z).</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-08-13">
       <description>
         <p>0.1.1 "Tidy Shelf" — internal build-hygiene fix, no user-facing changes.</p>

@@ -20,9 +20,9 @@ pub use annotation::{
 pub use error::{DocError, Result};
 pub use pdf::{
     bind_pdfium, blend_annotations, blend_highlights, extract_metadata, extract_text,
-    extract_text_from_file, find_doi, find_isbn, outline, page_count, page_size, render_page,
-    search_document, select_text_in_rect, MarkupKind, PdfMeta, PdfOutlineEntry, PdfSearchMatch,
-    PdfText, RenderedPage, TextSelection,
+    extract_text_from_file, find_doi, find_isbn, outline, page_count, page_labels, page_size,
+    render_page, search_document, select_text_in_rect, MarkupKind, PdfMeta, PdfOutlineEntry,
+    PdfSearchMatch, PdfText, RenderedPage, TextSelection,
 };
 
 /// Re-exported so callers can name the binding handle without depending on `pdfium-render`.

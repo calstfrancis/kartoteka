@@ -1,7 +1,7 @@
 //! The main application window: a sidebar list of entries with a live filter, and a detail
 //! pane showing the selected entry's YAML and note. All data comes from `fond-bib`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -4838,6 +4838,47 @@ struct ReaderState {
     continuous_pictures: Vec<gtk4::Picture>,
     continuous_offsets: Vec<f64>,
     continuous_rendered: Vec<bool>,
+    /// Each page's document-defined `/PageLabels` printed number (`None` where the PDF
+    /// doesn't define one, which is most PDFs) — read once at open, since it's an immutable
+    /// property of the file. Index `i` (0-based) matches every other page index in this
+    /// struct.
+    page_labels: Vec<Option<String>>,
+    /// Snapshot-based undo/redo: each entry is a full clone of `annotations` taken
+    /// immediately before a mutation (drag-created highlight, note added, annotation
+    /// deleted or edited). `push_undo_snapshot` is the single place that pushes here and
+    /// clears `redo_stack` — every mutation site calls it first. Capped at
+    /// `UNDO_HISTORY_LIMIT` so a long session doesn't grow this unbounded.
+    undo_stack: Vec<fond_bib::AnnotationSidecar>,
+    redo_stack: Vec<fond_bib::AnnotationSidecar>,
+}
+
+/// How many undo steps a PDF reader session keeps before dropping the oldest.
+const UNDO_HISTORY_LIMIT: usize = 50;
+
+/// Snapshot `reader`'s current annotations onto the undo stack and clear the redo stack —
+/// call this immediately before any mutation to `reader.annotations`, so the mutation can be
+/// undone. Standard editor convention: a fresh mutation invalidates any pending redo.
+fn push_undo_snapshot(reader: &Rc<RefCell<ReaderState>>) {
+    let mut r = reader.borrow_mut();
+    let snapshot = r.annotations.clone();
+    r.undo_stack.push(snapshot);
+    if r.undo_stack.len() > UNDO_HISTORY_LIMIT {
+        r.undo_stack.remove(0);
+    }
+    r.redo_stack.clear();
+}
+
+/// Refresh the Undo/Redo header buttons' sensitivity from `reader`'s current stacks — called
+/// after every mutation site (both the paged view's and, since `build_continuous_view` builds
+/// its own drag handlers, continuous mode's) so the buttons never sit enabled/disabled stale.
+fn sync_undo_redo_buttons(
+    reader: &Rc<RefCell<ReaderState>>,
+    undo_button: &gtk4::Button,
+    redo_button: &gtk4::Button,
+) {
+    let r = reader.borrow();
+    undo_button.set_sensitive(!r.undo_stack.is_empty());
+    redo_button.set_sensitive(!r.redo_stack.is_empty());
 }
 
 /// The colour `DropDown`'s fixed preset order — a small curated set (like a real
@@ -4867,6 +4908,58 @@ fn annotation_rgba(hex: Option<&str>) -> [u8; 4] {
         Some([r, g, b, HIGHLIGHT_RGBA[3]])
     });
     parsed.unwrap_or(HIGHLIGHT_RGBA)
+}
+
+/// Wraps `picture` in an `Overlay` with a semi-transparent `DrawingArea` on top that tracks a
+/// live drag rectangle, so a highlight/underline/strikeout is visible *while* it's being
+/// dragged instead of only appearing once the drag ends. Returns the overlay (to use in the
+/// widget tree in place of `picture`), the preview `DrawingArea` itself (drag handlers call
+/// `.queue_draw()` on it after updating the rect), and the shared cell those handlers write
+/// into — `Some((x0, y0, x1, y1))` in the picture's own pixel space while dragging, `None`
+/// otherwise. The preview doesn't try to match the final narrowed underline/strikeout band —
+/// it's just the raw drag rectangle in the current draw colour, which is enough to show what's
+/// about to be created.
+/// A drag rectangle in a picture's own pixel space: `(x0, y0, x1, y1)`.
+type DragRectCell = Rc<Cell<Option<(f64, f64, f64, f64)>>>;
+
+fn build_drag_preview_overlay(
+    picture: &gtk4::Picture,
+    reader: &Rc<RefCell<ReaderState>>,
+) -> (gtk4::Overlay, gtk4::DrawingArea, DragRectCell) {
+    let live_rect: DragRectCell = Rc::new(Cell::new(None));
+
+    let preview = gtk4::DrawingArea::new();
+    preview.set_can_target(false);
+    preview.set_hexpand(true);
+    preview.set_vexpand(true);
+    {
+        let live_rect = live_rect.clone();
+        let reader = reader.clone();
+        preview.set_draw_func(move |_area, cr, _w, _h| {
+            let Some((x0, y0, x1, y1)) = live_rect.get() else {
+                return;
+            };
+            let rgba = annotation_rgba(Some(&reader.borrow().draw_color));
+            cr.set_source_rgba(
+                rgba[0] as f64 / 255.0,
+                rgba[1] as f64 / 255.0,
+                rgba[2] as f64 / 255.0,
+                (rgba[3] as f64 / 255.0 * 1.6).min(1.0),
+            );
+            let x = x0.min(x1);
+            let y = y0.min(y1);
+            let w = (x1 - x0).abs();
+            let h = (y1 - y0).abs();
+            cr.rectangle(x, y, w, h);
+            let _ = cr.fill();
+        });
+    }
+
+    let overlay = gtk4::Overlay::new();
+    overlay.set_child(Some(picture));
+    overlay.add_overlay(&preview);
+
+    (overlay, preview, live_rect)
 }
 
 /// The `DropDown`'s fixed option order — index into this, not into `AnnotationKind`
@@ -5052,6 +5145,7 @@ fn save_drag_annotation(
         Some(draw_color),
     );
 
+    push_undo_snapshot(reader);
     {
         let mut r = reader.borrow_mut();
         r.annotations.pdf_hash = Some(pdf_hash.to_string());
@@ -5104,6 +5198,8 @@ fn build_continuous_view(
     reader: &Rc<RefCell<ReaderState>>,
     pdf_hash: &str,
     continuous_box: &gtk4::Box,
+    undo_button: &gtk4::Button,
+    redo_button: &gtk4::Button,
 ) {
     if !reader.borrow().continuous_pictures.is_empty() {
         return;
@@ -5151,6 +5247,10 @@ fn build_continuous_view(
         offsets.push(y);
         y += h as f64 + CONTINUOUS_PAGE_GAP;
 
+        let (page_overlay, drag_preview, drag_live_rect) =
+            build_drag_preview_overlay(&picture, reader);
+        page_overlay.set_halign(gtk4::Align::Center);
+
         // Drag-to-annotate on this page's own permanent Picture — `page` is captured by
         // value, so (unlike a recycled `ListView` row) it can never go stale.
         {
@@ -5160,46 +5260,79 @@ fn build_continuous_view(
             let reader = reader.clone();
             let pdf_hash = pdf_hash.to_string();
             let this_picture = picture.clone();
-            drag.connect_drag_end(move |gesture, offset_x, offset_y| {
-                if offset_x.abs() < MIN_DRAG_PX && offset_y.abs() < MIN_DRAG_PX {
-                    return;
-                }
-                let Some((start_x, start_y)) = gesture.start_point() else {
-                    return;
-                };
-                let end_x = start_x + offset_x;
-                let end_y = start_y + offset_y;
-                let render_w = this_picture.width().max(0) as u32;
-                let render_h = this_picture.height().max(0) as u32;
-                let page_pts = {
-                    let r = reader.borrow();
-                    fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
-                };
-                let saved = save_drag_annotation(
-                    &state,
-                    &widgets,
-                    &reader,
-                    &pdf_hash,
-                    page,
-                    DragGeometry {
-                        render_w,
-                        render_h,
-                        page_w_pts: page_pts.0,
-                        page_h_pts: page_pts.1,
+            let undo_button = undo_button.clone();
+            let redo_button = redo_button.clone();
+            {
+                let live_rect = drag_live_rect.clone();
+                let drag_preview = drag_preview.clone();
+                drag.connect_drag_begin(move |_gesture, start_x, start_y| {
+                    live_rect.set(Some((start_x, start_y, start_x, start_y)));
+                    drag_preview.queue_draw();
+                });
+            }
+            {
+                let live_rect = drag_live_rect.clone();
+                let drag_preview = drag_preview.clone();
+                drag.connect_drag_update(move |gesture, offset_x, offset_y| {
+                    let Some((start_x, start_y)) = gesture.start_point() else {
+                        return;
+                    };
+                    live_rect.set(Some((
                         start_x,
                         start_y,
-                        end_x,
-                        end_y,
-                    },
-                );
-                if saved {
-                    render_continuous_page(&reader, page);
-                }
-            });
+                        start_x + offset_x,
+                        start_y + offset_y,
+                    )));
+                    drag_preview.queue_draw();
+                });
+            }
+            {
+                let live_rect = drag_live_rect.clone();
+                let drag_preview = drag_preview.clone();
+                drag.connect_drag_end(move |gesture, offset_x, offset_y| {
+                    live_rect.set(None);
+                    drag_preview.queue_draw();
+                    if offset_x.abs() < MIN_DRAG_PX && offset_y.abs() < MIN_DRAG_PX {
+                        return;
+                    }
+                    let Some((start_x, start_y)) = gesture.start_point() else {
+                        return;
+                    };
+                    let end_x = start_x + offset_x;
+                    let end_y = start_y + offset_y;
+                    let render_w = this_picture.width().max(0) as u32;
+                    let render_h = this_picture.height().max(0) as u32;
+                    let page_pts = {
+                        let r = reader.borrow();
+                        fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
+                    };
+                    let saved = save_drag_annotation(
+                        &state,
+                        &widgets,
+                        &reader,
+                        &pdf_hash,
+                        page,
+                        DragGeometry {
+                            render_w,
+                            render_h,
+                            page_w_pts: page_pts.0,
+                            page_h_pts: page_pts.1,
+                            start_x,
+                            start_y,
+                            end_x,
+                            end_y,
+                        },
+                    );
+                    if saved {
+                        render_continuous_page(&reader, page);
+                        sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
+                    }
+                });
+            }
             picture.add_controller(drag);
         }
 
-        continuous_box.append(&picture);
+        continuous_box.append(&page_overlay);
         pictures.push(picture);
     }
     offsets.push(y); // sentinel: total content height
@@ -5222,6 +5355,8 @@ fn rebuild_continuous_view_for_zoom(
     reader: &Rc<RefCell<ReaderState>>,
     pdf_hash: &str,
     continuous_box: &gtk4::Box,
+    undo_button: &gtk4::Button,
+    redo_button: &gtk4::Button,
 ) {
     if reader.borrow().continuous_pictures.is_empty() {
         return;
@@ -5235,7 +5370,15 @@ fn rebuild_continuous_view_for_zoom(
         r.continuous_offsets.clear();
         r.continuous_rendered.clear();
     }
-    build_continuous_view(state, widgets, reader, pdf_hash, continuous_box);
+    build_continuous_view(
+        state,
+        widgets,
+        reader,
+        pdf_hash,
+        continuous_box,
+        undo_button,
+        redo_button,
+    );
 }
 
 /// Re-render one page's `Picture` in continuous-scroll mode in place (after an annotation on
@@ -5288,6 +5431,61 @@ fn continuous_page_at(offsets: &[f64], y: f64) -> u16 {
     i.saturating_sub(1).min(count.saturating_sub(1)) as u16
 }
 
+/// Refresh the page-number entry/label/prev-next sensitivity for `page` (0-based) — shared
+/// by the paged view's `render()` and continuous mode's scroll-position tracker, so the two
+/// can't disagree about how the current page is displayed. Shows the document's own printed
+/// label when the PDF defines one (`page_labels[page]`), falling back to the raw 1-based
+/// file position otherwise — identical to the pre-`/PageLabels`-aware behaviour for the
+/// common case of a PDF with no custom numbering.
+fn update_page_display(
+    page_entry: &gtk4::Entry,
+    page_of_label: &gtk4::Label,
+    prev: &gtk4::Button,
+    next: &gtk4::Button,
+    page: u16,
+    count: u16,
+    page_labels: &[Option<String>],
+) {
+    let raw = (page + 1).to_string();
+    let label = page_labels
+        .get(page as usize)
+        .and_then(|l| l.clone())
+        .unwrap_or_else(|| raw.clone());
+    page_entry.set_text(&label);
+    page_of_label.set_text(&format!("of {count}"));
+    // The tooltip always gives the raw file position too — a PDF's `/PageLabels` isn't
+    // required to be unique or even present on every page, but the raw number is the one
+    // every internal API here (`Annotation.page`, `PdfSearchMatch.page`, `Contents` targets)
+    // always means, so it's worth surfacing even when the printed label differs.
+    page_entry.set_tooltip_text(Some(&format!("Page {raw} of {count} in the file")));
+    prev.set_sensitive(page > 0);
+    next.set_sensitive(page + 1 < count);
+}
+
+/// Resolve typed text in the page-number entry to a 0-based page index: an exact match
+/// against the document's own printed labels first (case-insensitive, since a roman numeral
+/// typed in the "wrong" case should still work), falling back to parsing it as a raw 1-based
+/// file page number — so typing still works exactly as before on a PDF with no
+/// `/PageLabels`, and a user who prefers raw numbers can always use them even on one that
+/// has them.
+fn find_page_by_label(page_labels: &[Option<String>], text: &str) -> Option<u16> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Some(idx) = page_labels.iter().position(|l| l.as_deref() == Some(text)) {
+        return Some(idx as u16);
+    }
+    let lower = text.to_lowercase();
+    if let Some(idx) = page_labels
+        .iter()
+        .position(|l| l.as_deref().map(|s| s.to_lowercase()) == Some(lower.clone()))
+    {
+        return Some(idx as u16);
+    }
+    text.parse::<u16>().ok().and_then(|n| n.checked_sub(1))
+}
+
 /// A built-in PDF reader: renders pages with PDFium to RGBA textures, with page navigation,
 /// zoom, and click-drag highlighting. No Poppler (GPL) — pure PDFium (BSD), the same binding
 /// used for text extraction. Highlights are the on-disk `Annotation` sidecar format `fond-bib`
@@ -5331,6 +5529,9 @@ fn show_pdf_reader(
     // Empty for most PDFs — outlines are the exception, not the rule — so the Contents
     // button below only appears when there's actually something to jump to.
     let outline_entries = fond_doc::outline(&pdfium, &bytes).unwrap_or_default();
+    // Likewise empty for most PDFs (no custom /PageLabels) — falls back to the raw page
+    // number wherever it's displayed.
+    let page_labels = fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
 
     let annotations = state
         .borrow()
@@ -5358,6 +5559,9 @@ fn show_pdf_reader(
         continuous_pictures: Vec::new(),
         continuous_offsets: Vec::new(),
         continuous_rendered: Vec::new(),
+        page_labels,
+        undo_stack: Vec::new(),
+        redo_stack: Vec::new(),
     }));
 
     let dialog = adw::Window::new();
@@ -5373,11 +5577,21 @@ fn show_pdf_reader(
     prev.set_tooltip_text(Some("Previous page"));
     let next = gtk4::Button::from_icon_name("go-next-symbolic");
     next.set_tooltip_text(Some("Next page"));
-    let page_label = gtk4::Label::new(None);
-    page_label.add_css_class("dim-label");
+    // Shows (and, on Enter, navigates by) the *document's own* printed page number — its
+    // `/PageLabels` numbering, e.g. roman-numeral front matter restarting at arabic "1" for
+    // the body — the way Zotero's reader does, rather than always the raw file position.
+    // Most PDFs have no `/PageLabels` at all, in which case this just shows the raw number,
+    // identical to before.
+    let page_entry = gtk4::Entry::new();
+    page_entry.set_width_chars(5);
+    page_entry.set_max_width_chars(5);
+    gtk4::prelude::EntryExt::set_alignment(&page_entry, 0.5);
+    let page_of_label = gtk4::Label::new(None);
+    page_of_label.add_css_class("dim-label");
     let nav = gtk4::Box::new(Orientation::Horizontal, 6);
     nav.append(&prev);
-    nav.append(&page_label);
+    nav.append(&page_entry);
+    nav.append(&page_of_label);
     nav.append(&next);
     header.set_title_widget(Some(&nav));
 
@@ -5397,11 +5611,16 @@ fn show_pdf_reader(
     let color_drop = gtk4::DropDown::from_strings(&color_labels);
     color_drop.set_tooltip_text(Some("Highlight colour"));
 
-    // Only present when the PDF actually has an outline — most don't. Built and wired below
-    // (after `render`/`reader` exist), but declared and packed here alongside the rest of
-    // the header so the pack_end ordering comment covers it too.
-    let contents_button = (!outline_entries.is_empty())
-        .then(|| gtk4::MenuButton::builder().label("Contents").build());
+    // Only present when the PDF actually has an outline — most don't. Toggles a persistent
+    // sidebar (built below, after `render`/`reader` exist) rather than a popover, per
+    // CLAUDE.md's house sidebar style: toggle at the *start* of the headerbar, content as a
+    // collapsible Paned start-child.
+    let sidebar_toggle = (!outline_entries.is_empty()).then(|| {
+        let button = gtk4::ToggleButton::new();
+        button.set_icon_name("sidebar-show-symbolic");
+        button.set_tooltip_text(Some("Show the table of contents"));
+        button
+    });
 
     // The current page's annotations, inline — an alternative to the separate
     // "Annotations…" dialog (still available from the detail pane, and still the only way
@@ -5416,10 +5635,19 @@ fn show_pdf_reader(
         "Scroll continuously through every page, instead of one page at a time",
     ));
 
+    let undo_button = gtk4::Button::from_icon_name("edit-undo-symbolic");
+    undo_button.set_tooltip_text(Some("Undo (Ctrl+Z)"));
+    undo_button.set_sensitive(false);
+    let redo_button = gtk4::Button::from_icon_name("edit-redo-symbolic");
+    redo_button.set_tooltip_text(Some("Redo (Ctrl+Shift+Z)"));
+    redo_button.set_sensitive(false);
+
     // pack_end order is the reverse of visual order (last-packed ends up leftmost) — same
     // gotcha CLAUDE.md notes for the hamburger menu. Visual order here, left to right:
-    // Contents (if present), This page, Continuous, mode picker, colour picker, Note,
-    // zoom in, zoom out.
+    // This page, Continuous, mode picker, colour picker, Note, zoom in, zoom out. The
+    // Contents sidebar toggle and Undo/Redo live at the *start* of the headerbar instead
+    // (house style for the sidebar toggle; Undo/Redo follow it for the same "persistent
+    // chrome, not a per-mode control" reasoning).
     header.pack_end(&zoom_out);
     header.pack_end(&zoom_in);
     header.pack_end(&note_button);
@@ -5427,9 +5655,11 @@ fn show_pdf_reader(
     header.pack_end(&mode_drop);
     header.pack_end(&continuous_toggle);
     header.pack_end(&page_annots_button);
-    if let Some(contents_button) = &contents_button {
-        header.pack_end(contents_button);
+    if let Some(sidebar_toggle) = &sidebar_toggle {
+        header.pack_start(sidebar_toggle);
     }
+    header.pack_start(&undo_button);
+    header.pack_start(&redo_button);
     view.add_top_bar(&header);
 
     let hint = gtk4::Label::new(Some("Drag over the page to add a highlight"));
@@ -5462,8 +5692,12 @@ fn show_pdf_reader(
     picture.set_halign(gtk4::Align::Center);
     picture.set_valign(gtk4::Align::Start);
     picture.set_can_target(true);
+    let (picture_overlay, drag_preview, drag_live_rect) =
+        build_drag_preview_overlay(&picture, &reader);
+    picture_overlay.set_halign(gtk4::Align::Center);
+    picture_overlay.set_valign(gtk4::Align::Start);
     let scroll = gtk4::ScrolledWindow::new();
-    scroll.set_child(Some(&picture));
+    scroll.set_child(Some(&picture_overlay));
     scroll.set_vexpand(true);
     scroll.set_hexpand(true);
 
@@ -5487,7 +5721,12 @@ fn show_pdf_reader(
     content.append(&search_row);
     content.append(&hint);
     content.append(&view_stack);
-    view.set_content(Some(&content));
+    // If there's a Contents sidebar, `content` gets reparented into its Paned below instead
+    // (setting it here first would leave it parented to `view`, and `Paned::set_end_child`
+    // asserts its child has no existing parent).
+    if sidebar_toggle.is_none() {
+        view.set_content(Some(&content));
+    }
     dialog.set_content(Some(&view));
 
     // Render the current page into the Picture (via the shared helper both this view and
@@ -5495,7 +5734,8 @@ fn show_pdf_reader(
     let render = {
         let reader = reader.clone();
         let picture = picture.clone();
-        let page_label = page_label.clone();
+        let page_entry = page_entry.clone();
+        let page_of_label = page_of_label.clone();
         let prev = prev.clone();
         let next = next.clone();
         Rc::new(move || {
@@ -5509,12 +5749,196 @@ fn show_pdf_reader(
                 }
                 None => picture.set_paintable(gdk::Paintable::NONE),
             }
-            page_label.set_text(&format!("Page {} of {}", r.page + 1, r.count));
-            prev.set_sensitive(r.page > 0);
-            next.set_sensitive(r.page + 1 < r.count);
+            update_page_display(
+                &page_entry,
+                &page_of_label,
+                &prev,
+                &next,
+                r.page,
+                r.count,
+                &r.page_labels,
+            );
         })
     };
     render();
+
+    // Undo/redo: a snapshot doesn't record which page(s) it touched, so pop it and
+    // re-render everything — cheap even in continuous mode, since each page's blend is just
+    // a texture re-render, not a re-parse of the PDF.
+    let rerender_all_pages = {
+        let reader = reader.clone();
+        let render = render.clone();
+        Rc::new(move || {
+            render();
+            let count = reader.borrow().count;
+            for page in 0..count {
+                render_continuous_page(&reader, page);
+            }
+        })
+    };
+    let undo = {
+        let reader = reader.clone();
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let rerender_all_pages = rerender_all_pages.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
+        Rc::new(move || {
+            let popped = {
+                let mut r = reader.borrow_mut();
+                match r.undo_stack.pop() {
+                    Some(prev) => {
+                        let current = r.annotations.clone();
+                        r.redo_stack.push(current);
+                        r.annotations = prev;
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if !popped {
+                toast(&widgets, "Nothing to undo");
+                return;
+            }
+            let write_result = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+            };
+            match write_result {
+                Some(Ok(_)) => {
+                    rerender_all_pages();
+                    toast(&widgets, "Undid last annotation change");
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not undo: {e}")),
+                None => toast(&widgets, "No open library"),
+            }
+            sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
+        })
+    };
+    let redo = {
+        let reader = reader.clone();
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let rerender_all_pages = rerender_all_pages.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
+        Rc::new(move || {
+            let popped = {
+                let mut r = reader.borrow_mut();
+                match r.redo_stack.pop() {
+                    Some(next) => {
+                        let current = r.annotations.clone();
+                        r.undo_stack.push(current);
+                        r.annotations = next;
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if !popped {
+                toast(&widgets, "Nothing to redo");
+                return;
+            }
+            let write_result = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+            };
+            match write_result {
+                Some(Ok(_)) => {
+                    rerender_all_pages();
+                    toast(&widgets, "Redid annotation change");
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not redo: {e}")),
+                None => toast(&widgets, "No open library"),
+            }
+            sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
+        })
+    };
+    {
+        let undo = undo.clone();
+        undo_button.connect_clicked(move |_| undo());
+    }
+    {
+        let redo = redo.clone();
+        redo_button.connect_clicked(move |_| redo());
+    }
+    {
+        let key_controller = gtk4::EventControllerKey::new();
+        let undo = undo.clone();
+        let redo = redo.clone();
+        key_controller.connect_key_pressed(move |_, keyval, _keycode, modifiers| {
+            if keyval == gdk::Key::z && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+                if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+                    redo();
+                } else {
+                    undo();
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        dialog.add_controller(key_controller);
+    }
+
+    // Contents sidebar: persistent (not a popover) so the outline stays visible while
+    // navigating, per Cal's request. Built eagerly (cheap — just labels) but hidden by
+    // default via the Paned's start-child being unset; the toggle attaches/detaches the same
+    // widget rather than rebuilding it. Row clicks reuse the same mode-aware jump logic the
+    // old popover used.
+    if let Some(sidebar_toggle) = &sidebar_toggle {
+        let rows = gtk4::Box::new(Orientation::Vertical, 2);
+        rows.set_margin_top(6);
+        rows.set_margin_bottom(6);
+        rows.set_margin_start(6);
+        rows.set_margin_end(6);
+        for entry in &outline_entries {
+            let label = format!("{}{}", "    ".repeat(entry.depth as usize), entry.title);
+            let row = popover_button(&label, false);
+            if let Some(page) = entry.page {
+                let reader = reader.clone();
+                let render = render.clone();
+                let continuous_toggle = continuous_toggle.clone();
+                let continuous_scroll = continuous_scroll.clone();
+                row.connect_clicked(move |_| {
+                    let target = {
+                        let r = reader.borrow();
+                        (page.saturating_sub(1)).min(r.count.saturating_sub(1))
+                    };
+                    if continuous_toggle.is_active() {
+                        scroll_continuous_to_page(&reader, &continuous_scroll, target);
+                    } else {
+                        reader.borrow_mut().page = target;
+                        render();
+                    }
+                });
+            } else {
+                row.set_sensitive(false);
+            }
+            rows.append(&row);
+        }
+        let sidebar_scroll = gtk4::ScrolledWindow::new();
+        sidebar_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        sidebar_scroll.set_child(Some(&rows));
+        sidebar_scroll.set_width_request(220);
+        sidebar_scroll.set_vexpand(true);
+
+        let paned = gtk4::Paned::new(Orientation::Horizontal);
+        paned.set_start_child(gtk4::Widget::NONE);
+        paned.set_resize_start_child(false);
+        paned.set_shrink_start_child(false);
+        paned.set_end_child(Some(&content));
+        paned.set_vexpand(true);
+        paned.set_hexpand(true);
+
+        view.set_content(Some(&paned));
+        sidebar_toggle.connect_toggled(move |btn| {
+            paned.set_start_child(btn.is_active().then_some(&sidebar_scroll));
+        });
+    }
 
     // Click-drag on the page creates a highlight: the dragged rectangle (in the render's own
     // pixel grid — the Picture is size-requested to exactly that, so widget-local coordinates
@@ -5527,51 +5951,84 @@ fn show_pdf_reader(
         let state = state.clone();
         let widgets = widgets.clone();
         let pdf_hash = pdf_hash.to_string();
-        drag.connect_drag_end(move |gesture, offset_x, offset_y| {
-            if offset_x.abs() < MIN_DRAG_PX && offset_y.abs() < MIN_DRAG_PX {
-                return;
-            }
-            let Some((start_x, start_y)) = gesture.start_point() else {
-                return;
-            };
-            let end_x = start_x + offset_x;
-            let end_y = start_y + offset_y;
-
-            let (page, render_w, render_h, page_w_pts, page_h_pts) = {
-                let r = reader.borrow();
-                (
-                    r.page,
-                    r.render_px.0,
-                    r.render_px.1,
-                    r.page_pts.0,
-                    r.page_pts.1,
-                )
-            };
-            let saved = save_drag_annotation(
-                &state,
-                &widgets,
-                &reader,
-                &pdf_hash,
-                page,
-                DragGeometry {
-                    render_w,
-                    render_h,
-                    page_w_pts,
-                    page_h_pts,
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
+        {
+            let live_rect = drag_live_rect.clone();
+            let drag_preview = drag_preview.clone();
+            drag.connect_drag_begin(move |_gesture, start_x, start_y| {
+                live_rect.set(Some((start_x, start_y, start_x, start_y)));
+                drag_preview.queue_draw();
+            });
+        }
+        {
+            let live_rect = drag_live_rect.clone();
+            let drag_preview = drag_preview.clone();
+            drag.connect_drag_update(move |gesture, offset_x, offset_y| {
+                let Some((start_x, start_y)) = gesture.start_point() else {
+                    return;
+                };
+                live_rect.set(Some((
                     start_x,
                     start_y,
-                    end_x,
-                    end_y,
-                },
-            );
-            if saved {
-                render();
-                // Keep continuous mode's copy of this page in sync too, in case it was
-                // already built from an earlier toggle-on and the user drew this highlight
-                // after switching back to the paged view.
-                render_continuous_page(&reader, page);
-            }
-        });
+                    start_x + offset_x,
+                    start_y + offset_y,
+                )));
+                drag_preview.queue_draw();
+            });
+        }
+        {
+            let live_rect = drag_live_rect.clone();
+            let drag_preview = drag_preview.clone();
+            drag.connect_drag_end(move |gesture, offset_x, offset_y| {
+                live_rect.set(None);
+                drag_preview.queue_draw();
+                if offset_x.abs() < MIN_DRAG_PX && offset_y.abs() < MIN_DRAG_PX {
+                    return;
+                }
+                let Some((start_x, start_y)) = gesture.start_point() else {
+                    return;
+                };
+                let end_x = start_x + offset_x;
+                let end_y = start_y + offset_y;
+
+                let (page, render_w, render_h, page_w_pts, page_h_pts) = {
+                    let r = reader.borrow();
+                    (
+                        r.page,
+                        r.render_px.0,
+                        r.render_px.1,
+                        r.page_pts.0,
+                        r.page_pts.1,
+                    )
+                };
+                let saved = save_drag_annotation(
+                    &state,
+                    &widgets,
+                    &reader,
+                    &pdf_hash,
+                    page,
+                    DragGeometry {
+                        render_w,
+                        render_h,
+                        page_w_pts,
+                        page_h_pts,
+                        start_x,
+                        start_y,
+                        end_x,
+                        end_y,
+                    },
+                );
+                if saved {
+                    render();
+                    // Keep continuous mode's copy of this page in sync too, in case it was
+                    // already built from an earlier toggle-on and the user drew this
+                    // highlight after switching back to the paged view.
+                    render_continuous_page(&reader, page);
+                    sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
+                }
+            });
+        }
         picture.add_controller(drag);
     }
 
@@ -5627,13 +6084,23 @@ fn show_pdf_reader(
         let continuous_box = continuous_box.clone();
         let continuous_toggle = continuous_toggle.clone();
         let continuous_scroll = continuous_scroll.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
         zoom_in.connect_clicked(move |_| {
             {
                 let mut r = reader.borrow_mut();
                 r.zoom = (r.zoom * 1.25).min(4.0);
             }
             render();
-            rebuild_continuous_view_for_zoom(&state, &widgets, &reader, &pdf_hash, &continuous_box);
+            rebuild_continuous_view_for_zoom(
+                &state,
+                &widgets,
+                &reader,
+                &pdf_hash,
+                &continuous_box,
+                &undo_button,
+                &redo_button,
+            );
             if continuous_toggle.is_active() {
                 let page = reader.borrow().page;
                 scroll_continuous_to_page(&reader, &continuous_scroll, page);
@@ -5649,13 +6116,23 @@ fn show_pdf_reader(
         let continuous_box = continuous_box.clone();
         let continuous_toggle = continuous_toggle.clone();
         let continuous_scroll = continuous_scroll.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
         zoom_out.connect_clicked(move |_| {
             {
                 let mut r = reader.borrow_mut();
                 r.zoom = (r.zoom / 1.25).max(0.35);
             }
             render();
-            rebuild_continuous_view_for_zoom(&state, &widgets, &reader, &pdf_hash, &continuous_box);
+            rebuild_continuous_view_for_zoom(
+                &state,
+                &widgets,
+                &reader,
+                &pdf_hash,
+                &continuous_box,
+                &undo_button,
+                &redo_button,
+            );
             if continuous_toggle.is_active() {
                 let page = reader.borrow().page;
                 scroll_continuous_to_page(&reader, &continuous_scroll, page);
@@ -5670,7 +6147,8 @@ fn show_pdf_reader(
     // matter which view is currently visible.
     {
         let reader = reader.clone();
-        let page_label = page_label.clone();
+        let page_entry = page_entry.clone();
+        let page_of_label = page_of_label.clone();
         let prev = prev.clone();
         let next = next.clone();
         continuous_scroll
@@ -5682,9 +6160,15 @@ fn show_pdf_reader(
                 }
                 let page = continuous_page_at(&r.continuous_offsets, adj.value());
                 r.page = page;
-                page_label.set_text(&format!("Page {} of {}", page + 1, r.count));
-                prev.set_sensitive(page > 0);
-                next.set_sensitive(page + 1 < r.count);
+                update_page_display(
+                    &page_entry,
+                    &page_of_label,
+                    &prev,
+                    &next,
+                    page,
+                    r.count,
+                    &r.page_labels,
+                );
             });
     }
     {
@@ -5696,15 +6180,75 @@ fn show_pdf_reader(
         let continuous_box = continuous_box.clone();
         let continuous_scroll = continuous_scroll.clone();
         let view_stack = view_stack.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
         continuous_toggle.connect_toggled(move |btn| {
             if btn.is_active() {
-                build_continuous_view(&state, &widgets, &reader, &pdf_hash, &continuous_box);
+                build_continuous_view(
+                    &state,
+                    &widgets,
+                    &reader,
+                    &pdf_hash,
+                    &continuous_box,
+                    &undo_button,
+                    &redo_button,
+                );
                 view_stack.set_visible_child_name("continuous");
                 let page = reader.borrow().page;
                 scroll_continuous_to_page(&reader, &continuous_scroll, page);
             } else {
                 view_stack.set_visible_child_name("paged");
                 render();
+            }
+        });
+    }
+    // Typing a page number (the document's own printed label, or a raw file page number —
+    // see `find_page_by_label`) and pressing Enter jumps there, the way Zotero's reader lets
+    // you navigate by the printed page number rather than always the raw file position.
+    {
+        let reader = reader.clone();
+        let render = render.clone();
+        let widgets = widgets.clone();
+        let page_entry = page_entry.clone();
+        let page_of_label = page_of_label.clone();
+        let prev = prev.clone();
+        let next = next.clone();
+        let continuous_toggle = continuous_toggle.clone();
+        let continuous_scroll = continuous_scroll.clone();
+        page_entry.clone().connect_activate(move |entry| {
+            let text = entry.text();
+            let target = {
+                let r = reader.borrow();
+                find_page_by_label(&r.page_labels, &text)
+            };
+            match target {
+                Some(page) if page < reader.borrow().count => {
+                    if continuous_toggle.is_active() {
+                        scroll_continuous_to_page(&reader, &continuous_scroll, page);
+                    } else {
+                        reader.borrow_mut().page = page;
+                        render();
+                    }
+                }
+                _ => {
+                    toast(&widgets, "No such page");
+                    // Revert to the current page's actual label/number rather than leaving
+                    // the entry showing whatever unresolvable text was typed.
+                    let (page, count) = {
+                        let r = reader.borrow();
+                        (r.page, r.count)
+                    };
+                    let labels = reader.borrow().page_labels.clone();
+                    update_page_display(
+                        &page_entry,
+                        &page_of_label,
+                        &prev,
+                        &next,
+                        page,
+                        count,
+                        &labels,
+                    );
+                }
             }
         });
     }
@@ -5740,8 +6284,17 @@ fn show_pdf_reader(
         let widgets = widgets.clone();
         let reader = reader.clone();
         let pdf_hash = pdf_hash.to_string();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
         note_button.connect_clicked(move |_| {
-            show_pdf_note_dialog(&state, &widgets, &reader, &pdf_hash);
+            show_pdf_note_dialog(
+                &state,
+                &widgets,
+                &reader,
+                &pdf_hash,
+                &undo_button,
+                &redo_button,
+            );
         });
     }
     {
@@ -5754,6 +6307,8 @@ fn show_pdf_reader(
         let widgets = widgets.clone();
         let reader = reader.clone();
         let render = render.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
         popover.connect_show(move |popover| {
             let current_page = reader.borrow().page as u32 + 1;
             let mut this_page: Vec<fond_bib::Annotation> = reader
@@ -5784,26 +6339,90 @@ fn show_pdf_reader(
             }
             let last = this_page.len().saturating_sub(1);
             for (i, annotation) in this_page.into_iter().enumerate() {
+                let outer = gtk4::Box::new(Orientation::Vertical, 2);
+
                 let row_box = gtk4::Box::new(Orientation::Horizontal, 6);
-                let label_text = format!(
-                    "{:?}{}",
-                    annotation.kind,
-                    annotation
-                        .note
-                        .as_deref()
-                        .map(|n| format!(" — {n}"))
-                        .unwrap_or_default()
-                );
-                let label = gtk4::Label::new(Some(&label_text));
-                label.set_xalign(0.0);
-                label.set_hexpand(true);
-                label.set_wrap(true);
-                label.set_max_width_chars(28);
-                row_box.append(&label);
+                let kind_label = gtk4::Label::new(Some(&format!("{:?}", annotation.kind)));
+                kind_label.set_xalign(0.0);
+                kind_label.set_hexpand(true);
+                row_box.append(&kind_label);
 
                 let delete_button = gtk4::Button::from_icon_name("user-trash-symbolic");
                 delete_button.add_css_class("flat");
                 delete_button.set_tooltip_text(Some("Delete this annotation"));
+                row_box.append(&delete_button);
+                outer.append(&row_box);
+
+                // Editable inline, like the whole-document "Annotations…" dialog — save on
+                // Enter or when the field loses focus, same "save as you go" convention as
+                // the rest of the app's inline-edit fields.
+                let note_entry = gtk4::Entry::new();
+                note_entry.set_placeholder_text(Some("No note"));
+                note_entry.set_width_chars(24);
+                if let Some(note) = &annotation.note {
+                    note_entry.set_text(note);
+                }
+                outer.append(&note_entry);
+
+                let save_note = {
+                    let state = state.clone();
+                    let widgets = widgets.clone();
+                    let reader = reader.clone();
+                    let id = annotation.id.clone();
+                    let undo_button = undo_button.clone();
+                    let redo_button = redo_button.clone();
+                    move |text: &str| {
+                        let text = text.trim();
+                        let current_note = reader
+                            .borrow()
+                            .annotations
+                            .annotations
+                            .iter()
+                            .find(|a| a.id == id)
+                            .and_then(|a| a.note.clone());
+                        if current_note.as_deref().unwrap_or("") == text {
+                            return;
+                        }
+                        push_undo_snapshot(&reader);
+                        {
+                            let mut r = reader.borrow_mut();
+                            if let Some(a) =
+                                r.annotations.annotations.iter_mut().find(|a| a.id == id)
+                            {
+                                a.note = (!text.is_empty()).then(|| text.to_string());
+                            }
+                        }
+                        let write_result = {
+                            let s = state.borrow();
+                            s.library
+                                .as_ref()
+                                .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+                        };
+                        match write_result {
+                            Some(Ok(_)) => {
+                                sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
+                            }
+                            Some(Err(e)) => toast(&widgets, &format!("Could not save note: {e}")),
+                            None => toast(&widgets, "No open library"),
+                        }
+                    }
+                };
+                {
+                    let save_note = save_note.clone();
+                    note_entry.connect_activate(move |e| save_note(&e.text()));
+                }
+                {
+                    let focus = gtk4::EventControllerFocus::new();
+                    let save_note = save_note.clone();
+                    let note_entry_weak = note_entry.downgrade();
+                    focus.connect_leave(move |_| {
+                        if let Some(e) = note_entry_weak.upgrade() {
+                            save_note(&e.text());
+                        }
+                    });
+                    note_entry.add_controller(focus);
+                }
+
                 {
                     let state = state.clone();
                     let widgets = widgets.clone();
@@ -5811,7 +6430,10 @@ fn show_pdf_reader(
                     let render = render.clone();
                     let popover = popover.clone();
                     let id = annotation.id.clone();
+                    let undo_button = undo_button.clone();
+                    let redo_button = redo_button.clone();
                     delete_button.connect_clicked(move |_| {
+                        push_undo_snapshot(&reader);
                         reader
                             .borrow_mut()
                             .annotations
@@ -5828,6 +6450,7 @@ fn show_pdf_reader(
                                 render();
                                 let page = reader.borrow().page;
                                 render_continuous_page(&reader, page);
+                                sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                                 toast(&widgets, "Annotation deleted");
                             }
                             Some(Err(e)) => toast(&widgets, &format!("Could not delete: {e}")),
@@ -5836,8 +6459,7 @@ fn show_pdf_reader(
                         popover.popdown();
                     });
                 }
-                row_box.append(&delete_button);
-                rows.append(&row_box);
+                rows.append(&outer);
                 if i != last {
                     rows.append(&popover_separator());
                 }
@@ -5850,44 +6472,6 @@ fn show_pdf_reader(
             popover.set_child(Some(&scroller));
         });
     }
-    if let Some(contents_button) = &contents_button {
-        let (popover, rows) = popover_menu(260);
-        let last = outline_entries.len().saturating_sub(1);
-        for (i, entry) in outline_entries.iter().enumerate() {
-            // Indent by depth with a plain prefix rather than margins — simplest way to show
-            // nesting in a flat popover row list.
-            let label = format!("{}{}", "    ".repeat(entry.depth as usize), entry.title);
-            let row = popover_button(&label, false);
-            if let Some(page) = entry.page {
-                let popover = popover.clone();
-                let reader = reader.clone();
-                let render = render.clone();
-                let continuous_toggle = continuous_toggle.clone();
-                let continuous_scroll = continuous_scroll.clone();
-                row.connect_clicked(move |_| {
-                    popover.popdown();
-                    let target = {
-                        let r = reader.borrow();
-                        (page.saturating_sub(1)).min(r.count.saturating_sub(1))
-                    };
-                    if continuous_toggle.is_active() {
-                        scroll_continuous_to_page(&reader, &continuous_scroll, target);
-                    } else {
-                        reader.borrow_mut().page = target;
-                        render();
-                    }
-                });
-            } else {
-                row.set_sensitive(false);
-            }
-            rows.append(&row);
-            if i != last {
-                rows.append(&popover_separator());
-            }
-        }
-        contents_button.set_popover(Some(&popover));
-    }
-
     // Search: run on Enter (not per-keystroke — PDFium re-searches every page each time, not
     // worth doing on every character typed), jumping straight to the first match's page.
     // Prev/Next cycle `search_current` with wraparound; the count label and match highlight
@@ -6072,6 +6656,8 @@ fn show_pdf_note_dialog(
     widgets: &Rc<Widgets>,
     reader: &Rc<RefCell<ReaderState>>,
     pdf_hash: &str,
+    undo_button: &gtk4::Button,
+    redo_button: &gtk4::Button,
 ) {
     let current_page = reader.borrow().page as u32 + 1;
 
@@ -6116,6 +6702,8 @@ fn show_pdf_note_dialog(
         let reader = reader.clone();
         let pdf_hash = pdf_hash.to_string();
         let text_view = text_view.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
         save.connect_clicked(move |_| {
             let buffer = text_view.buffer();
             let text = buffer
@@ -6135,6 +6723,7 @@ fn show_pdf_note_dialog(
                 Some(text),
                 None,
             );
+            push_undo_snapshot(&reader);
             {
                 let mut r = reader.borrow_mut();
                 r.annotations.pdf_hash = Some(pdf_hash.clone());
@@ -6148,6 +6737,7 @@ fn show_pdf_note_dialog(
             };
             match write_result {
                 Some(Ok(_)) => {
+                    sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                     toast(&widgets, "Note added");
                     dialog.close();
                 }

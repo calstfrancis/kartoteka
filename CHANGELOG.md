@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.2.0-dev3] — 2026-08-13 — Built-in EPUB reader and PDF reader polish
+## [0.2.0] "Marked Folio" — 2026-08-13 — Built-in EPUB reader and PDF reader polish
 
 A built-in EPUB reader, alongside the existing PDF one: chapter navigation, a table-of-
 contents jump list (from the EPUB3 nav document or the EPUB2 NCX), and proper rendering of
@@ -39,6 +39,21 @@ The PDF reader itself also gained a round of polish:
 - **Continuous scroll**: a "Continuous" toggle switches from page-by-page to scrolling
   smoothly through every page in one view — highlighting, search, and navigation all work
   the same way in either mode, and switching between them keeps your place.
+- **Document page numbers, Zotero-style**: for a PDF that defines its own printed page
+  numbering (roman-numeral front matter, an index restarting at 1, etc.), the reader now
+  shows and lets you type that printed number instead of always the raw position in the
+  file — type "iv" or "1" and it jumps to the actual page the document itself calls that.
+
+A further round of PDF reader polish:
+- **Contents is now a persistent sidebar**, not a popover — toggle it from the headerbar and
+  it stays open while you navigate, instead of closing after every jump.
+- **Live drag preview**: dragging to highlight/underline/strikeout now shows the region in
+  your current colour *while* you're dragging, instead of only appearing once you let go.
+- **Undo/redo** for every annotation change — a new highlight, a note, a deletion, or a note
+  edit. Undo/Redo buttons in the header, or Ctrl+Z / Ctrl+Shift+Z.
+- **"This page" annotations are now editable, not just deletable** — each row has an inline
+  note field (save on Enter or on losing focus), matching the whole-document "Annotations…"
+  dialog instead of requiring you to open that separate dialog just to edit a note.
 
 ## [0.1.1] "Tidy Shelf" — 2026-08-13 — Internal: CI format-check fix
 
