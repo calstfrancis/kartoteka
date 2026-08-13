@@ -59,8 +59,16 @@ fn selects_text_spanning_two_lines_as_two_quads() {
         .expect("expected a selection covering both lines");
 
     assert_eq!(selection.quads.len(), 2, "one quad per line: {selection:?}");
-    assert!(selection.text.contains("first"), "got: {:?}", selection.text);
-    assert!(selection.text.contains("second"), "got: {:?}", selection.text);
+    assert!(
+        selection.text.contains("first"),
+        "got: {:?}",
+        selection.text
+    );
+    assert!(
+        selection.text.contains("second"),
+        "got: {:?}",
+        selection.text
+    );
 }
 
 #[test]
@@ -80,8 +88,16 @@ fn selects_text_within_a_single_line_only() {
         .expect("expected a selection covering the first line");
 
     assert_eq!(selection.quads.len(), 1, "one line only: {selection:?}");
-    assert!(selection.text.contains("first"), "got: {:?}", selection.text);
-    assert!(!selection.text.contains("second"), "got: {:?}", selection.text);
+    assert!(
+        selection.text.contains("first"),
+        "got: {:?}",
+        selection.text
+    );
+    assert!(
+        !selection.text.contains("second"),
+        "got: {:?}",
+        selection.text
+    );
 }
 
 #[test]

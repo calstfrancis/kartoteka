@@ -304,7 +304,8 @@ pub fn blend_highlights(
                 }
                 for (channel, &fg) in rgba.iter().enumerate().take(3) {
                     let bg = page.rgba[idx + channel] as f32;
-                    page.rgba[idx + channel] = (bg * (1.0 - alpha) + fg as f32 * alpha).round() as u8;
+                    page.rgba[idx + channel] =
+                        (bg * (1.0 - alpha) + fg as f32 * alpha).round() as u8;
                 }
             }
         }
@@ -410,7 +411,10 @@ fn scan_isbn_candidate(text: &str, start: usize) -> Option<String> {
         let two: String = chars[i..i + 2].iter().collect();
         let after = i + 2;
         let is_label_token = (two == "10" || two == "13")
-            && chars.get(after).map(|c| !c.is_ascii_digit()).unwrap_or(true);
+            && chars
+                .get(after)
+                .map(|c| !c.is_ascii_digit())
+                .unwrap_or(true);
         if is_label_token {
             i = after;
             let lead2 = i;
@@ -579,7 +583,11 @@ mod tests {
 
         // Center pixel (5,5) is inside the quad and inside the flipped pixel-space box.
         let idx = ((5 * page.width + 5) * 4) as usize;
-        assert_ne!(&page.rgba[idx..idx + 3], &[255, 255, 255], "center pixel should be tinted");
+        assert_ne!(
+            &page.rgba[idx..idx + 3],
+            &[255, 255, 255],
+            "center pixel should be tinted"
+        );
         // Corner pixel (0,0) is outside the quad and must stay untouched.
         assert_eq!(&page.rgba[0..3], &[255, 255, 255]);
     }
@@ -588,7 +596,13 @@ mod tests {
     fn blend_highlights_is_a_noop_for_degenerate_page_size() {
         let mut page = white_page(4);
         let before = page.rgba.clone();
-        blend_highlights(&mut page, 0.0, 10.0, &[[0.0, 4.0, 4.0, 4.0, 0.0, 0.0, 4.0, 0.0]], [255, 0, 0, 255]);
+        blend_highlights(
+            &mut page,
+            0.0,
+            10.0,
+            &[[0.0, 4.0, 4.0, 4.0, 0.0, 0.0, 4.0, 0.0]],
+            [255, 0, 0, 255],
+        );
         assert_eq!(page.rgba, before);
     }
 }

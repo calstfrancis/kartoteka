@@ -466,14 +466,27 @@ fn openlibrary_date_to_hayagriva(text: &str) -> Option<String> {
 /// English month name (or a >=3 letter abbreviation of one) to its 1-12 number.
 fn month_number(word: &str) -> Option<u8> {
     const NAMES: [&str; 12] = [
-        "january", "february", "march", "april", "may", "june", "july", "august", "september",
-        "october", "november", "december",
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
     ];
     let lower = word.to_ascii_lowercase();
     if lower.len() < 3 {
         return None;
     }
-    NAMES.iter().position(|n| n.starts_with(&lower)).map(|i| (i + 1) as u8)
+    NAMES
+        .iter()
+        .position(|n| n.starts_with(&lower))
+        .map(|i| (i + 1) as u8)
 }
 
 fn year_from_text(s: &str) -> Option<i32> {
@@ -497,8 +510,8 @@ mod tests {
 
     #[test]
     fn minimal_book_yaml_carries_isbn_when_present() {
-        let yaml = minimal_book_yaml("The Republic", Some("Plato"), Some(" 978-0-14-044913-6 "))
-            .unwrap();
+        let yaml =
+            minimal_book_yaml("The Republic", Some("Plato"), Some(" 978-0-14-044913-6 ")).unwrap();
         assert!(yaml.contains("title: The Republic"));
         assert!(yaml.contains("author: Plato"));
         assert!(yaml.contains("isbn: 978-0-14-044913-6"), "got: {yaml}");
@@ -596,7 +609,10 @@ mod tests {
             openlibrary_date_to_hayagriva("10/2007"),
             Some("2007-10".to_string())
         );
-        assert_eq!(openlibrary_date_to_hayagriva("2007"), Some("2007".to_string()));
+        assert_eq!(
+            openlibrary_date_to_hayagriva("2007"),
+            Some("2007".to_string())
+        );
         assert_eq!(openlibrary_date_to_hayagriva("no date here"), None);
     }
 }

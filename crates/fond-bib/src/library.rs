@@ -633,7 +633,12 @@ impl Library {
                     continue;
                 }
                 let id = (Predicate::Related, target.as_str());
-                if !note.frontmatter.relations.iter().any(|r| r.identity() == id) {
+                if !note
+                    .frontmatter
+                    .relations
+                    .iter()
+                    .any(|r| r.identity() == id)
+                {
                     note.frontmatter
                         .relations
                         .push(Relation::forward(Predicate::Related, target));

@@ -126,7 +126,10 @@ fn facet_scoping_and_ai_text_are_indexed() {
         "cone1970black"
     );
     // AI keyword is searchable (free text) and scopable via `ai:`.
-    assert_eq!(idx.search("soteriology", 10).unwrap()[0].key, "cone1970black");
+    assert_eq!(
+        idx.search("soteriology", 10).unwrap()[0].key,
+        "cone1970black"
+    );
     assert_eq!(
         idx.search("ai:soteriology", 10).unwrap()[0].key,
         "cone1970black"
@@ -148,7 +151,10 @@ fn nodes_are_indexed_and_scopable() {
 
     // Free-text on the label finds the node, and the hit is tagged kind=node.
     let hits = idx.search("augustine", 10).unwrap();
-    let node_hit = hits.iter().find(|h| h.key == "augustine").expect("node hit");
+    let node_hit = hits
+        .iter()
+        .find(|h| h.key == "augustine")
+        .expect("node hit");
     assert_eq!(node_hit.kind, "node");
     assert_eq!(node_hit.title, "Augustine of Hippo");
     assert!(node_hit.author.is_empty() && node_hit.year.is_empty());

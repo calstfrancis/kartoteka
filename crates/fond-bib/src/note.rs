@@ -212,8 +212,14 @@ mod tests {
     fn round_trips_small_fields() {
         let text = "---\nprogress:\n  page: 112\n  of: 420\ncite:\n  short: Cone, Black Theology\n  preferred-style: chicago-author-date\ntasks:\n  - text: Verify the Barth quotation\n    done: false\n    due: 2026-08-15\n  - text: Re-read chapter 3\n    done: true\n---\nBody.\n";
         let note = Note::parse(text, &p()).unwrap();
-        assert_eq!(note.frontmatter.progress, Some(Progress { page: 112, of: 420 }));
-        assert_eq!(note.frontmatter.cite.short.as_deref(), Some("Cone, Black Theology"));
+        assert_eq!(
+            note.frontmatter.progress,
+            Some(Progress { page: 112, of: 420 })
+        );
+        assert_eq!(
+            note.frontmatter.cite.short.as_deref(),
+            Some("Cone, Black Theology")
+        );
         assert_eq!(note.frontmatter.tasks.len(), 2);
         assert!(note.frontmatter.tasks[1].done);
         // Round-trips unchanged.
@@ -226,7 +232,10 @@ mod tests {
         let text = "---\nrelations:\n  - predicate: critiques\n    target: barth1932kd\n  - predicate: cited-by\n    target: cone1975god\n    inverse: true\n---\nBody.\n";
         let note = Note::parse(text, &p()).unwrap();
         assert_eq!(note.frontmatter.relations.len(), 2);
-        assert_eq!(note.frontmatter.relations[0].predicate, Predicate::Critiques);
+        assert_eq!(
+            note.frontmatter.relations[0].predicate,
+            Predicate::Critiques
+        );
         assert!(!note.frontmatter.relations[0].inverse);
         assert_eq!(note.frontmatter.relations[1].predicate, Predicate::CitedBy);
         assert!(note.frontmatter.relations[1].inverse);

@@ -66,7 +66,9 @@ fn opf_path_from_container(xml: &str) -> Result<String> {
     reader.config_mut().trim_text(true);
     loop {
         match reader.read_event() {
-            Ok(Event::Empty(e)) | Ok(Event::Start(e)) if local_name(e.name().as_ref()) == b"rootfile" => {
+            Ok(Event::Empty(e)) | Ok(Event::Start(e))
+                if local_name(e.name().as_ref()) == b"rootfile" =>
+            {
                 if let Some(p) = attr_value(&e, b"full-path") {
                     return Ok(p);
                 }
@@ -76,7 +78,9 @@ fn opf_path_from_container(xml: &str) -> Result<String> {
             _ => {}
         }
     }
-    Err(DocError::Epub("no <rootfile full-path=…> in container.xml".to_string()))
+    Err(DocError::Epub(
+        "no <rootfile full-path=…> in container.xml".to_string(),
+    ))
 }
 
 /// Parse the Dublin Core fields out of an OPF package document's `<metadata>` block.
@@ -95,8 +99,10 @@ fn parse_opf_metadata(xml: &str) -> Result<EpubMetadata> {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let name = local_name(e.name().as_ref()).to_vec();
-                creator_file_as = attr_value(&e, b"file-as").or_else(|| attr_value(&e, b"opf:file-as"));
-                identifier_scheme = attr_value(&e, b"scheme").or_else(|| attr_value(&e, b"opf:scheme"));
+                creator_file_as =
+                    attr_value(&e, b"file-as").or_else(|| attr_value(&e, b"opf:file-as"));
+                identifier_scheme =
+                    attr_value(&e, b"scheme").or_else(|| attr_value(&e, b"opf:scheme"));
                 current = Some(name);
             }
             Ok(Event::Text(t)) => {
@@ -169,7 +175,9 @@ fn isbn_from_identifier(text: &str, scheme: &Option<String>) -> Option<String> {
     let lower = text.to_ascii_lowercase();
     let urn = lower.strip_prefix("urn:isbn:");
     if scheme_is_isbn || urn.is_some() {
-        let raw = urn.map(|s| s.to_string()).unwrap_or_else(|| text.to_string());
+        let raw = urn
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| text.to_string());
         let cleaned: String = raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
         if !cleaned.is_empty() {
             return Some(cleaned);

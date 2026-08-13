@@ -762,7 +762,9 @@ fn identify_pdf(library: &Library, path: &std::path::Path) -> CliResult<String> 
         .map_err(|e| format!("PDFium is needed to identify a PDF without an identifier: {e}"))?;
     let bytes = std::fs::read(path)?;
 
-    let text = fond_doc::extract_text(&pdfium, &bytes).ok().map(|t| t.full_text());
+    let text = fond_doc::extract_text(&pdfium, &bytes)
+        .ok()
+        .map(|t| t.full_text());
     let mut isbn_seen = None;
 
     if let Some(text) = &text {

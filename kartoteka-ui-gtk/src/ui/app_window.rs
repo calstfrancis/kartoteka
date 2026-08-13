@@ -854,7 +854,9 @@ fn identify_pdf(path: &std::path::Path) -> Result<(bool, String, Option<u32>), S
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let pages = fond_doc::page_count(&pdfium, &bytes).ok().map(|n| n as u32);
 
-    let text = fond_doc::extract_text(&pdfium, &bytes).ok().map(|t| t.full_text());
+    let text = fond_doc::extract_text(&pdfium, &bytes)
+        .ok()
+        .map(|t| t.full_text());
     let mut isbn_seen = None;
 
     if let Some(text) = &text {
@@ -917,7 +919,8 @@ fn show_add_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 fn import_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBuf) {
     toast(widgets, "Reading EPUB…");
 
-    let (sender, receiver) = glib::MainContext::channel::<Result<String, String>>(glib::Priority::DEFAULT);
+    let (sender, receiver) =
+        glib::MainContext::channel::<Result<String, String>>(glib::Priority::DEFAULT);
     let worker_path = path.clone();
     std::thread::spawn(move || {
         let _ = sender.send(epub_entry_yaml(&worker_path));
@@ -943,7 +946,9 @@ fn import_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathB
                         };
                         match attached {
                             Ok(_) => toast(&widgets, &format!("Added {key} with its EPUB")),
-                            Err(e) => toast(&widgets, &format!("Added {key}, but attach failed: {e}")),
+                            Err(e) => {
+                                toast(&widgets, &format!("Added {key}, but attach failed: {e}"))
+                            }
                         }
                         rebuild_index_silent(&state);
                         reload_current(&state, &widgets);
@@ -1457,7 +1462,10 @@ fn build_entry_yaml(f: &NewItemFields) -> String {
         out.push_str(&format!("  date: {}\n", f.date.trim()));
     }
     if !f.publisher.trim().is_empty() {
-        out.push_str(&format!("  publisher: {}\n", yaml_quote(f.publisher.trim())));
+        out.push_str(&format!(
+            "  publisher: {}\n",
+            yaml_quote(f.publisher.trim())
+        ));
     }
     if !f.url.trim().is_empty() {
         out.push_str(&format!("  url: {}\n", yaml_quote(f.url.trim())));
@@ -2925,9 +2933,18 @@ fn show_global_tasks_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>
             let Ok(Some(note)) = library.load_note(&e.key) else {
                 continue;
             };
-            let title = if e.title.is_empty() { e.key.clone() } else { e.title.clone() };
+            let title = if e.title.is_empty() {
+                e.key.clone()
+            } else {
+                e.title.clone()
+            };
             for (index, task) in note.frontmatter.tasks.into_iter().enumerate() {
-                items.push(GlobalTask { key: e.key.clone(), title: title.clone(), index, task });
+                items.push(GlobalTask {
+                    key: e.key.clone(),
+                    title: title.clone(),
+                    index,
+                    task,
+                });
             }
         }
         items
@@ -4097,7 +4114,10 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
             row.connect_clicked(move |_| {
                 popover.popdown();
                 let q = urlencode(&title_q);
-                open_uri(&window, &format!("https://scholar.google.com/scholar?q={q}"));
+                open_uri(
+                    &window,
+                    &format!("https://scholar.google.com/scholar?q={q}"),
+                );
             });
             rows.append(&row);
         }
@@ -4107,7 +4127,9 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         // Delete: destructive, so it sits last, behind a menu rather than in the always-
         // visible row, and still asks for confirmation before doing anything.
         let row = popover_button("Delete…", true);
-        row.set_tooltip_text(Some("Delete this entry and its note, relations, and attachments"));
+        row.set_tooltip_text(Some(
+            "Delete this entry and its note, relations, and attachments",
+        ));
         {
             let popover = popover.clone();
             let state = state.clone();
@@ -4740,7 +4762,9 @@ fn show_pdf_reader(
         .and_then(|lib| lib.load_annotations(key).ok().flatten())
         .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(key));
 
-    let start_page = start_page.saturating_sub(1).min(count.saturating_sub(1) as u32) as u16;
+    let start_page = start_page
+        .saturating_sub(1)
+        .min(count.saturating_sub(1) as u32) as u16;
     let reader = Rc::new(RefCell::new(ReaderState {
         pdfium,
         bytes,
@@ -4824,7 +4848,13 @@ fn show_pdf_reader(
                         .filter(|a| a.page == current_page && !a.quadpoints.is_empty())
                         .flat_map(|a| a.quadpoints.clone())
                         .collect();
-                    fond_doc::blend_highlights(&mut rp, page_pts.0, page_pts.1, &quads, HIGHLIGHT_RGBA);
+                    fond_doc::blend_highlights(
+                        &mut rp,
+                        page_pts.0,
+                        page_pts.1,
+                        &quads,
+                        HIGHLIGHT_RGBA,
+                    );
 
                     r.render_px = (rp.width, rp.height);
                     r.page_pts = page_pts;
@@ -4872,7 +4902,13 @@ fn show_pdf_reader(
 
             let (page, render_w, render_h, page_w_pts, page_h_pts) = {
                 let r = reader.borrow();
-                (r.page, r.render_px.0, r.render_px.1, r.page_pts.0, r.page_pts.1)
+                (
+                    r.page,
+                    r.render_px.0,
+                    r.render_px.1,
+                    r.page_pts.0,
+                    r.page_pts.1,
+                )
             };
             if render_w == 0 || render_h == 0 || page_w_pts <= 0.0 || page_h_pts <= 0.0 {
                 return;
@@ -4909,7 +4945,12 @@ fn show_pdf_reader(
                 .flatten()
             }
             .map(|sel| (sel.quads, Some(sel.text)))
-            .unwrap_or_else(|| (vec![[x0, y_top, x1, y_top, x0, y_bottom, x1, y_bottom]], None));
+            .unwrap_or_else(|| {
+                (
+                    vec![[x0, y_top, x1, y_top, x0, y_bottom, x1, y_bottom]],
+                    None,
+                )
+            });
 
             let annotation = fond_bib::Annotation::drawn(
                 fond_bib::AnnotationKind::Highlight,
@@ -5210,7 +5251,13 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
         .hexpand(true)
         .build();
     cite_short.set_text(note.frontmatter.cite.short.as_deref().unwrap_or(""));
-    const CITE_STYLES: &[&str] = &["(none)", "sbl", "chicago-notes", "chicago-author-date", "apa"];
+    const CITE_STYLES: &[&str] = &[
+        "(none)",
+        "sbl",
+        "chicago-notes",
+        "chicago-author-date",
+        "apa",
+    ];
     let cite_style = gtk4::DropDown::from_strings(CITE_STYLES);
     let style_idx = note
         .frontmatter
@@ -5273,7 +5320,12 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
             let row = row.clone();
             delete.connect_clicked(move |_| list.remove(&row));
         }
-        TaskRow { row, done, text, due }
+        TaskRow {
+            row,
+            done,
+            text,
+            due,
+        }
     }
 
     for task in &note.frontmatter.tasks {
@@ -5573,7 +5625,10 @@ fn confirm_delete_node(
         }
         let result = {
             let s = state.borrow();
-            s.library.as_ref().map(|lib| lib.delete_node(&slug)).transpose()
+            s.library
+                .as_ref()
+                .map(|lib| lib.delete_node(&slug))
+                .transpose()
         };
         match result {
             Ok(_) => {
@@ -5749,7 +5804,8 @@ fn show_nodes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         let state = state.clone();
         let widgets = widgets.clone();
         let populate = populate.clone();
-        new_btn.connect_clicked(move |_| show_node_editor(&state, &widgets, None, populate.clone()));
+        new_btn
+            .connect_clicked(move |_| show_node_editor(&state, &widgets, None, populate.clone()));
     }
 
     populate();
@@ -6001,7 +6057,9 @@ fn show_node_editor(
 
             let result = {
                 let s = state.borrow();
-                s.library.as_ref().map(|lib| lib.write_node(&target_slug, &node))
+                s.library
+                    .as_ref()
+                    .map(|lib| lib.write_node(&target_slug, &node))
             };
             match result {
                 Some(Ok(_)) => {

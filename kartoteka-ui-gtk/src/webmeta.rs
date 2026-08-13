@@ -144,11 +144,17 @@ fn best_effort_date(s: &str) -> String {
         .filter(|p| !p.is_empty())
         .collect();
 
-    let month = parts.first().and_then(|p| p.parse::<u8>().ok()).filter(|m| (1..=12).contains(m));
+    let month = parts
+        .first()
+        .and_then(|p| p.parse::<u8>().ok())
+        .filter(|m| (1..=12).contains(m));
     let Some(month) = month else {
         return year;
     };
-    let day = parts.get(1).and_then(|p| p.parse::<u8>().ok()).filter(|d| (1..=31).contains(d));
+    let day = parts
+        .get(1)
+        .and_then(|p| p.parse::<u8>().ok())
+        .filter(|d| (1..=31).contains(d));
     match day {
         Some(day) => format!("{year}-{month:02}-{day:02}"),
         None => format!("{year}-{month:02}"),

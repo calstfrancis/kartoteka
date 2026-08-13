@@ -422,7 +422,10 @@ mod tests {
             TargetKind::Other,
         ] {
             for p in Predicate::forward_choices_for(kind) {
-                assert!(full.contains(&p), "{p:?} offered for {kind:?} but not authorable");
+                assert!(
+                    full.contains(&p),
+                    "{p:?} offered for {kind:?} but not authorable"
+                );
             }
         }
 
@@ -441,6 +444,9 @@ mod tests {
         assert_eq!(TargetKind::from(NodeType::Event), TargetKind::Event);
         assert_eq!(TargetKind::from(NodeType::Place), TargetKind::Place);
         // An uncatalogued work counts as a work for predicate offering.
-        assert_eq!(TargetKind::from(NodeType::WorkUncataloged), TargetKind::Work);
+        assert_eq!(
+            TargetKind::from(NodeType::WorkUncataloged),
+            TargetKind::Work
+        );
     }
 }
