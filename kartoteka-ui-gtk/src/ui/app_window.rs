@@ -6227,8 +6227,22 @@ fn popover_menu(min_width: i32) -> (gtk4::Popover, gtk4::Box) {
     rows.set_margin_start(6);
     rows.set_margin_end(6);
     rows.set_width_request(min_width);
+
+    // Cap and scroll rather than let the popover's natural height grow unbounded — with
+    // ~20 rows, the hamburger's popover found this the hard way: on a screen without enough
+    // room below the button for its full height, it didn't reposition or shrink, it just
+    // failed to show at all (reproduced locally by shrinking the test display). A `gio::Menu`
+    // (the old hamburger) scrolls automatically once it doesn't fit; a plain `Box` doesn't,
+    // so this gives it back explicitly. Short popovers (Edit, More) stay exactly as tall as
+    // their content — `propagate_natural_height` only engages the scrollbar past the cap.
+    let scroller = gtk4::ScrolledWindow::new();
+    scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+    scroller.set_propagate_natural_height(true);
+    scroller.set_max_content_height(420);
+    scroller.set_child(Some(&rows));
+
     let popover = gtk4::Popover::new();
-    popover.set_child(Some(&rows));
+    popover.set_child(Some(&scroller));
     (popover, rows)
 }
 

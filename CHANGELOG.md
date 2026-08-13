@@ -2,6 +2,21 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.1.0-dev17] — 2026-08-13 — Fix: hamburger menu not opening
+
+dev16's hand-built hamburger popover (~20 rows) had no height cap, unlike the `gio::Menu` it
+replaced, which scrolls automatically once its content doesn't fit. Reproduced locally: on a
+screen without enough room below the button for the popover's full natural height, it didn't
+reposition or shrink — it failed to show at all, which is what "click it and nothing happens"
+was.
+
+### Fixed
+
+- **The hand-built popover helper (`popover_menu`, shared by the hamburger and the detail
+  panel's "Edit"/"More" popovers) now wraps its rows in a `ScrolledWindow` capped at 420px**,
+  scrolling past that instead of growing unbounded. Short popovers (Edit, More) are
+  unaffected — the cap only engages once content actually exceeds it.
+
 ## [0.1.0-dev16] — 2026-08-13 — Detail panel UX pass
 
 The detail panel's action row had grown to as many as eleven buttons (Edit note, Edit
