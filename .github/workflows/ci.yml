@@ -22,10 +22,24 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Install GTK4/libadwaita/WebKitGTK dev packages (Linux)
+        # kartoteka-ui-gtk (gtk4 + libadwaita + webkit6) is Linux-only — its build script
+        # links against these via pkg-config, which was never installed on the runner, so
+        # every Clippy/Test step here had been failing since the very first CI run. The
+        # other workspace members (fond-bib, fond-doc, fond-index, fond-vault,
+        # kartoteka-cli) are plain cross-platform Rust and don't need this.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev
       - name: Format check
         run: cargo fmt --all -- --check
-      - name: Clippy
+      - name: Clippy (Linux, full workspace)
+        if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (Windows, excluding the Linux-only GTK frontend)
+        if: runner.os == 'Windows'
+        run: cargo clippy --workspace --exclude kartoteka-ui-gtk --all-targets -- -D warnings
       - name: Fetch PDFium (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -40,7 +54,11 @@ jobs:
           curl.exe -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz
           mkdir pdfium; tar -xzf pdfium.tgz -C pdfium
           echo "PDFIUM_LIB_PATH=$PWD\pdfium\bin" >> $env:GITHUB_ENV
-      - name: Test
+      - name: Test (Linux, full workspace)
+        if: runner.os == 'Linux'
         run: cargo test --workspace
+      - name: Test (Windows, excluding the Linux-only GTK frontend)
+        if: runner.os == 'Windows'
+        run: cargo test --workspace --exclude kartoteka-ui-gtk
       - name: Test (acquire feature)
         run: cargo test -p fond-bib --features acquire
