@@ -3949,13 +3949,25 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         match kind {
             ReaderAttachmentKind::Pdf => {
                 let read_button = gtk4::Button::with_label("Read");
-                read_button.set_tooltip_text(Some("Open the built-in PDF reader"));
+                // Resumes at the saved Progress page, if any — "Read" opening on page 1
+                // every time despite a recorded reading position was the whole gap 5A/M5's
+                // Tier 2 exists to close.
+                let start_page = note
+                    .as_ref()
+                    .and_then(|n| n.frontmatter.progress)
+                    .map(|p| p.page)
+                    .unwrap_or(1);
+                read_button.set_tooltip_text(Some(if start_page > 1 {
+                    "Open the built-in PDF reader, resuming where you left off"
+                } else {
+                    "Open the built-in PDF reader"
+                }));
                 let state = state.clone();
                 let widgets = widgets.clone();
                 let key = key.clone();
                 let title = title_text.to_string();
                 read_button.connect_clicked(move |_| {
-                    show_pdf_reader(&state, &widgets, &key, &hash, &path, &title, 1)
+                    show_pdf_reader(&state, &widgets, &key, &hash, &path, &title, start_page)
                 });
                 actions.append(&read_button);
             }
@@ -4804,11 +4816,64 @@ struct ReaderState {
     /// the scale a drag-selected rectangle is converted through when saving a new highlight.
     render_px: (u32, u32),
     page_pts: (f32, f32),
+    /// Which kind the next drag creates — set by the mode `DropDown`, defaulting to
+    /// `Highlight`. `Note` is never drawn this way (it has no on-page region); it's added
+    /// via the separate "Note…" button instead.
+    draw_kind: fond_bib::AnnotationKind,
+    /// Every match from the last search (empty if none run yet, or the last search found
+    /// nothing), and which one is "current" — `render()` blends that one's quads in a
+    /// distinct colour when the current page matches, and prev/next-match cycle this index.
+    search_matches: Vec<fond_doc::PdfSearchMatch>,
+    search_current: usize,
+    /// Hex colour (`#rrggbb`) the next drag saves onto its annotation — set by the colour
+    /// `DropDown`, defaulting to the original hardcoded amber.
+    draw_color: String,
 }
+
+/// The colour `DropDown`'s fixed preset order — a small curated set (like a real
+/// highlighter's usual colours) rather than a full colour-wheel picker, index into this by
+/// selection.
+const COLOR_PRESETS: [(&str, &str); 5] = [
+    ("Amber", "#f6c344"),
+    ("Green", "#8bc34a"),
+    ("Blue", "#4a90d9"),
+    ("Pink", "#e91e8c"),
+    ("Red", "#e74c3c"),
+];
+
+/// Parse an annotation's stored `#rrggbb` hex colour into RGBA at the standard highlight
+/// alpha (matching the original hardcoded `HIGHLIGHT_RGBA`'s opacity), falling back to that
+/// same amber for anything that doesn't parse — a hand-edited sidecar entry, or one written
+/// before the colour picker existed and so has no `color` at all.
+fn annotation_rgba(hex: Option<&str>) -> [u8; 4] {
+    let parsed = hex.and_then(|h| {
+        let h = h.trim_start_matches('#');
+        if h.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+        Some([r, g, b, HIGHLIGHT_RGBA[3]])
+    });
+    parsed.unwrap_or(HIGHLIGHT_RGBA)
+}
+
+/// The `DropDown`'s fixed option order — index into this, not into `AnnotationKind`
+/// directly, since the drop-down deliberately excludes `Note` (drawn via its own button, not
+/// a drag gesture).
+const DRAW_KIND_OPTIONS: [(&str, fond_bib::AnnotationKind); 3] = [
+    ("Highlight", fond_bib::AnnotationKind::Highlight),
+    ("Underline", fond_bib::AnnotationKind::Underline),
+    ("Strikeout", fond_bib::AnnotationKind::Strikeout),
+];
 
 const READER_BASE_WIDTH: f64 = 820.0;
 /// Amber at ~35% opacity — a highlight tint, not a solid block.
 const HIGHLIGHT_RGBA: [u8; 4] = [246, 195, 68, 90];
+/// Blue at ~50% opacity — deliberately distinct from `HIGHLIGHT_RGBA` so the current search
+/// match reads as "found this" and not as a saved highlight.
+const SEARCH_MATCH_RGBA: [u8; 4] = [66, 133, 244, 130];
 /// Below this, a drag reads as a stray click, not an intentional highlight.
 const MIN_DRAG_PX: f64 = 6.0;
 
@@ -4852,6 +4917,9 @@ fn show_pdf_reader(
         }
     };
     let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(1).max(1);
+    // Empty for most PDFs — outlines are the exception, not the rule — so the Contents
+    // button below only appears when there's actually something to jump to.
+    let outline_entries = fond_doc::outline(&pdfium, &bytes).unwrap_or_default();
 
     let annotations = state
         .borrow()
@@ -4872,6 +4940,10 @@ fn show_pdf_reader(
         annotations,
         render_px: (0, 0),
         page_pts: (0.0, 0.0),
+        draw_kind: fond_bib::AnnotationKind::Highlight,
+        search_matches: Vec::new(),
+        search_current: 0,
+        draw_color: COLOR_PRESETS[0].1.to_string(),
     }));
 
     let dialog = adw::Window::new();
@@ -4899,8 +4971,44 @@ fn show_pdf_reader(
     zoom_out.set_tooltip_text(Some("Zoom out"));
     let zoom_in = gtk4::Button::from_icon_name("zoom-in-symbolic");
     zoom_in.set_tooltip_text(Some("Zoom in"));
-    header.pack_end(&zoom_in);
+
+    let note_button = gtk4::Button::with_label("Note…");
+    note_button.set_tooltip_text(Some("Add a marginal note on the current page"));
+
+    let mode_labels: Vec<&str> = DRAW_KIND_OPTIONS.iter().map(|(l, _)| *l).collect();
+    let mode_drop = gtk4::DropDown::from_strings(&mode_labels);
+    mode_drop.set_tooltip_text(Some("What a drag on the page creates"));
+
+    let color_labels: Vec<&str> = COLOR_PRESETS.iter().map(|(l, _)| *l).collect();
+    let color_drop = gtk4::DropDown::from_strings(&color_labels);
+    color_drop.set_tooltip_text(Some("Highlight colour"));
+
+    // Only present when the PDF actually has an outline — most don't. Built and wired below
+    // (after `render`/`reader` exist), but declared and packed here alongside the rest of
+    // the header so the pack_end ordering comment covers it too.
+    let contents_button = (!outline_entries.is_empty())
+        .then(|| gtk4::MenuButton::builder().label("Contents").build());
+
+    // The current page's annotations, inline — an alternative to the separate
+    // "Annotations…" dialog (still available from the detail pane, and still the only way
+    // to see the *whole document's* annotations at once) for the common case of "what's on
+    // this page." Content is rebuilt fresh on every open (wired below), since it's
+    // page-dependent and the page changes constantly while reading.
+    let page_annots_button = gtk4::MenuButton::builder().label("This page").build();
+    page_annots_button.set_tooltip_text(Some("Annotations on the current page"));
+
+    // pack_end order is the reverse of visual order (last-packed ends up leftmost) — same
+    // gotcha CLAUDE.md notes for the hamburger menu. Visual order here, left to right:
+    // Contents (if present), This page, mode picker, colour picker, Note, zoom in, zoom out.
     header.pack_end(&zoom_out);
+    header.pack_end(&zoom_in);
+    header.pack_end(&note_button);
+    header.pack_end(&color_drop);
+    header.pack_end(&mode_drop);
+    header.pack_end(&page_annots_button);
+    if let Some(contents_button) = &contents_button {
+        header.pack_end(contents_button);
+    }
     view.add_top_bar(&header);
 
     let hint = gtk4::Label::new(Some("Drag over the page to add a highlight"));
@@ -4908,6 +5016,26 @@ fn show_pdf_reader(
     hint.add_css_class("caption");
     hint.set_margin_top(4);
     hint.set_margin_bottom(4);
+
+    let search_entry = gtk4::SearchEntry::new();
+    search_entry.set_placeholder_text(Some("Search this PDF…"));
+    search_entry.set_hexpand(true);
+    let search_prev = gtk4::Button::from_icon_name("go-up-symbolic");
+    search_prev.set_tooltip_text(Some("Previous match"));
+    search_prev.set_sensitive(false);
+    let search_next = gtk4::Button::from_icon_name("go-down-symbolic");
+    search_next.set_tooltip_text(Some("Next match"));
+    search_next.set_sensitive(false);
+    let search_count = gtk4::Label::new(None);
+    search_count.add_css_class("dim-label");
+    let search_row = gtk4::Box::new(Orientation::Horizontal, 6);
+    search_row.set_margin_start(8);
+    search_row.set_margin_end(8);
+    search_row.set_margin_top(4);
+    search_row.append(&search_entry);
+    search_row.append(&search_count);
+    search_row.append(&search_prev);
+    search_row.append(&search_next);
 
     let picture = gtk4::Picture::new();
     picture.set_halign(gtk4::Align::Center);
@@ -4919,6 +5047,7 @@ fn show_pdf_reader(
     scroll.set_hexpand(true);
 
     let content = gtk4::Box::new(Orientation::Vertical, 0);
+    content.append(&search_row);
     content.append(&hint);
     content.append(&scroll);
     view.set_content(Some(&content));
@@ -4939,20 +5068,47 @@ fn show_pdf_reader(
             match fond_doc::render_page(&r.pdfium, &r.bytes, r.page, width) {
                 Ok(mut rp) => {
                     let current_page = r.page as u32 + 1;
-                    let quads: Vec<[f64; 8]> = r
+                    // Note has no quad to draw (it's marginal, not on-page) — only the three
+                    // drawable kinds get blended. Each annotation keeps its own colour (from
+                    // the colour picker at draw time), so this blends per-annotation rather
+                    // than batching every quad on the page into one shared-colour call.
+                    for a in r
                         .annotations
                         .annotations
                         .iter()
                         .filter(|a| a.page == Some(current_page) && !a.quadpoints.is_empty())
-                        .flat_map(|a| a.quadpoints.clone())
-                        .collect();
-                    fond_doc::blend_highlights(
-                        &mut rp,
-                        page_pts.0,
-                        page_pts.1,
-                        &quads,
-                        HIGHLIGHT_RGBA,
-                    );
+                    {
+                        let kind = match a.kind {
+                            fond_bib::AnnotationKind::Highlight => fond_doc::MarkupKind::Highlight,
+                            fond_bib::AnnotationKind::Underline => fond_doc::MarkupKind::Underline,
+                            fond_bib::AnnotationKind::Strikeout => fond_doc::MarkupKind::Strikeout,
+                            fond_bib::AnnotationKind::Note => continue,
+                        };
+                        let items: Vec<(fond_doc::MarkupKind, [f64; 8])> =
+                            a.quadpoints.iter().map(|q| (kind, *q)).collect();
+                        fond_doc::blend_annotations(
+                            &mut rp,
+                            page_pts.0,
+                            page_pts.1,
+                            &items,
+                            annotation_rgba(a.color.as_deref()),
+                        );
+                    }
+
+                    // The current search match, if it's on this page — blended in its own
+                    // colour, on top of any saved highlights, so it reads as "found this" and
+                    // not as another saved annotation.
+                    if let Some(current) = r.search_matches.get(r.search_current) {
+                        if current.page == r.page {
+                            fond_doc::blend_highlights(
+                                &mut rp,
+                                page_pts.0,
+                                page_pts.1,
+                                &current.quads,
+                                SEARCH_MATCH_RGBA,
+                            );
+                        }
+                    }
 
                     r.render_px = (rp.width, rp.height);
                     r.page_pts = page_pts;
@@ -4998,7 +5154,7 @@ fn show_pdf_reader(
             let end_x = start_x + offset_x;
             let end_y = start_y + offset_y;
 
-            let (page, render_w, render_h, page_w_pts, page_h_pts) = {
+            let (page, render_w, render_h, page_w_pts, page_h_pts, draw_kind, draw_color) = {
                 let r = reader.borrow();
                 (
                     r.page,
@@ -5006,6 +5162,8 @@ fn show_pdf_reader(
                     r.render_px.1,
                     r.page_pts.0,
                     r.page_pts.1,
+                    r.draw_kind,
+                    r.draw_color.clone(),
                 )
             };
             if render_w == 0 || render_h == 0 || page_w_pts <= 0.0 || page_h_pts <= 0.0 {
@@ -5051,11 +5209,12 @@ fn show_pdf_reader(
             });
 
             let annotation = fond_bib::Annotation::drawn(
-                fond_bib::AnnotationKind::Highlight,
+                draw_kind,
                 page as u32 + 1,
                 quads,
                 snippet,
                 None,
+                Some(draw_color),
             );
 
             {
@@ -5073,10 +5232,16 @@ fn show_pdf_reader(
             match write_result {
                 Some(Ok(_)) => {
                     render();
-                    toast(&widgets, "Highlight added");
+                    let label = match draw_kind {
+                        fond_bib::AnnotationKind::Highlight => "Highlight added",
+                        fond_bib::AnnotationKind::Underline => "Underline added",
+                        fond_bib::AnnotationKind::Strikeout => "Strikeout added",
+                        fond_bib::AnnotationKind::Note => "Annotation added",
+                    };
+                    toast(&widgets, label);
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not save highlight: {e}")),
-                None => toast(&widgets, "No open library — highlight not saved"),
+                Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
+                None => toast(&widgets, "No open library — not saved"),
             }
         });
         picture.add_controller(drag);
@@ -5128,6 +5293,400 @@ fn show_pdf_reader(
                 r.zoom = (r.zoom / 1.25).max(0.35);
             }
             render();
+        });
+    }
+    {
+        let reader = reader.clone();
+        let hint = hint.clone();
+        mode_drop.connect_selected_notify(move |drop| {
+            let idx = drop.selected() as usize;
+            let Some((_, kind)) = DRAW_KIND_OPTIONS.get(idx) else {
+                return;
+            };
+            reader.borrow_mut().draw_kind = *kind;
+            let text = match kind {
+                fond_bib::AnnotationKind::Highlight => "Drag over text to highlight it",
+                fond_bib::AnnotationKind::Underline => "Drag over text to underline it",
+                fond_bib::AnnotationKind::Strikeout => "Drag over text to strike it out",
+                fond_bib::AnnotationKind::Note => "Drag over the page",
+            };
+            hint.set_text(text);
+        });
+    }
+    {
+        let reader = reader.clone();
+        color_drop.connect_selected_notify(move |drop| {
+            let idx = drop.selected() as usize;
+            if let Some((_, hex)) = COLOR_PRESETS.get(idx) {
+                reader.borrow_mut().draw_color = hex.to_string();
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let reader = reader.clone();
+        let pdf_hash = pdf_hash.to_string();
+        note_button.connect_clicked(move |_| {
+            show_pdf_note_dialog(&state, &widgets, &reader, &pdf_hash);
+        });
+    }
+    {
+        // Content is page-dependent and the page changes constantly while reading, so it's
+        // rebuilt fresh on every `show` rather than once at reader-open time (unlike
+        // Contents/TOC below, which is fixed for the life of the reader).
+        let popover = gtk4::Popover::new();
+        page_annots_button.set_popover(Some(&popover));
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let reader = reader.clone();
+        let render = render.clone();
+        popover.connect_show(move |popover| {
+            let current_page = reader.borrow().page as u32 + 1;
+            let mut this_page: Vec<fond_bib::Annotation> = reader
+                .borrow()
+                .annotations
+                .annotations
+                .iter()
+                .filter(|a| a.page == Some(current_page))
+                .cloned()
+                .collect();
+            this_page.sort_by(|a, b| a.created.cmp(&b.created));
+
+            // Built directly (not via `popover_menu`, which bundles its own throwaway
+            // `Popover` we'd only discard) — same row-box margins/width, wrapped in our own
+            // scroller attached to the real, persistent `popover` this closure was given.
+            let rows = gtk4::Box::new(Orientation::Vertical, 2);
+            rows.set_margin_top(6);
+            rows.set_margin_bottom(6);
+            rows.set_margin_start(6);
+            rows.set_margin_end(6);
+            rows.set_width_request(260);
+            if this_page.is_empty() {
+                let label = gtk4::Label::new(Some("No annotations on this page"));
+                label.add_css_class("dim-label");
+                label.set_margin_top(6);
+                label.set_margin_bottom(6);
+                rows.append(&label);
+            }
+            let last = this_page.len().saturating_sub(1);
+            for (i, annotation) in this_page.into_iter().enumerate() {
+                let row_box = gtk4::Box::new(Orientation::Horizontal, 6);
+                let label_text = format!(
+                    "{:?}{}",
+                    annotation.kind,
+                    annotation
+                        .note
+                        .as_deref()
+                        .map(|n| format!(" — {n}"))
+                        .unwrap_or_default()
+                );
+                let label = gtk4::Label::new(Some(&label_text));
+                label.set_xalign(0.0);
+                label.set_hexpand(true);
+                label.set_wrap(true);
+                label.set_max_width_chars(28);
+                row_box.append(&label);
+
+                let delete_button = gtk4::Button::from_icon_name("user-trash-symbolic");
+                delete_button.add_css_class("flat");
+                delete_button.set_tooltip_text(Some("Delete this annotation"));
+                {
+                    let state = state.clone();
+                    let widgets = widgets.clone();
+                    let reader = reader.clone();
+                    let render = render.clone();
+                    let popover = popover.clone();
+                    let id = annotation.id.clone();
+                    delete_button.connect_clicked(move |_| {
+                        reader
+                            .borrow_mut()
+                            .annotations
+                            .annotations
+                            .retain(|a| a.id != id);
+                        let write_result = {
+                            let s = state.borrow();
+                            s.library
+                                .as_ref()
+                                .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+                        };
+                        match write_result {
+                            Some(Ok(_)) => {
+                                render();
+                                toast(&widgets, "Annotation deleted");
+                            }
+                            Some(Err(e)) => toast(&widgets, &format!("Could not delete: {e}")),
+                            None => toast(&widgets, "No open library"),
+                        }
+                        popover.popdown();
+                    });
+                }
+                row_box.append(&delete_button);
+                rows.append(&row_box);
+                if i != last {
+                    rows.append(&popover_separator());
+                }
+            }
+            let scroller = gtk4::ScrolledWindow::new();
+            scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+            scroller.set_propagate_natural_height(true);
+            scroller.set_max_content_height(360);
+            scroller.set_child(Some(&rows));
+            popover.set_child(Some(&scroller));
+        });
+    }
+    if let Some(contents_button) = &contents_button {
+        let (popover, rows) = popover_menu(260);
+        let last = outline_entries.len().saturating_sub(1);
+        for (i, entry) in outline_entries.iter().enumerate() {
+            // Indent by depth with a plain prefix rather than margins — simplest way to show
+            // nesting in a flat popover row list.
+            let label = format!("{}{}", "    ".repeat(entry.depth as usize), entry.title);
+            let row = popover_button(&label, false);
+            if let Some(page) = entry.page {
+                let popover = popover.clone();
+                let reader = reader.clone();
+                let render = render.clone();
+                row.connect_clicked(move |_| {
+                    popover.popdown();
+                    {
+                        let mut r = reader.borrow_mut();
+                        r.page = (page.saturating_sub(1)).min(r.count.saturating_sub(1));
+                    }
+                    render();
+                });
+            } else {
+                row.set_sensitive(false);
+            }
+            rows.append(&row);
+            if i != last {
+                rows.append(&popover_separator());
+            }
+        }
+        contents_button.set_popover(Some(&popover));
+    }
+
+    // Search: run on Enter (not per-keystroke — PDFium re-searches every page each time, not
+    // worth doing on every character typed), jumping straight to the first match's page.
+    // Prev/Next cycle `search_current` with wraparound; the count label and match highlight
+    // (blended in `render()`, a distinct colour from saved highlights) follow along.
+    let run_search = {
+        let reader = reader.clone();
+        let render = render.clone();
+        let search_prev = search_prev.clone();
+        let search_next = search_next.clone();
+        let search_count = search_count.clone();
+        Rc::new(move |query: &str| {
+            let matches = {
+                let r = reader.borrow();
+                fond_doc::search_document(&r.pdfium, &r.bytes, query).unwrap_or_default()
+            };
+            let count = matches.len();
+            let first_page = matches.first().map(|m| m.page);
+            {
+                let mut r = reader.borrow_mut();
+                r.search_matches = matches;
+                r.search_current = 0;
+                if let Some(page) = first_page {
+                    r.page = page;
+                }
+            }
+            search_prev.set_sensitive(count > 0);
+            search_next.set_sensitive(count > 0);
+            search_count.set_text(&match (count, query.trim().is_empty()) {
+                (0, true) => String::new(),
+                (0, false) => "No matches".to_string(),
+                (n, _) => format!("1 of {n}"),
+            });
+            render();
+        })
+    };
+    {
+        let run_search = run_search.clone();
+        search_entry.connect_activate(move |entry| run_search(&entry.text()));
+    }
+    {
+        // Clear stale results (and the match highlight) as soon as the box is emptied,
+        // rather than leaving them stuck until another search is run.
+        let reader = reader.clone();
+        let render = render.clone();
+        let search_prev = search_prev.clone();
+        let search_next = search_next.clone();
+        let search_count = search_count.clone();
+        search_entry.connect_search_changed(move |entry| {
+            if entry.text().is_empty() {
+                reader.borrow_mut().search_matches.clear();
+                search_prev.set_sensitive(false);
+                search_next.set_sensitive(false);
+                search_count.set_text("");
+                render();
+            }
+        });
+    }
+    {
+        let reader = reader.clone();
+        let render = render.clone();
+        let search_count = search_count.clone();
+        search_prev.connect_clicked(move |_| {
+            let mut r = reader.borrow_mut();
+            if r.search_matches.is_empty() {
+                return;
+            }
+            r.search_current = if r.search_current == 0 {
+                r.search_matches.len() - 1
+            } else {
+                r.search_current - 1
+            };
+            r.page = r.search_matches[r.search_current].page;
+            search_count.set_text(&format!(
+                "{} of {}",
+                r.search_current + 1,
+                r.search_matches.len()
+            ));
+            drop(r);
+            render();
+        });
+    }
+    {
+        let reader = reader.clone();
+        let render = render.clone();
+        let search_count = search_count.clone();
+        search_next.connect_clicked(move |_| {
+            let mut r = reader.borrow_mut();
+            if r.search_matches.is_empty() {
+                return;
+            }
+            r.search_current = (r.search_current + 1) % r.search_matches.len();
+            r.page = r.search_matches[r.search_current].page;
+            search_count.set_text(&format!(
+                "{} of {}",
+                r.search_current + 1,
+                r.search_matches.len()
+            ));
+            drop(r);
+            render();
+        });
+    }
+
+    // Save the current page back to the entry's Progress on close, so the next "Read" opens
+    // where this session left off — the PDF-reader half of Tier 2a. `page`/`count` snapshot
+    // out of `reader` up front since the RefCell isn't needed once we're just writing to the
+    // library.
+    {
+        let state = state.clone();
+        let key = key.to_string();
+        let reader = reader.clone();
+        dialog.connect_close_request(move |_| {
+            let (page, count) = {
+                let r = reader.borrow();
+                (r.page as u32 + 1, r.count as u32)
+            };
+            let s = state.borrow();
+            if let Some(library) = s.library.as_ref() {
+                if let Ok(Some(mut note)) = library.load_note(&key) {
+                    note.frontmatter.progress = Some(fond_bib::Progress { page, of: count });
+                    let _ = library.write_note(&key, &note);
+                }
+            }
+            glib::Propagation::Proceed
+        });
+    }
+
+    dialog.present();
+}
+
+/// A small modal for adding a freestanding marginal note (`AnnotationKind::Note`) to the
+/// PDF reader's *current* page — unlike Highlight/Underline/Strikeout, a note isn't tied to
+/// a drawn region, so there's no drag gesture for it, just this prompt. Saves straight into
+/// `reader`'s in-memory sidecar and to disk, the same `annots/<key>.json` the drag gesture
+/// writes; doesn't need to trigger a re-render, since a note has no on-page mark to draw.
+fn show_pdf_note_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    reader: &Rc<RefCell<ReaderState>>,
+    pdf_hash: &str,
+) {
+    let current_page = reader.borrow().page as u32 + 1;
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(&format!("Note on page {current_page}")));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(420, 260);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let text_view = gtk4::TextView::new();
+    text_view.set_wrap_mode(gtk4::WrapMode::Word);
+    text_view.set_margin_top(8);
+    text_view.set_margin_bottom(8);
+    text_view.set_margin_start(8);
+    text_view.set_margin_end(8);
+    let scrolled = gtk4::ScrolledWindow::new();
+    scrolled.set_vexpand(true);
+    scrolled.set_child(Some(&text_view));
+    view.set_content(Some(&scrolled));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let dialog = dialog.clone();
+        let widgets = widgets.clone();
+        let state = state.clone();
+        let reader = reader.clone();
+        let pdf_hash = pdf_hash.to_string();
+        let text_view = text_view.clone();
+        save.connect_clicked(move |_| {
+            let buffer = text_view.buffer();
+            let text = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .trim()
+                .to_string();
+            if text.is_empty() {
+                toast(&widgets, "Note is empty");
+                return;
+            }
+
+            let annotation = fond_bib::Annotation::drawn(
+                fond_bib::AnnotationKind::Note,
+                current_page,
+                Vec::new(),
+                None,
+                Some(text),
+                None,
+            );
+            {
+                let mut r = reader.borrow_mut();
+                r.annotations.pdf_hash = Some(pdf_hash.clone());
+                r.annotations.upsert(annotation);
+            }
+            let write_result = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+            };
+            match write_result {
+                Some(Ok(_)) => {
+                    toast(&widgets, "Note added");
+                    dialog.close();
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not save note: {e}")),
+                None => toast(&widgets, "No open library — note not saved"),
+            }
         });
     }
 

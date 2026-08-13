@@ -1,6 +1,6 @@
 # Kartoteka M5 — The Full Reader: PDF + EPUB Reading & Portable Annotation
 
-Status: **Tier 1 complete (5A–5D built and tested). Tier 2–4 not started.**
+Status: **Tier 1 and Tier 2 complete, both built and tested. Tier 3–4 not started.**
 
 > **Naming note.** "M5" here is the next step in the **knowledge-base extension track**
 > (M2 = typed relations/facets/AI sidecar/projects, M3 = knowledge-graph nodes, M4 = live PDF
@@ -221,22 +221,55 @@ available). All `rebuild()` call sites (CLI, GUI, tests) updated for the new par
 
 ---
 
-## Tier 2 — PDF reader parity and polish
+## Tier 2 — PDF reader parity and polish — **done, verified end-to-end.**
 
-Independent of Tier 1; can land in parallel or first if Tier 1's WebKit dependency needs
-more deliberation.
+Independent of Tier 1; landed after it. Every item built and confirmed working in a real
+running instance (headless Xvfb, xdotool-driven — screenshots of each interaction), not just
+compiled:
 
-- Underline/Strikeout/free-note drawing gestures — a mode toggle or modifier-key variant on
-  the existing `GestureDrag` in `show_pdf_reader`; reuses `select_text_in_rect` and the
-  sidecar-write path Tier-1-adjacent work doesn't touch. This is the one item `M4-SPEC.md`
-  already flagged as an open follow-up to 4A.
-- In-reader text search (PDFium exposes a text-search API over `PdfPageText`).
-- Outline/bookmarks panel (PDFium exposes the document outline tree) and page thumbnails.
-- Continuous/vertical scroll as an alternative to strict page-by-page.
-- Wire `fond_bib::Progress`: resume at the saved page on "Read," save current page on
-  navigate/close.
-- Inline annotation list/sidebar in the reader itself, plus a highlight color picker,
-  instead of routing every edit through the separate `show_annotations_dialog` modal.
+- **Progress wiring — done.** "Read" now resumes at `fond_bib::Progress.page` (looked up
+  from the entry's note at the detail-pane call site) instead of always page 1; the reader
+  saves `page`/`of` back on `connect_close_request`. Confirmed on disk: closing on page 2
+  wrote `progress: {page: 2, of: 2}` to `notes/<key>.md`.
+- **Underline/Strikeout/free-note drawing gestures — done.** A mode `DropDown`
+  (Highlight/Underline/Strikeout) in the reader header drives `ReaderState.draw_kind`, read
+  by the existing `GestureDrag` handler instead of a hardcoded `Highlight`. Rendering gained
+  `fond_doc::{MarkupKind, blend_annotations}` — Underline/Strikeout narrow each quad to a
+  thin band (near the bottom, or through the middle) before blending, rather than filling
+  the whole quad; verified both visually (a screenshot shows a real thin green line struck
+  through rendered text, not a filled block) and with two new `fond-doc` pixel-level tests.
+  `Note` has no on-page quad (it's marginal) — a separate "Note…" button opens a small
+  text-entry dialog, saving via the same `Annotation::drawn` path with empty quadpoints.
+- **PDF outline/bookmarks panel — done.** `fond_doc::pdf::outline()` reads the bookmark tree
+  via `pdfium-render`'s `PdfBookmark` API (`PdfBookmarks::iter()` already gives document
+  order; depth is the ancestor-count via `.parent()` chain walking, since the iterator gives
+  order but not depth directly), flattened like `fond_doc::epub::TocEntry`. A "Contents"
+  popover (only shown when the PDF actually has one — most don't) jumps to a bookmark's
+  page. Verified with a real hand-built PDF containing a nested `/Outlines` tree (two
+  PDFium-backed tests: document order + depth + page resolution; empty-outline case) and
+  confirmed live — the popover showed "Chapter One" / indented "Section 1.1" and jumped
+  correctly.
+- **In-reader PDF text search — done.** `fond_doc::pdf::search_document()` walks every page's
+  `PdfPageText::search()`, returning match page + quads in document order (verified by two
+  PDFium-backed tests). A search bar (`SearchEntry` + prev/next + count label) runs on Enter,
+  jumps to the first match's page, and blends the current match in a colour
+  (`SEARCH_MATCH_RGBA`, blue) distinct from saved highlights. Confirmed live: searching
+  "treasure" jumped to the right page, highlighted the exact word, and showed "1 of 1".
+- **Inline annotation sidebar + colour picker — done.** A colour `DropDown` (five presets:
+  Amber/Green/Blue/Pink/Red) sets `ReaderState.draw_color`, threaded into
+  `Annotation::drawn`'s new `color` parameter (`None` falls back to the original amber, so
+  existing callers/sidecars are unaffected); `render()` now blends each annotation in *its
+  own* stored colour (parsed via a small hex-to-RGBA helper) rather than one shared constant
+  for every highlight on the page. A "This page" popover (rebuilt fresh on every open, since
+  content is page-dependent) lists the current page's annotations with inline delete —
+  addresses the Tier 2 ask without replacing the existing whole-document
+  `show_annotations_dialog`, which is still the only whole-document view. Confirmed live: a
+  green strikeout and a note both appeared in the popover with working delete, and the
+  on-disk sidecar recorded `"color": "#8bc34a"` correctly.
+- **Continuous/vertical scroll — not done, deliberately deferred.** This is the one item that
+  isn't "polish" so much as a different rendering architecture — today's reader renders one
+  `Picture` per page, swapped on navigation; continuous scroll needs a virtualized multi-page
+  scroll surface. Worth scoping as its own piece of work rather than folding into this pass.
 
 ## Tier 3 — annotation portability ("read annotations outside the file")
 
@@ -271,10 +304,14 @@ attachment is present, instead of silently picking one.
    highlighting in `show_epub_reader` via WebKit's own native selection + DOM search-and-wrap,
    verified end-to-end headless including the ambiguous-snippet disambiguation case.
 4. **5D — done.** EPUB body text into the search index, verified via a new `fond-index` test.
-5. **Tier 1 is now fully done.** Next: **Tier 2** — PDF polish (search, outline,
-   underline/strikeout gestures, `Progress` wiring), independently schedulable, no dependency
-   on Tier 1.
-6. **Tier 3** — annotation export (Markdown/plain-text, à la Zotero's "add note from
-   annotations"), now that 5C's schema extension exists for both formats.
-7. **Tier 4** — multi-attachment chooser, small, low urgency until an entry with two
+5. **Tier 1 — done.**
+6. **Tier 2 — done**, except continuous/vertical scroll (deliberately deferred — a rendering
+   architecture change, not polish; see that section). Progress wiring, underline/strikeout/
+   note gestures, outline panel, in-reader search, colour picker + inline per-page annotation
+   list all built and verified end-to-end headless.
+7. **Tier 3** — next up. Annotation export (Markdown/plain-text, à la Zotero's "add note from
+   annotations"), straightforward now that 5C's schema extension exists for both formats.
+8. **Tier 4** — multi-attachment chooser, small, low urgency until an entry with two
    attachments actually shows up in practice.
+9. **Continuous/vertical scroll** (deferred from Tier 2) — pick up whenever a virtualized
+   multi-page scroll surface is worth the rendering-architecture change.

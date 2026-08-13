@@ -130,13 +130,16 @@ impl Annotation {
     /// or a plain drag rectangle over an area with no text (`snippet` is `None`). Unlike
     /// `imported`, the id is time-seeded rather than content-seeded: being newly created, not
     /// re-imported, it has no need for content-based idempotency, and a rectangle-only
-    /// highlight has no content to seed from anyway.
+    /// highlight has no content to seed from anyway. `color` is the hex string to record;
+    /// `None` falls back to the original default amber, so existing callers that don't care
+    /// about colour choice are unaffected.
     pub fn drawn(
         kind: AnnotationKind,
         page: u32,
         quadpoints: Vec<[f64; 8]>,
         snippet: Option<String>,
         note: Option<String>,
+        color: Option<String>,
     ) -> Annotation {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -153,7 +156,7 @@ impl Annotation {
             snippet,
             snippet_prefix: None,
             snippet_suffix: None,
-            color: Some("#f6c344".to_string()),
+            color: Some(color.unwrap_or_else(|| "#f6c344".to_string())),
             note,
             created: Some(stamp.clone()),
             modified: Some(stamp),

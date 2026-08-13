@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.2.0-dev1] — 2026-08-13 — Built-in EPUB reader, with highlighting
+## [0.2.0-dev2] — 2026-08-13 — Built-in EPUB reader and PDF reader polish
 
 A built-in EPUB reader, alongside the existing PDF one: chapter navigation, a table-of-
 contents jump list (from the EPUB3 nav document or the EPUB2 NCX), and proper rendering of
@@ -20,6 +20,22 @@ only an EPUB's bibliographic metadata was searchable, never its actual content).
 
 Also fixed: an EPUB attachment no longer routes into the PDF reader and fails silently on
 "Read" — attachments are now identified by type before deciding which reader to open.
+
+The PDF reader itself also gained a round of polish:
+- **Underline and strikeout**, alongside the existing highlight — a mode picker in the
+  reader's header switches what a drag creates, drawn as a thin line rather than a filled
+  block. A **"Note…" button** adds a freestanding marginal note not tied to any drawn region.
+- **A colour picker** (five presets) for highlights/underlines/strikeouts — each annotation
+  keeps its own colour, shown correctly on re-render, not just a single shared tint for every
+  highlight on the page.
+- **"Contents"**, an outline/bookmarks panel — jumps straight to a chapter or section, when
+  the PDF has one.
+- **A search bar** — find text across the whole document, jump between matches, with the
+  current match highlighted in its own colour.
+- **"This page"**, an inline list of the current page's annotations with one-click delete —
+  no need to open the separate "Annotations…" dialog just to remove a stray highlight.
+- **Reading position is remembered**: "Read" now resumes on the page you left off on, saved
+  automatically when the reader closes.
 
 ## [0.1.1] "Tidy Shelf" — 2026-08-13 — Internal: CI format-check fix
 

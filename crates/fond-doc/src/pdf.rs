@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use pdfium_render::prelude::{
-    PdfDocumentMetadataTagType, PdfRect, PdfRenderConfig, Pdfium, Pixels,
+    PdfDocumentMetadataTagType, PdfRect, PdfRenderConfig, PdfSearchDirection, PdfSearchOptions,
+    Pdfium, Pixels,
 };
 
 use crate::error::{DocError, Result};
@@ -131,6 +132,101 @@ pub fn page_size(pdfium: &Pdfium, bytes: &[u8], index: u16) -> Result<(f32, f32)
     let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
     let page = document.pages().get(index)?;
     Ok((page.width().value, page.height().value))
+}
+
+/// One entry in a PDF's outline (bookmark tree), flattened into document order with `depth`
+/// preserved for indentation — a jump list, not a tree widget, the same flattening choice
+/// `fond_doc::epub::TocEntry` makes for its table of contents, for the same reason (simpler
+/// to build a reader panel from, and the nesting rarely matters for "jump to this section").
+#[derive(Debug, Clone)]
+pub struct PdfOutlineEntry {
+    pub title: String,
+    /// 0 for a top-level bookmark, 1 for its direct children, and so on.
+    pub depth: u32,
+    /// 1-based page number, if the bookmark's destination resolves to one. `None` for a
+    /// bookmark whose action isn't a same-document page jump (an external URL, for example).
+    pub page: Option<u16>,
+}
+
+/// Read a PDF's outline (bookmark) tree, flattened into document order. Empty if the PDF has
+/// no outline — common (most PDFs, especially scanned or short ones, have none) and not an
+/// error.
+pub fn outline(pdfium: &Pdfium, bytes: &[u8]) -> Result<Vec<PdfOutlineEntry>> {
+    let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+    let mut out = Vec::new();
+    for bookmark in document.bookmarks().iter() {
+        let Some(title) = bookmark.title() else {
+            continue;
+        };
+        // Depth is the bookmark's ancestor count — `PdfBookmarks::iter()` gives document
+        // order but not depth directly, so walk the parent chain once per bookmark. Outline
+        // trees are small enough (tens to low hundreds of entries) for this to be cheap.
+        let mut depth = 0;
+        let mut ancestor = bookmark.parent();
+        while let Some(a) = ancestor {
+            depth += 1;
+            ancestor = a.parent();
+        }
+        let page = bookmark
+            .destination()
+            .and_then(|dest| dest.page_index().ok())
+            .map(|idx| idx.saturating_add(1));
+        out.push(PdfOutlineEntry { title, depth, page });
+    }
+    Ok(out)
+}
+
+/// One match from `search_document`: the 0-based page it's on (matching `render_page`'s own
+/// indexing) and one quad per line the match spans, in PDF user-space — the same shape
+/// `Annotation.quadpoints`/`select_text_in_rect` use, so a match can be blended onto a
+/// rendered page with `blend_highlights` exactly like a saved highlight.
+#[derive(Debug, Clone)]
+pub struct PdfSearchMatch {
+    pub page: u16,
+    pub quads: Vec<[f64; 8]>,
+}
+
+/// Search every page of a PDF for `query` (case-insensitive substring), returning every match
+/// in document order. An empty (or whitespace-only) query returns no matches rather than
+/// erroring — the caller's empty-search-box case, not something worth propagating as an
+/// error up through the UI.
+pub fn search_document(pdfium: &Pdfium, bytes: &[u8], query: &str) -> Result<Vec<PdfSearchMatch>> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+    let options = PdfSearchOptions::new();
+    let mut out = Vec::new();
+
+    for (page_index, page) in document.pages().iter().enumerate() {
+        let text = page.text()?;
+        let search = text.search(query, &options)?;
+        for segments in search.iter(PdfSearchDirection::SearchForward) {
+            let quads: Vec<[f64; 8]> = segments
+                .iter()
+                .map(|segment| {
+                    let b = segment.bounds();
+                    [
+                        b.left().value as f64,
+                        b.top().value as f64,
+                        b.right().value as f64,
+                        b.top().value as f64,
+                        b.left().value as f64,
+                        b.bottom().value as f64,
+                        b.right().value as f64,
+                        b.bottom().value as f64,
+                    ]
+                })
+                .collect();
+            if !quads.is_empty() {
+                out.push(PdfSearchMatch {
+                    page: page_index as u16,
+                    quads,
+                });
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// A real text-run selection: the covered text (reading order) and one axis-aligned quad
@@ -310,6 +406,54 @@ pub fn blend_highlights(
             }
         }
     }
+}
+
+/// Which kind of markup annotation `blend_annotations` should render a quad as. `Highlight`
+/// fills the quad edge to edge, same as `blend_highlights`; `Underline`/`Strikeout` narrow it
+/// to a thin band first, so it reads as a line rather than a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkupKind {
+    Highlight,
+    Underline,
+    Strikeout,
+}
+
+/// As `blend_highlights`, but per-quad `kind`-aware — the PDF-reader render path's single
+/// entry point for drawing all three drawable markup kinds (`AnnotationKind::Note` has no
+/// quad to draw; it's marginal, not on-page). Reuses `blend_highlights`'s own pixel math
+/// (band-narrowed for Underline/Strikeout) rather than duplicating it, so the fill/scale/
+/// alpha logic — and its existing tests — stay the single source of truth.
+pub fn blend_annotations(
+    page: &mut RenderedPage,
+    page_width_pts: f32,
+    page_height_pts: f32,
+    items: &[(MarkupKind, [f64; 8])],
+    rgba: [u8; 4],
+) {
+    for (kind, q) in items {
+        let narrowed = match kind {
+            MarkupKind::Highlight => *q,
+            // A thin band near the bottom of the text line.
+            MarkupKind::Underline => narrow_band(q, 0.0, 0.18),
+            // A thin band through the vertical middle.
+            MarkupKind::Strikeout => narrow_band(q, 0.42, 0.58),
+        };
+        blend_highlights(page, page_width_pts, page_height_pts, &[narrowed], rgba);
+    }
+}
+
+/// Replace quad `q`'s vertical extent with the band from `frac_bottom` to `frac_top` of its
+/// own height (both in `[0.0, 1.0]`, measured up from the quad's bottom edge) — how
+/// `blend_annotations` turns a full text-line quad into a thin underline/strikeout bar.
+fn narrow_band(q: &[f64; 8], frac_bottom: f64, frac_top: f64) -> [f64; 8] {
+    let ys = [q[1], q[3], q[5], q[7]];
+    let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let height = max_y - min_y;
+    let top = min_y + height * frac_top;
+    let bottom = min_y + height * frac_bottom;
+    // top-left, top-right, bottom-left, bottom-right — same convention as `rect_to_quad`.
+    [q[0], top, q[2], top, q[4], bottom, q[6], bottom]
 }
 
 /// Scan extracted text for the first DOI (`10.NNNN/...`). Returns it normalized (trailing
@@ -502,7 +646,9 @@ pub fn extract_text_from_file(pdfium: &Pdfium, path: &Path) -> Result<PdfText> {
 
 #[cfg(test)]
 mod tests {
-    use super::{blend_highlights, find_doi, find_isbn, RenderedPage};
+    use super::{
+        blend_annotations, blend_highlights, find_doi, find_isbn, MarkupKind, RenderedPage,
+    };
 
     #[test]
     fn finds_labeled_isbn13_with_hyphens() {
@@ -604,5 +750,77 @@ mod tests {
             [255, 0, 0, 255],
         );
         assert_eq!(page.rgba, before);
+    }
+
+    #[test]
+    fn blend_annotations_fills_the_whole_quad_for_highlight() {
+        // A 10x10px render of a 10x10pt page — quad spans y in [2, 8].
+        let mut highlight_page = white_page(10);
+        let quad = [2.0, 8.0, 8.0, 8.0, 2.0, 2.0, 8.0, 2.0];
+        blend_annotations(
+            &mut highlight_page,
+            10.0,
+            10.0,
+            &[(MarkupKind::Highlight, quad)],
+            [255, 200, 0, 255],
+        );
+        let mut direct = white_page(10);
+        blend_highlights(&mut direct, 10.0, 10.0, &[quad], [255, 200, 0, 255]);
+        assert_eq!(
+            highlight_page.rgba, direct.rgba,
+            "Highlight kind should blend identically to blend_highlights"
+        );
+    }
+
+    #[test]
+    fn blend_annotations_narrows_underline_and_strikeout_to_thin_bands() {
+        // A 10x10px render of a 10x10pt page, quad spans the full page (y in [0, 10]).
+        let quad = [0.0, 10.0, 10.0, 10.0, 0.0, 0.0, 10.0, 0.0];
+        let rgba = [255, 0, 0, 255];
+
+        let mut underline_page = white_page(10);
+        blend_annotations(
+            &mut underline_page,
+            10.0,
+            10.0,
+            &[(MarkupKind::Underline, quad)],
+            rgba,
+        );
+        // Underline band is near the bottom of the quad — pixel-space y near the *bottom* of
+        // the image, since PDF y is bottom-up and pixel y is top-down. Row 9 (bottom-most)
+        // should be tinted; row 0 (top) should not.
+        let bottom_row_idx = ((9 * underline_page.width) * 4) as usize;
+        let top_row_idx = 0usize;
+        assert_ne!(
+            &underline_page.rgba[bottom_row_idx..bottom_row_idx + 3],
+            &[255, 255, 255]
+        );
+        assert_eq!(
+            &underline_page.rgba[top_row_idx..top_row_idx + 3],
+            &[255, 255, 255]
+        );
+
+        let mut strikeout_page = white_page(10);
+        blend_annotations(
+            &mut strikeout_page,
+            10.0,
+            10.0,
+            &[(MarkupKind::Strikeout, quad)],
+            rgba,
+        );
+        // Strikeout band is through the middle — row 5 tinted, rows 0 and 9 not.
+        let middle_row_idx = ((5 * strikeout_page.width) * 4) as usize;
+        assert_ne!(
+            &strikeout_page.rgba[middle_row_idx..middle_row_idx + 3],
+            &[255, 255, 255]
+        );
+        assert_eq!(
+            &strikeout_page.rgba[top_row_idx..top_row_idx + 3],
+            &[255, 255, 255]
+        );
+        assert_eq!(
+            &strikeout_page.rgba[bottom_row_idx..bottom_row_idx + 3],
+            &[255, 255, 255]
+        );
     }
 }
