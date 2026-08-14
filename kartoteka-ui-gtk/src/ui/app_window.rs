@@ -2,7 +2,7 @@
 //! pane showing the selected entry's YAML and note. All data comes from `fond-bib`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,6 +33,11 @@ struct EntrySummary {
     author: String,
     year: String,
     title: String,
+    /// Whether a readable (present-on-disk) PDF/EPUB attachment exists, for the list row's
+    /// availability icon — same detection `show_detail` uses for its own Read button, computed
+    /// once at load time rather than re-reading each entry's note on every list render.
+    has_pdf: bool,
+    has_epub: bool,
 }
 
 /// How the visible list is ordered. `Default` keeps load order (by key) for an empty query
@@ -248,35 +253,39 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         search: search.clone(),
     });
 
-    // Collection selection → set the filter and refresh the list.
+    // Collection selection → set the filter and refresh the list. Resolved from data
+    // attached to the row itself (`refresh_collections`/`collection_row`) rather than its
+    // index — the tree layout means a collection's position no longer maps to a stable
+    // offset into `state.collections`/`saved_searches` the way a flat list's did.
     {
         let state = state.clone();
         let widgets = widgets.clone();
         collections_listbox.connect_row_selected(move |_, row| {
             let Some(row) = row else { return };
-            let idx = row.index();
-            if idx < 0 {
-                return;
-            }
-            let idx = idx as usize;
-            let (n_coll, saved) = {
-                let s = state.borrow();
-                (s.collections.len(), s.saved_searches.clone())
-            };
-            if idx == 0 {
-                // All entries.
+            if let Some(slug) = (unsafe { row.data::<String>("collection-slug") })
+                .map(|p| unsafe { p.as_ref() }.clone())
+            {
+                state.borrow_mut().collection_filter = Some(slug);
+                widgets.search.set_text("");
+                refresh_list(&state, &widgets);
+            } else if let Some(name) = (unsafe { row.data::<String>("saved-search-name") })
+                .map(|p| unsafe { p.as_ref() }.clone())
+            {
+                let query = state
+                    .borrow()
+                    .saved_searches
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, q)| q.clone());
+                state.borrow_mut().collection_filter = None;
+                if let Some(query) = query {
+                    widgets.search.set_text(&query); // triggers refresh via search_changed
+                }
+            } else {
+                // "All entries" — the only row with neither tag.
                 state.borrow_mut().collection_filter = None;
                 widgets.search.set_text("");
                 refresh_list(&state, &widgets);
-            } else if idx <= n_coll {
-                let slug = state.borrow().collections.get(idx - 1).cloned();
-                state.borrow_mut().collection_filter = slug;
-                widgets.search.set_text("");
-                refresh_list(&state, &widgets);
-            } else if let Some((_, query)) = saved.get(idx - n_coll - 1) {
-                // Saved search: clear collection filter, run the query.
-                state.borrow_mut().collection_filter = None;
-                widgets.search.set_text(query); // triggers refresh via search_changed
             }
         });
     }
@@ -2594,6 +2603,7 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
         Ok(keys) => {
             for key in keys {
                 if let Ok(parsed) = library.load_entry(&key) {
+                    let (has_pdf, has_epub) = attachment_presence(&library, &key);
                     entries.push(EntrySummary {
                         author: bibentry::author_names(&parsed.entry),
                         year: bibentry::year(&parsed.entry)
@@ -2601,6 +2611,8 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
                             .unwrap_or_default(),
                         title: bibentry::title_string(&parsed.entry).unwrap_or_default(),
                         key,
+                        has_pdf,
+                        has_epub,
                     });
                 }
             }
@@ -2683,7 +2695,64 @@ fn save_saved_searches(state: &Rc<RefCell<AppState>>) {
     }
 }
 
-/// Rebuild the collections list: "All entries", each collection, then saved searches.
+/// Depth-first sidebar order for a set of collections — top-level first, each one
+/// immediately followed by its own children, `(slug, name, depth)`. A `parent` that names an
+/// unknown slug, or that would form a cycle, is treated as top-level rather than dropping the
+/// collection from the sidebar or looping forever — a hand-edited file is the only way either
+/// case would happen, and it should still render as *something*.
+fn order_collection_tree(
+    collections: &[(String, fond_bib::Collection)],
+) -> Vec<(String, String, usize)> {
+    let known: HashSet<&str> = collections.iter().map(|(slug, _)| slug.as_str()).collect();
+    let mut children: HashMap<Option<String>, Vec<usize>> = HashMap::new();
+    for (i, (slug, coll)) in collections.iter().enumerate() {
+        let parent = coll
+            .parent
+            .as_ref()
+            .filter(|p| known.contains(p.as_str()) && p.as_str() != slug.as_str())
+            .cloned();
+        children.entry(parent).or_default().push(i);
+    }
+
+    fn walk(
+        parent: Option<&str>,
+        depth: usize,
+        collections: &[(String, fond_bib::Collection)],
+        children: &HashMap<Option<String>, Vec<usize>>,
+        visited: &mut [bool],
+        out: &mut Vec<(String, String, usize)>,
+    ) {
+        let Some(idxs) = children.get(&parent.map(str::to_string)) else {
+            return;
+        };
+        for &i in idxs {
+            if visited[i] {
+                continue;
+            }
+            visited[i] = true;
+            let (slug, coll) = &collections[i];
+            out.push((slug.clone(), coll.name.clone(), depth));
+            walk(Some(slug), depth + 1, collections, children, visited, out);
+        }
+    }
+
+    let mut visited = vec![false; collections.len()];
+    let mut out = Vec::with_capacity(collections.len());
+    walk(None, 0, collections, &children, &mut visited, &mut out);
+    // A collection unreachable from the root (only possible via a cycle with no member
+    // marked top-level, e.g. a's parent is b and b's parent is a) still needs to appear
+    // somewhere instead of silently vanishing from the sidebar.
+    for (i, (slug, coll)) in collections.iter().enumerate() {
+        if !visited[i] {
+            out.push((slug.clone(), coll.name.clone(), 0));
+        }
+    }
+    out
+}
+
+/// Rebuild the collections list: "All entries", each collection (nested under its parent, if
+/// any), then saved searches. Collection rows accept a drag of an entry's citation key
+/// (dragged from the entries list, see `make_row`) to add that entry to the collection.
 fn refresh_collections(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let slugs = state
         .borrow()
@@ -2692,32 +2761,63 @@ fn refresh_collections(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         .and_then(|l| l.collection_slugs().ok())
         .unwrap_or_default();
 
-    // Display name per slug.
-    let mut rows: Vec<(String, String)> = Vec::new(); // (slug, display name)
+    let mut loaded: Vec<(String, fond_bib::Collection)> = Vec::new();
     {
         let s = state.borrow();
         if let Some(lib) = s.library.as_ref() {
             for slug in &slugs {
-                let name = lib
-                    .load_collection(slug)
-                    .map(|c| c.name)
-                    .unwrap_or_else(|_| slug.clone());
-                rows.push((slug.clone(), name));
+                let coll = lib.load_collection(slug).unwrap_or_default();
+                loaded.push((slug.clone(), coll));
             }
         }
     }
-    state.borrow_mut().collections = rows.iter().map(|(s, _)| s.clone()).collect();
+    let ordered = order_collection_tree(&loaded);
+    state.borrow_mut().collections = ordered.iter().map(|(slug, _, _)| slug.clone()).collect();
 
     let lb = &widgets.collections_listbox;
     while let Some(child) = lb.first_child() {
         lb.remove(&child);
     }
-    lb.append(&collection_row("All entries", "view-list-symbolic"));
-    for (_, name) in &rows {
-        lb.append(&collection_row(name, "folder-symbolic"));
+    lb.append(&collection_row("All entries", "view-list-symbolic", 0));
+    for (slug, name, depth) in &ordered {
+        let row = collection_row(name, "folder-symbolic", *depth);
+        unsafe { row.set_data("collection-slug", slug.clone()) };
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let slug = slug.clone();
+            let drop = gtk4::DropTarget::new(glib::types::Type::STRING, gdk::DragAction::COPY);
+            drop.connect_drop(move |_, value, _, _| {
+                let Ok(key) = value.get::<String>() else {
+                    return false;
+                };
+                let result = {
+                    let s = state.borrow();
+                    s.library
+                        .as_ref()
+                        .map(|lib| lib.add_to_collection(&slug, &key))
+                };
+                match result {
+                    Some(Ok(())) => {
+                        refresh_list(&state, &widgets);
+                        toast(&widgets, "Added to collection");
+                        true
+                    }
+                    Some(Err(e)) => {
+                        toast(&widgets, &format!("Could not add to collection: {e}"));
+                        false
+                    }
+                    None => false,
+                }
+            });
+            row.add_controller(drop);
+        }
+        lb.append(&row);
     }
     for (name, _) in &state.borrow().saved_searches {
-        lb.append(&collection_row(name, "folder-saved-search-symbolic"));
+        let row = collection_row(name, "folder-saved-search-symbolic", 0);
+        unsafe { row.set_data("saved-search-name", name.clone()) };
+        lb.append(&row);
     }
     // Select "All entries" without triggering a reload loop.
     if let Some(first) = lb.row_at_index(0) {
@@ -2725,11 +2825,11 @@ fn refresh_collections(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     }
 }
 
-fn collection_row(label: &str, icon: &str) -> gtk4::ListBoxRow {
+fn collection_row(label: &str, icon: &str, depth: usize) -> gtk4::ListBoxRow {
     let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
     hbox.set_margin_top(5);
     hbox.set_margin_bottom(5);
-    hbox.set_margin_start(8);
+    hbox.set_margin_start(8 + (depth as i32) * 16);
     hbox.set_margin_end(8);
     let image = gtk4::Image::from_icon_name(icon);
     let text = gtk4::Label::new(Some(label));
@@ -3278,16 +3378,28 @@ fn membership_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: 
     {
         let s = state.borrow();
         let lib = s.library.as_ref().unwrap();
-        for slug in &slugs {
-            let coll = lib.load_collection(slug).unwrap_or_default();
-            let check = gtk4::CheckButton::with_label(if coll.name.is_empty() {
-                slug
-            } else {
-                &coll.name
-            });
-            check.set_active(coll.keys.iter().any(|k| k == key));
+        let loaded: Vec<(String, fond_bib::Collection)> = slugs
+            .iter()
+            .map(|slug| (slug.clone(), lib.load_collection(slug).unwrap_or_default()))
+            .collect();
+        let keys_by_slug: HashMap<&str, &Vec<String>> = loaded
+            .iter()
+            .map(|(slug, coll)| (slug.as_str(), &coll.keys))
+            .collect();
+        for (slug, name, depth) in order_collection_tree(&loaded) {
+            let label = format!(
+                "{}{}",
+                "    ".repeat(depth),
+                if name.is_empty() { &slug } else { &name }
+            );
+            let check = gtk4::CheckButton::with_label(&label);
+            check.set_active(
+                keys_by_slug
+                    .get(slug.as_str())
+                    .is_some_and(|keys| keys.iter().any(|k| k == key)),
+            );
             content.append(&check);
-            checks.push((slug.clone(), check));
+            checks.push((slug, check));
         }
     }
     view.set_content(Some(&content));
@@ -3307,18 +3419,12 @@ fn membership_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: 
                 let s = state.borrow();
                 let lib = s.library.as_ref().unwrap();
                 for (slug, check) in &checks {
-                    let mut coll = match lib.load_collection(slug) {
-                        Ok(c) => c,
-                        Err(_) => continue,
+                    let result = if check.is_active() {
+                        lib.add_to_collection(slug, &key)
+                    } else {
+                        lib.remove_from_collection(slug, &key)
                     };
-                    let present = coll.keys.iter().any(|k| k == &key);
-                    if check.is_active() && !present {
-                        coll.keys.push(key.clone());
-                        let _ = lib.save_collection(slug, &coll);
-                    } else if !check.is_active() && present {
-                        coll.keys.retain(|k| k != &key);
-                        let _ = lib.save_collection(slug, &coll);
-                    }
+                    let _ = result;
                 }
             }
             toast(&widgets, "Collections updated");
@@ -3676,6 +3782,35 @@ fn new_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         .activates_default(true)
         .build();
     content.append(&entry);
+
+    // "(top level)" plus every existing collection, indented to match the sidebar tree, so a
+    // new collection can be created directly as a child instead of only ever landing at the
+    // top and needing a later edit to nest it.
+    let (parent_slugs, parent_labels) = {
+        let s = state.borrow();
+        let lib = s.library.as_ref().expect("library open");
+        let slugs = lib.collection_slugs().unwrap_or_default();
+        let loaded: Vec<(String, fond_bib::Collection)> = slugs
+            .into_iter()
+            .map(|slug| {
+                let coll = lib.load_collection(&slug).unwrap_or_default();
+                (slug, coll)
+            })
+            .collect();
+        let ordered = order_collection_tree(&loaded);
+        let mut slugs = vec![String::new()];
+        let mut labels = vec!["(top level)".to_string()];
+        for (slug, name, depth) in ordered {
+            slugs.push(slug);
+            labels.push(format!("{}{}", "    ".repeat(depth), name));
+        }
+        (slugs, labels)
+    };
+    let parent_label_refs: Vec<&str> = parent_labels.iter().map(String::as_str).collect();
+    let parent_drop = gtk4::DropDown::from_strings(&parent_label_refs);
+    parent_drop.set_tooltip_text(Some("Parent collection (optional)"));
+    content.append(&parent_drop);
+
     view.set_content(Some(&content));
     dialog.set_content(Some(&view));
     {
@@ -3691,6 +3826,10 @@ fn new_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             if name.is_empty() {
                 return;
             }
+            let parent = parent_slugs
+                .get(parent_drop.selected() as usize)
+                .filter(|s| !s.is_empty())
+                .cloned();
             let slug = fond_bib::zotero::slugify(&name);
             let result = {
                 let s = state.borrow();
@@ -3700,6 +3839,7 @@ fn new_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                     &fond_bib::Collection {
                         name: name.clone(),
                         description: None,
+                        parent,
                         keys: Vec::new(),
                     },
                 )
@@ -3852,16 +3992,50 @@ fn make_row(e: &EntrySummary) -> gtk4::ListBoxRow {
     let meta = gtk4::Label::new(Some(&meta_text));
     meta.set_halign(gtk4::Align::Start);
     meta.set_xalign(0.0);
+    meta.set_hexpand(true);
     meta.set_ellipsize(gtk4::pango::EllipsizeMode::End);
     meta.add_css_class("fond-row-meta");
 
+    // Which readable formats are available, at a glance — the same "PDF"/"EPUB" language the
+    // detail pane's own attachment rows and Read button use, not a generic "has file" mark.
+    let meta_row = gtk4::Box::new(Orientation::Horizontal, 4);
+    meta_row.append(&meta);
+    if e.has_pdf {
+        let icon = gtk4::Image::from_icon_name("x-office-document-symbolic");
+        icon.set_pixel_size(12);
+        icon.add_css_class("dim-label");
+        icon.set_tooltip_text(Some("PDF available"));
+        meta_row.append(&icon);
+    }
+    if e.has_epub {
+        // Adwaita has no dedicated e-book glyph — a plain document icon distinguishable from
+        // the PDF one (`x-office-document-symbolic`) is the closest available, backed up by
+        // the tooltip and the detail pane's own labelled attachment rows.
+        let icon = gtk4::Image::from_icon_name("text-x-generic-symbolic");
+        icon.set_pixel_size(12);
+        icon.add_css_class("dim-label");
+        icon.set_tooltip_text(Some("EPUB available"));
+        meta_row.append(&icon);
+    }
+
     vbox.append(&title);
-    vbox.append(&meta);
+    vbox.append(&meta_row);
 
     let row = gtk4::ListBoxRow::new();
     row.add_css_class("fond-card");
     row.add_css_class("fond-row");
     row.set_child(Some(&vbox));
+
+    // Drag this entry's citation key onto a collection row (see `refresh_collections`'s
+    // `DropTarget`) to add it to that collection.
+    let drag = gtk4::DragSource::new();
+    drag.set_actions(gdk::DragAction::COPY);
+    {
+        let key = e.key.clone();
+        drag.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&key.to_value())));
+    }
+    row.add_controller(drag);
+
     row
 }
 
@@ -3882,34 +4056,150 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     // Load the note once (used for the action row, fields, and prose below).
     let note = library.load_note(&key).ok().flatten();
 
-    // Title.
+    // `title_text` stays a plain string (not the editable widget's live value) — it's what
+    // several action-button closures below capture for window titles/tooltips, computed
+    // once at render time same as before.
     let title_text = if summary.title.is_empty() {
         key.as_str()
     } else {
         summary.title.as_str()
     };
-    let title = gtk4::Label::new(Some(title_text));
-    title.add_css_class("title-2");
-    title.set_wrap(true);
-    title.set_xalign(0.0);
-    title.set_halign(gtk4::Align::Start);
-    title.set_selectable(true);
-    b.append(&title);
 
-    // Byline.
-    let byline = match (summary.author.is_empty(), summary.year.is_empty()) {
-        (false, false) => format!("{} · {}", summary.author, summary.year),
-        (false, true) => summary.author.clone(),
-        (true, false) => summary.year.clone(),
-        (true, true) => String::new(),
+    // Title, editable in place: a bare `Entry` styled to read like the heading it replaces
+    // (no dialog needed to fix a typo in a title). Author/year, previously a read-only
+    // byline here, are folded into the inline citation-fields form below instead, next to
+    // the rest of the bibliographic fields they belong with.
+    let current_fields = library
+        .load_entry(&key)
+        .ok()
+        .map(|p| fond_bib::entry::read_fields(&p.entry))
+        .unwrap_or_default();
+
+    let title_entry = gtk4::Entry::new();
+    title_entry.set_text(if current_fields.title.is_empty() {
+        &key
+    } else {
+        &current_fields.title
+    });
+    title_entry.add_css_class("title-2");
+    title_entry.add_css_class("fond-inline-title");
+    title_entry.set_has_frame(false);
+    title_entry.set_hexpand(true);
+    b.append(&title_entry);
+
+    // Type choices: the shared ITEM_TYPES list, plus the entry's own type appended if it is
+    // something not in that list (so an exotic type round-trips instead of being silently
+    // changed) — same fallback `show_citation_editor` used.
+    let mut type_choices: Vec<(String, String)> = ITEM_TYPES
+        .iter()
+        .map(|(l, t)| (l.to_string(), t.to_string()))
+        .collect();
+    if !current_fields.entry_type.is_empty()
+        && !type_choices
+            .iter()
+            .any(|(_, t)| t == &current_fields.entry_type)
+    {
+        type_choices.push((
+            current_fields.entry_type.clone(),
+            current_fields.entry_type.clone(),
+        ));
+    }
+    let type_labels: Vec<&str> = type_choices.iter().map(|(l, _)| l.as_str()).collect();
+    let type_drop = gtk4::DropDown::from_strings(&type_labels);
+    type_drop.set_selected(
+        type_choices
+            .iter()
+            .position(|(_, t)| t == &current_fields.entry_type)
+            .unwrap_or(0) as u32,
+    );
+
+    let authors_entry = gtk4::Entry::builder()
+        .text(current_fields.authors.replace('\n', "; "))
+        .placeholder_text("Last, First; Last, First")
+        .build();
+    let year_entry = gtk4::Entry::builder().text(&current_fields.year).build();
+    let publisher_entry = gtk4::Entry::builder()
+        .text(&current_fields.publisher)
+        .build();
+    let doi_entry = gtk4::Entry::builder().text(&current_fields.doi).build();
+    let isbn_entry = gtk4::Entry::builder().text(&current_fields.isbn).build();
+
+    // One save path for the whole citation-fields form: rebuilds a full `EntryFields` from
+    // every widget's *current* value (not just whichever one triggered the save) and hands
+    // it to `Library::edit_fields`, which diffs against the entry's on-disk state itself and
+    // writes only what changed. Skips the write (and the reload it would trigger) entirely
+    // when nothing actually differs from `current_fields` — every field commits on its own
+    // focus-out/Enter, so tabbing through an unedited form must not fire a write per field.
+    let save_citation: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        let current_fields = current_fields.clone();
+        let type_choices = type_choices.clone();
+        let type_drop = type_drop.clone();
+        let title_entry = title_entry.clone();
+        let authors_entry = authors_entry.clone();
+        let year_entry = year_entry.clone();
+        let publisher_entry = publisher_entry.clone();
+        let doi_entry = doi_entry.clone();
+        let isbn_entry = isbn_entry.clone();
+        Rc::new(move || {
+            let entry_type = type_choices
+                .get(type_drop.selected() as usize)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| current_fields.entry_type.clone());
+            let authors_field = authors_entry
+                .text()
+                .split([';', '\n'])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let edited = fond_bib::entry::EntryFields {
+                entry_type,
+                title: title_entry.text().trim().to_string(),
+                authors: authors_field,
+                year: year_entry.text().trim().to_string(),
+                publisher: publisher_entry.text().trim().to_string(),
+                doi: doi_entry.text().trim().to_string(),
+                isbn: isbn_entry.text().trim().to_string(),
+            };
+            if edited == current_fields {
+                return;
+            }
+            let result = {
+                let s = state.borrow();
+                s.library.as_ref().map(|lib| lib.edit_fields(&key, &edited))
+            };
+            match result {
+                Some(Ok(())) => {
+                    rebuild_index_silent(&state);
+                    reload_current(&state, &widgets);
+                    select_key(&state, &widgets, &key);
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
+                None => {}
+            }
+        })
     };
-    if !byline.is_empty() {
-        let label = gtk4::Label::new(Some(&byline));
-        label.add_css_class("dim-label");
-        label.set_wrap(true);
-        label.set_xalign(0.0);
-        label.set_halign(gtk4::Align::Start);
-        b.append(&label);
+    for entry in [
+        &title_entry,
+        &authors_entry,
+        &year_entry,
+        &publisher_entry,
+        &doi_entry,
+        &isbn_entry,
+    ] {
+        let save = save_citation.clone();
+        entry.connect_activate(move |_| save());
+        let save = save_citation.clone();
+        let focus = gtk4::EventControllerFocus::new();
+        focus.connect_leave(move |_| save());
+        entry.add_controller(focus);
+    }
+    {
+        let save = save_citation.clone();
+        type_drop.connect_selected_notify(move |_| save());
     }
 
     // First present attachment of each format Kartoteka has a built-in reader for. Previously
@@ -3960,10 +4250,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         })
     });
 
-    let doi = library
-        .load_entry(&key)
-        .ok()
-        .and_then(|p| p.entry.doi().map(|d| d.to_string()));
+    let doi = (!current_fields.doi.is_empty()).then(|| current_fields.doi.clone());
 
     // Action row: a bounded primary set — the PDF action (Read/Find PDF, contextual), Edit,
     // Cite — plus a "More" popover for everything else. Previously this was a single
@@ -4077,39 +4364,19 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
         }
     }
 
-    // Edit: one button covering both edit surfaces — the bibliographic fields (title,
-    // author, year…) and the personal note (tags, status, rating, prose) — via a small
-    // popover, so neither has to lose out on being "the" primary edit action.
-    let edit_button = gtk4::MenuButton::builder().label("Edit").build();
+    // Edit: the bibliographic fields and tags/status/rating are now editable directly in
+    // the fields below (click into a field, no dialog) — this button is left for the note
+    // editor's remaining fields (progress, cite preferences, tasks, prose) that aren't
+    // inline yet.
+    let edit_button = gtk4::Button::with_label("Edit note…");
+    edit_button.set_tooltip_text(Some(
+        "Edit reading progress, citation preferences, tasks, and your own notes",
+    ));
     {
-        let (popover, rows) = popover_menu(190);
-        let row = popover_button("Edit citation info…", false);
-        row.set_tooltip_text(Some("Edit the bibliographic fields (title, author, year…)"));
-        {
-            let popover = popover.clone();
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.clone();
-            row.connect_clicked(move |_| {
-                popover.popdown();
-                show_citation_editor(&state, &widgets, &key);
-            });
-        }
-        rows.append(&row);
-        let row = popover_button("Edit note…", false);
-        row.set_tooltip_text(Some("Edit tags, status, rating, and your own notes"));
-        {
-            let popover = popover.clone();
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.clone();
-            row.connect_clicked(move |_| {
-                popover.popdown();
-                show_note_editor(&state, &widgets, &key);
-            });
-        }
-        rows.append(&row);
-        edit_button.set_popover(Some(&popover));
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        edit_button.connect_clicked(move |_| show_note_editor(&state, &widgets, &key));
     }
     actions.append(&edit_button);
 
@@ -4306,38 +4573,128 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_ind
     // further away; see the "Details" expander appended below.
     let details_fields = gtk4::Box::new(Orientation::Vertical, 4);
 
-    // Structured fields from the entry.
-    if let Ok(parsed) = library.load_entry(&key) {
-        let e = &parsed.entry;
-        fields.append(&field_row(
-            "Type",
-            &format!("{:?}", e.entry_type()).to_lowercase(),
-        ));
-        let key_row = field_row("Citation key", &key);
-        key_row.set_tooltip_text(Some(
-            "Used to cite this work in a Typst document, e.g. @key",
-        ));
-        details_fields.append(&key_row);
-        if let Some(doi) = e.doi() {
-            fields.append(&field_row("DOI", doi));
-        }
-        if let Some(isbn) = e.isbn() {
-            fields.append(&field_row("ISBN", isbn));
-        }
-    }
+    // Structured fields from the entry — editable in place (see `save_citation` above);
+    // Citation key stays read-only (it's derived, not a field to edit) and tucked in
+    // "Details" since it's Typst-specific, not something a reader of the entry needs.
+    fields.append(&labeled("Type", &type_drop));
+    fields.append(&labeled("Author(s)", &authors_entry));
+    fields.append(&labeled("Year", &year_entry));
+    fields.append(&labeled("Publisher", &publisher_entry));
+    fields.append(&labeled("DOI", &doi_entry));
+    fields.append(&labeled("ISBN", &isbn_entry));
+    let key_row = field_row("Citation key", &key);
+    key_row.set_tooltip_text(Some(
+        "Used to cite this work in a Typst document, e.g. @key",
+    ));
+    details_fields.append(&key_row);
 
-    // Note-derived state: tags, attachments, annotations, prose.
+    // Note-derived state: tags/status/rating (editable in place, below), attachments,
+    // annotations, prose.
+    let current_tags = note
+        .as_ref()
+        .map(|n| n.frontmatter.tags.clone())
+        .unwrap_or_default();
+    let current_status = note.as_ref().and_then(|n| n.frontmatter.read_status);
+    let current_rating = note.as_ref().and_then(|n| n.frontmatter.rating);
+
+    // A plain field, not the old facet-grouped chip display (`tags_row`/`chip_group`,
+    // removed) — inline click-to-edit needs one widget that's both the display and the
+    // editor, and chips aren't that. `facet:value` syntax still works when typed here, just
+    // without the grouped/captioned rendering; worth revisiting if a flat list gets hard to
+    // scan again once facets and plain tags mix, the original reason chips existed.
+    let tags_entry = gtk4::Entry::builder()
+        .text(current_tags.join(", "))
+        .placeholder_text("comma, separated, tags")
+        .build();
+    let status_drop = gtk4::DropDown::from_strings(&["(none)", "unread", "reading", "read"]);
+    status_drop.set_selected(match current_status {
+        None => 0,
+        Some(fond_bib::ReadStatus::Unread) => 1,
+        Some(fond_bib::ReadStatus::Reading) => 2,
+        Some(fond_bib::ReadStatus::Read) => 3,
+    });
+    let rating_drop = gtk4::DropDown::from_strings(&["(none)", "1", "2", "3", "4", "5"]);
+    rating_drop.set_selected(current_rating.map(|r| r as u32).unwrap_or(0));
+
+    // Same shape as `save_citation`: rebuild the whole editable subset from live widget
+    // state, skip the write if it matches what was on disk at render time, otherwise
+    // load-mutate-write the note fresh (not the possibly-stale `note` this closure closes
+    // over) so fields this form doesn't manage — prose, attachments, progress, cite
+    // preferences, tasks — always round-trip untouched.
+    let save_note_fields: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.clone();
+        let current_tags = current_tags.clone();
+        let tags_entry = tags_entry.clone();
+        let status_drop = status_drop.clone();
+        let rating_drop = rating_drop.clone();
+        Rc::new(move || {
+            let new_tags: Vec<String> = tags_entry
+                .text()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let new_status = match status_drop.selected() {
+                1 => Some(fond_bib::ReadStatus::Unread),
+                2 => Some(fond_bib::ReadStatus::Reading),
+                3 => Some(fond_bib::ReadStatus::Read),
+                _ => None,
+            };
+            let new_rating = match rating_drop.selected() {
+                0 => None,
+                n => Some(n as u8),
+            };
+            if new_tags == current_tags
+                && new_status == current_status
+                && new_rating == current_rating
+            {
+                return;
+            }
+            let result = {
+                let s = state.borrow();
+                s.library.as_ref().map(|lib| {
+                    let mut note = lib.load_note(&key).ok().flatten().unwrap_or_default();
+                    note.frontmatter.tags = new_tags;
+                    note.frontmatter.read_status = new_status;
+                    note.frontmatter.rating = new_rating;
+                    lib.write_note(&key, &note)
+                })
+            };
+            match result {
+                Some(Ok(_)) => {
+                    rebuild_index_silent(&state);
+                    reload_current(&state, &widgets);
+                    select_key(&state, &widgets, &key);
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
+                None => {}
+            }
+        })
+    };
+    {
+        let save = save_note_fields.clone();
+        tags_entry.connect_activate(move |_| save());
+        let save = save_note_fields.clone();
+        let focus = gtk4::EventControllerFocus::new();
+        focus.connect_leave(move |_| save());
+        tags_entry.add_controller(focus);
+    }
+    {
+        let save = save_note_fields.clone();
+        status_drop.connect_selected_notify(move |_| save());
+    }
+    {
+        let save = save_note_fields.clone();
+        rating_drop.connect_selected_notify(move |_| save());
+    }
+    fields.append(&labeled("Tags", &tags_entry));
+    fields.append(&labeled("Status", &status_drop));
+    fields.append(&labeled("Rating", &rating_drop));
+
     let mut note_body = String::new();
     if let Some(note) = &note {
-        if !note.frontmatter.tags.is_empty() {
-            fields.append(&tags_row(&note.frontmatter.tags));
-        }
-        if let Some(status) = note.frontmatter.read_status {
-            fields.append(&field_row("Status", &format!("{status:?}").to_lowercase()));
-        }
-        if let Some(rating) = note.frontmatter.rating {
-            fields.append(&field_row("Rating", &"★".repeat(rating.min(5) as usize)));
-        }
         for att in &note.frontmatter.attachments {
             let hex = att
                 .hash
@@ -4656,6 +5013,32 @@ impl ReaderAttachmentKind {
             None
         }
     }
+}
+
+/// Whether `key` has a readable (present-on-disk) PDF and/or EPUB attachment — same
+/// detection `show_detail` uses for its own Read button, factored out so the entry list's
+/// row icon (`EntrySummary::has_pdf`/`has_epub`) can reuse it without duplicating the
+/// hash-strip-and-check-on-disk logic.
+fn attachment_presence(library: &Library, key: &str) -> (bool, bool) {
+    let note = library.load_note(key).ok().flatten();
+    let has = |wanted: ReaderAttachmentKind| {
+        note.as_ref().is_some_and(|n| {
+            n.frontmatter.attachments.iter().any(|att| {
+                ReaderAttachmentKind::from_filename(&att.filename) == Some(wanted) && {
+                    let hex = att
+                        .hash
+                        .split_once(':')
+                        .map(|(_, h)| h)
+                        .unwrap_or(&att.hash);
+                    library.attachment_blob_path(hex).exists()
+                }
+            })
+        })
+    };
+    (
+        has(ReaderAttachmentKind::Pdf),
+        has(ReaderAttachmentKind::Epub),
+    )
 }
 
 /// Open an attachment blob in the system PDF viewer. The blob is content-addressed with no
@@ -4981,6 +5364,9 @@ struct ReaderState {
     /// entry — a drag copies the covered text to the clipboard instead of saving an
     /// annotation.
     draw_kind: Option<fond_bib::AnnotationKind>,
+    /// The most recent "Select text" copy — page (0-based) and text — so the next note added
+    /// on that same page can quote it instead of starting blank. Cleared once consumed.
+    last_selection: Option<(u16, String)>,
     /// Every match from the last search (empty if none run yet, or the last search found
     /// nothing), and which one is "current" — `render()` blends that one's quads in a
     /// distinct colour when the current page matches, and prev/next-match cycle this index.
@@ -5086,9 +5472,13 @@ type DragRectCell = Rc<Cell<Option<(f64, f64, f64, f64)>>>;
 /// needs to trigger a fresh rebuild of the list it lives in.
 type RebuildNotesCell = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
+/// `page_of` resolves which page this preview belongs to at draw time — a fixed value in
+/// continuous-scroll mode (one overlay per page), but the reader's *current* page in paged
+/// mode (one recycled overlay, page changes as the user navigates).
 fn build_drag_preview_overlay(
     picture: &gtk4::Picture,
     reader: &Rc<RefCell<ReaderState>>,
+    page_of: impl Fn() -> u16 + 'static,
 ) -> (gtk4::Overlay, gtk4::DrawingArea, DragRectCell) {
     let live_rect: DragRectCell = Rc::new(Cell::new(None));
 
@@ -5099,22 +5489,89 @@ fn build_drag_preview_overlay(
     {
         let live_rect = live_rect.clone();
         let reader = reader.clone();
-        preview.set_draw_func(move |_area, cr, _w, _h| {
+        preview.set_draw_func(move |_area, cr, w, h| {
             let Some((x0, y0, x1, y1)) = live_rect.get() else {
                 return;
             };
-            let rgba = annotation_rgba(Some(&reader.borrow().draw_color));
+            let select_mode = reader.borrow().draw_kind.is_none();
+            let rgba = if select_mode {
+                SELECTION_RGBA
+            } else {
+                annotation_rgba(Some(&reader.borrow().draw_color))
+            };
             cr.set_source_rgba(
                 rgba[0] as f64 / 255.0,
                 rgba[1] as f64 / 255.0,
                 rgba[2] as f64 / 255.0,
                 (rgba[3] as f64 / 255.0 * 1.6).min(1.0),
             );
-            let x = x0.min(x1);
-            let y = y0.min(y1);
-            let w = (x1 - x0).abs();
-            let h = (y1 - y0).abs();
-            cr.rectangle(x, y, w, h);
+
+            // Line-aware preview: what a drag from (x0,y0) to (x1,y1) would actually select,
+            // not just its own bounding rectangle — matches what `save_drag_annotation`/
+            // `copy_drag_selection` compute at drag-end, so the preview doesn't lie about
+            // what's about to happen. Falls back to the plain rectangle over blank space
+            // (a figure, a margin) where there's no text to hug.
+            let page = page_of();
+            let page_pts = {
+                let r = reader.borrow();
+                fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
+            };
+            let line_rects = (page_pts.0 > 0.0 && page_pts.1 > 0.0 && w > 0 && h > 0)
+                .then(|| {
+                    let scale_x = w as f64 / page_pts.0 as f64;
+                    let scale_y = h as f64 / page_pts.1 as f64;
+                    let to_pdf = |px: f64, py: f64| {
+                        let x = px.clamp(0.0, w as f64) / scale_x;
+                        let y = page_pts.1 as f64 - py.clamp(0.0, h as f64) / scale_y;
+                        (x, y)
+                    };
+                    let (sx, sy) = to_pdf(x0, y0);
+                    let (ex, ey) = to_pdf(x1, y1);
+                    let r = reader.borrow();
+                    fond_doc::select_text_range(
+                        &r.pdfium, &r.bytes, page, sx as f32, sy as f32, ex as f32, ey as f32,
+                    )
+                    .ok()
+                    .flatten()
+                })
+                .flatten()
+                .map(|sel| {
+                    let scale_x = w as f64 / page_pts.0 as f64;
+                    let scale_y = h as f64 / page_pts.1 as f64;
+                    sel.quads
+                        .iter()
+                        .map(|q| {
+                            let min_x = q[0].min(q[2]).min(q[4]).min(q[6]);
+                            let max_x = q[0].max(q[2]).max(q[4]).max(q[6]);
+                            let min_y = q[1].min(q[3]).min(q[5]).min(q[7]);
+                            let max_y = q[1].max(q[3]).max(q[5]).max(q[7]);
+                            (
+                                min_x * scale_x,
+                                h as f64 - max_y * scale_y,
+                                max_x * scale_x,
+                                h as f64 - min_y * scale_y,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                });
+
+            match line_rects {
+                Some(rects) if !rects.is_empty() => {
+                    for (rx0, ry0, rx1, ry1) in rects {
+                        cr.rectangle(
+                            rx0.min(rx1),
+                            ry0.min(ry1),
+                            (rx1 - rx0).abs(),
+                            (ry1 - ry0).abs(),
+                        );
+                    }
+                }
+                _ => {
+                    let x = x0.min(x1);
+                    let y = y0.min(y1);
+                    cr.rectangle(x, y, (x1 - x0).abs(), (y1 - y0).abs());
+                }
+            }
             let _ = cr.fill();
         });
     }
@@ -5143,10 +5600,23 @@ const HIGHLIGHT_RGBA: [u8; 4] = [246, 195, 68, 140];
 /// Blue at ~65% opacity — deliberately distinct from `HIGHLIGHT_RGBA` so the current search
 /// match reads as "found this" and not as a saved highlight.
 const SEARCH_MATCH_RGBA: [u8; 4] = [66, 133, 244, 165];
+/// Blue at ~35% opacity, the live drag preview's tint in "Select text" mode — same hue
+/// family as `SEARCH_MATCH_RGBA` (a "this is transient, not a saved mark" blue) but its own
+/// constant since the two never appear together and may want to diverge later.
+const SELECTION_RGBA: [u8; 4] = [66, 133, 244, 90];
 /// Below this, a drag reads as a stray click, not an intentional highlight.
 const MIN_DRAG_PX: f64 = 6.0;
 /// Vertical gap between pages in continuous-scroll mode.
 const CONTINUOUS_PAGE_GAP: f64 = 8.0;
+
+/// The pointer shown over the page: an I-beam in "Select text" mode (this is a text
+/// selection, not a highlight-drawing gesture), the default arrow otherwise. `None` means
+/// "reset to default" — `Widget::set_cursor(None)` is how GTK4 clears a per-widget override.
+fn cursor_for_select_mode(select_mode: bool) -> Option<gdk::Cursor> {
+    select_mode
+        .then(|| gdk::Cursor::from_name("text", None))
+        .flatten()
+}
 
 /// Render `page` (0-based) to a ready-to-display texture, with this entry's saved
 /// annotations — and, if `page` has the current search match, that match's highlight too —
@@ -5237,10 +5707,11 @@ struct DragGeometry {
     end_y: f64,
 }
 
-/// The PDF-space rectangle (left, bottom, right, top, in points) a drag covers, given its
-/// pixel geometry — the inverse of the page's render scale. `None` if the geometry is
-/// degenerate (zero-sized render, or a page with no reported point size).
-fn drag_pdf_rect(geom: &DragGeometry) -> Option<(f64, f64, f64, f64)> {
+/// The PDF-space points a drag's start/end cover, given its pixel geometry — the inverse of
+/// the page's render scale. Order-preserving (unlike a sorted rectangle), since
+/// `select_text_range` needs to know which endpoint is the reading-order start. `None` if
+/// the geometry is degenerate (zero-sized render, or a page with no reported point size).
+fn drag_pdf_points(geom: &DragGeometry) -> Option<((f64, f64), (f64, f64))> {
     let &DragGeometry {
         render_w,
         render_h,
@@ -5256,41 +5727,37 @@ fn drag_pdf_rect(geom: &DragGeometry) -> Option<(f64, f64, f64, f64)> {
     }
     let scale_x = render_w as f64 / page_w_pts as f64;
     let scale_y = render_h as f64 / page_h_pts as f64;
-
-    let px0 = start_x.min(end_x).clamp(0.0, render_w as f64);
-    let px1 = start_x.max(end_x).clamp(0.0, render_w as f64);
-    let py0 = start_y.min(end_y).clamp(0.0, render_h as f64);
-    let py1 = start_y.max(end_y).clamp(0.0, render_h as f64);
-
-    let x0 = px0 / scale_x;
-    let x1 = px1 / scale_x;
-    // PDF y is bottom-up; the drag's y is top-down pixel space.
-    let y_top = page_h_pts as f64 - py0 / scale_y;
-    let y_bottom = page_h_pts as f64 - py1 / scale_y;
-    Some((x0, y_bottom, x1, y_top))
+    let to_pdf = |px: f64, py: f64| {
+        let x = px.clamp(0.0, render_w as f64) / scale_x;
+        // PDF y is bottom-up; the drag's y is top-down pixel space.
+        let y = page_h_pts as f64 - py.clamp(0.0, render_h as f64) / scale_y;
+        (x, y)
+    };
+    Some((to_pdf(start_x, start_y), to_pdf(end_x, end_y)))
 }
 
 /// Copies the text under a "Select text" mode drag to the clipboard instead of saving an
-/// annotation — the drag-to-annotate gesture's other mode.
+/// annotation — the drag-to-annotate gesture's other mode. Remembers the selection (page +
+/// text) on `reader` so a note added right after can quote it — see `last_selection`.
 fn copy_drag_selection(
     widgets: &Rc<Widgets>,
     reader: &Rc<RefCell<ReaderState>>,
     page: u16,
     geom: &DragGeometry,
 ) {
-    let Some((x0, y_bottom, x1, y_top)) = drag_pdf_rect(geom) else {
+    let Some((start, end)) = drag_pdf_points(geom) else {
         return;
     };
     let selection = {
         let r = reader.borrow();
-        fond_doc::select_text_in_rect(
+        fond_doc::select_text_range(
             &r.pdfium,
             &r.bytes,
             page,
-            x0 as f32,
-            y_bottom as f32,
-            x1 as f32,
-            y_top as f32,
+            start.0 as f32,
+            start.1 as f32,
+            end.0 as f32,
+            end.1 as f32,
         )
         .ok()
         .flatten()
@@ -5300,6 +5767,7 @@ fn copy_drag_selection(
             if let Some(display) = gdk::Display::default() {
                 display.clipboard().set_text(&sel.text);
             }
+            reader.borrow_mut().last_selection = Some((page, sel.text));
             toast(widgets, "Copied to clipboard");
         }
         _ => toast(widgets, "No text found in selection"),
@@ -5314,7 +5782,7 @@ fn save_drag_annotation(
     page: u16,
     geom: DragGeometry,
 ) -> bool {
-    let Some((x0, y_bottom, x1, y_top)) = drag_pdf_rect(&geom) else {
+    let Some((start, end)) = drag_pdf_points(&geom) else {
         return false;
     };
 
@@ -5328,25 +5796,30 @@ fn save_drag_annotation(
         return false;
     };
 
-    // Prefer the actual text under the drag — one quad per line it spans, hugging the
-    // glyphs — over the drag rectangle's own bounding box. Falls back to the plain
+    // Prefer the actual text under the drag, line-aware (a straight vertical drag through a
+    // paragraph selects each in-between line in full, not just the narrow column under the
+    // pointer) — over the drag rectangle's own bounding box. Falls back to the plain
     // rectangle when the drag covers no text (a figure, a blank margin).
     let (quads, snippet) = {
         let r = reader.borrow();
-        fond_doc::select_text_in_rect(
+        fond_doc::select_text_range(
             &r.pdfium,
             &r.bytes,
             page,
-            x0 as f32,
-            y_bottom as f32,
-            x1 as f32,
-            y_top as f32,
+            start.0 as f32,
+            start.1 as f32,
+            end.0 as f32,
+            end.1 as f32,
         )
         .ok()
         .flatten()
     }
     .map(|sel| (sel.quads, Some(sel.text)))
     .unwrap_or_else(|| {
+        let x0 = start.0.min(end.0);
+        let x1 = start.0.max(end.0);
+        let y_top = start.1.max(end.1);
+        let y_bottom = start.1.min(end.1);
         (
             vec![[x0, y_top, x1, y_top, x0, y_bottom, x1, y_bottom]],
             None,
@@ -5702,10 +6175,12 @@ fn build_continuous_view(
     let mut offsets = Vec::with_capacity(count as usize + 1);
     let mut y = 0.0f64;
 
+    let select_mode = reader.borrow().draw_kind.is_none();
     for page in 0..count {
         let picture = gtk4::Picture::new();
         picture.set_halign(gtk4::Align::Center);
         picture.set_can_target(true);
+        picture.set_cursor(cursor_for_select_mode(select_mode).as_ref());
 
         // Plausible size from the page's own point dimensions — cheap metadata, not a
         // rasterization — so the layout is correct before this page's texture has rendered.
@@ -5724,7 +6199,7 @@ fn build_continuous_view(
         y += h as f64 + CONTINUOUS_PAGE_GAP;
 
         let (page_overlay, drag_preview, drag_live_rect) =
-            build_drag_preview_overlay(&picture, reader);
+            build_drag_preview_overlay(&picture, reader, move || page);
         page_overlay.set_halign(gtk4::Align::Center);
 
         // Drag-to-annotate on this page's own permanent Picture — `page` is captured by
@@ -6114,6 +6589,7 @@ fn show_pdf_reader(
         render_px: (0, 0),
         page_pts: (0.0, 0.0),
         draw_kind: Some(fond_bib::AnnotationKind::Highlight),
+        last_selection: None,
         search_matches: Vec::new(),
         search_current: 0,
         draw_color: COLOR_PRESETS[0].1.to_string(),
@@ -6277,8 +6753,10 @@ fn show_pdf_reader(
     picture.set_halign(gtk4::Align::Center);
     picture.set_valign(gtk4::Align::Start);
     picture.set_can_target(true);
-    let (picture_overlay, drag_preview, drag_live_rect) =
-        build_drag_preview_overlay(&picture, &reader);
+    let (picture_overlay, drag_preview, drag_live_rect) = {
+        let reader_for_page = reader.clone();
+        build_drag_preview_overlay(&picture, &reader, move || reader_for_page.borrow().page)
+    };
     picture_overlay.set_halign(gtk4::Align::Center);
     picture_overlay.set_valign(gtk4::Align::Start);
     let scroll = gtk4::ScrolledWindow::new();
@@ -7171,12 +7649,18 @@ fn show_pdf_reader(
     {
         let reader = reader.clone();
         let hint = hint.clone();
+        let picture = picture.clone();
         mode_drop.connect_selected_notify(move |drop| {
             let idx = drop.selected() as usize;
             let Some((_, kind)) = DRAW_KIND_OPTIONS.get(idx) else {
                 return;
             };
             reader.borrow_mut().draw_kind = *kind;
+            let cursor = cursor_for_select_mode(kind.is_none());
+            picture.set_cursor(cursor.as_ref());
+            for p in &reader.borrow().continuous_pictures {
+                p.set_cursor(cursor.as_ref());
+            }
             let text = match kind {
                 None => "Drag over text to copy it",
                 Some(fond_bib::AnnotationKind::Highlight) => "Drag over text to highlight it",
@@ -7430,6 +7914,24 @@ fn show_pdf_note_dialog(
     text_view.set_margin_bottom(8);
     text_view.set_margin_start(8);
     text_view.set_margin_end(8);
+
+    // Pre-fill with the last "Select text" copy, quoted with its page number, if it was made
+    // on this same page — consumed either way so a stale selection from another page doesn't
+    // linger into some later, unrelated note.
+    let selection_for_this_page = {
+        let mut r = reader.borrow_mut();
+        match r.last_selection.take() {
+            Some((sel_page, text)) if sel_page == r.page => Some(text),
+            _ => None,
+        }
+    };
+    if let Some(sel_text) = selection_for_this_page {
+        let buffer = text_view.buffer();
+        buffer.set_text(&format!("p. {current_page}: \"{sel_text}\"\n\n"));
+        let end = buffer.end_iter();
+        buffer.place_cursor(&end);
+    }
+
     let scrolled = gtk4::ScrolledWindow::new();
     scrolled.set_vexpand(true);
     scrolled.set_child(Some(&text_view));
@@ -8028,142 +8530,11 @@ fn epub_go_to(
 }
 
 /// Edit an entry's note: tags, read status, rating, and prose. Writes `notes/<key>.md`.
-/// The structured citation editor: a small form over the common bibliographic fields
-/// (type, title, authors, year, publisher, DOI, ISBN). It edits only those fields — every
-/// other field on the entry is preserved (see `Library::edit_fields`). On save it rewrites
-/// the entry, rebuilds the search index, and refreshes the detail panel.
-fn show_citation_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
-    let current = {
-        let s = state.borrow();
-        let Some(lib) = s.library.as_ref() else {
-            return;
-        };
-        match lib.load_entry(key) {
-            Ok(parsed) => fond_bib::entry::read_fields(&parsed.entry),
-            Err(e) => {
-                drop(s);
-                toast(widgets, &format!("Could not read entry: {e}"));
-                return;
-            }
-        }
-    };
-
-    // Type choices: the shared ITEM_TYPES list, plus the entry's own type appended if it is
-    // something not in that list (so an exotic type round-trips instead of being changed).
-    let mut types: Vec<(String, String)> = ITEM_TYPES
-        .iter()
-        .map(|(l, t)| (l.to_string(), t.to_string()))
-        .collect();
-    if !current.entry_type.is_empty() && !types.iter().any(|(_, t)| t == &current.entry_type) {
-        types.push((current.entry_type.clone(), current.entry_type.clone()));
-    }
-
-    let dialog = adw::Window::new();
-    dialog.set_title(Some("Edit citation"));
-    dialog.set_modal(true);
-    dialog.set_transient_for(Some(&widgets.window));
-    dialog.set_default_size(480, -1);
-
-    let view = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    header.add_css_class("fond-chrome");
-    header.set_show_start_title_buttons(false);
-    header.set_show_end_title_buttons(false);
-    let cancel = gtk4::Button::with_label("Cancel");
-    let save = gtk4::Button::with_label("Save");
-    save.add_css_class("suggested-action");
-    header.pack_start(&cancel);
-    header.pack_end(&save);
-    view.add_top_bar(&header);
-
-    let content = gtk4::Box::new(Orientation::Vertical, 8);
-    content.set_margin_top(16);
-    content.set_margin_bottom(16);
-    content.set_margin_start(16);
-    content.set_margin_end(16);
-
-    let type_labels: Vec<&str> = types.iter().map(|(l, _)| l.as_str()).collect();
-    let type_drop = gtk4::DropDown::from_strings(&type_labels);
-    type_drop.set_selected(
-        types
-            .iter()
-            .position(|(_, t)| t == &current.entry_type)
-            .unwrap_or(0) as u32,
-    );
-    let title = gtk4::Entry::builder().text(&current.title).build();
-    // Authors: one "Family, Given" per line internally; shown compactly as "; "-separated.
-    let authors = gtk4::Entry::builder()
-        .text(current.authors.replace('\n', "; "))
-        .placeholder_text("Last, First; Last, First")
-        .build();
-    let year = gtk4::Entry::builder().text(&current.year).build();
-    let publisher = gtk4::Entry::builder().text(&current.publisher).build();
-    let doi = gtk4::Entry::builder().text(&current.doi).build();
-    let isbn = gtk4::Entry::builder().text(&current.isbn).build();
-
-    content.append(&labeled("Type", &type_drop));
-    content.append(&labeled("Title", &title));
-    content.append(&labeled("Author(s)", &authors));
-    content.append(&labeled("Year", &year));
-    content.append(&labeled("Publisher", &publisher));
-    content.append(&labeled("DOI", &doi));
-    content.append(&labeled("ISBN", &isbn));
-
-    view.set_content(Some(&content));
-    dialog.set_content(Some(&view));
-
-    {
-        let dialog = dialog.clone();
-        cancel.connect_clicked(move |_| dialog.close());
-    }
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let dialog = dialog.clone();
-        let key = key.to_string();
-        save.connect_clicked(move |_| {
-            let entry_type = types
-                .get(type_drop.selected() as usize)
-                .map(|(_, t)| t.clone())
-                .unwrap_or_else(|| current.entry_type.clone());
-            let authors_field = authors
-                .text()
-                .split([';', '\n'])
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let edited = fond_bib::entry::EntryFields {
-                entry_type,
-                title: title.text().trim().to_string(),
-                authors: authors_field,
-                year: year.text().trim().to_string(),
-                publisher: publisher.text().trim().to_string(),
-                doi: doi.text().trim().to_string(),
-                isbn: isbn.text().trim().to_string(),
-            };
-
-            let result = {
-                let s = state.borrow();
-                s.library.as_ref().map(|lib| lib.edit_fields(&key, &edited))
-            };
-            match result {
-                Some(Ok(())) => {
-                    rebuild_index_silent(&state);
-                    reload_current(&state, &widgets);
-                    select_key(&state, &widgets, &key);
-                    toast(&widgets, "Citation updated");
-                    dialog.close();
-                }
-                Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
-                None => {}
-            }
-        });
-    }
-
-    dialog.present();
-}
-
+/// (The bibliographic fields this used to share a dialog with — type, title, authors, year,
+/// publisher, DOI, ISBN — are edited inline in the detail pane now; see `save_citation` in
+/// `show_detail`. Tags/status/rating moved inline too, via `save_note_fields`. This dialog
+/// remains for the fields still without an inline home: progress, cite preferences, tasks,
+/// and the free-text note body.)
 fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
     let note = {
         let s = state.borrow();
@@ -8196,26 +8567,6 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
     content.set_margin_bottom(18);
     content.set_margin_start(18);
     content.set_margin_end(18);
-
-    let tags = gtk4::Entry::builder()
-        .text(note.frontmatter.tags.join(", "))
-        .placeholder_text("comma, separated, tags")
-        .build();
-    content.append(&labeled("Tags", &tags));
-
-    let meta_row = gtk4::Box::new(Orientation::Horizontal, 12);
-    let status = gtk4::DropDown::from_strings(&["(none)", "unread", "reading", "read"]);
-    status.set_selected(match note.frontmatter.read_status {
-        None => 0,
-        Some(fond_bib::ReadStatus::Unread) => 1,
-        Some(fond_bib::ReadStatus::Reading) => 2,
-        Some(fond_bib::ReadStatus::Read) => 3,
-    });
-    let rating = gtk4::DropDown::from_strings(&["(none)", "1", "2", "3", "4", "5"]);
-    rating.set_selected(note.frontmatter.rating.map(|r| r as u32).unwrap_or(0));
-    meta_row.append(&labeled("Status", &status));
-    meta_row.append(&labeled("Rating", &rating));
-    content.append(&meta_row);
 
     // Progress (page X of Y) and per-entry citation preferences — both empty-by-default,
     // optional fields that round-tripped on disk only until now.
@@ -8376,23 +8727,9 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
         let dialog = dialog.clone();
         let key = key.to_string();
         save.connect_clicked(move |_| {
+            // Tags/status/rating aren't managed by this dialog anymore (inline in the detail
+            // pane instead) — `note.clone()` already carries them forward unchanged.
             let mut updated = note.clone();
-            updated.frontmatter.tags = tags
-                .text()
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
-            updated.frontmatter.read_status = match status.selected() {
-                1 => Some(fond_bib::ReadStatus::Unread),
-                2 => Some(fond_bib::ReadStatus::Reading),
-                3 => Some(fond_bib::ReadStatus::Read),
-                _ => None,
-            };
-            updated.frontmatter.rating = match rating.selected() {
-                n @ 1..=5 => Some(n as u8),
-                _ => None,
-            };
 
             let page: Option<u32> = progress_page.text().trim().parse().ok();
             let of: Option<u32> = progress_of.text().trim().parse().ok();
@@ -9324,74 +9661,6 @@ fn field_row(name: &str, value: &str) -> gtk4::Box {
     row.append(&name_label);
     row.append(&value_label);
     row
-}
-
-/// The detail panel's Tags row, grouped by facet (`docs/M2-SPEC.md` §2's `facet:value`
-/// convention — the same one `fond-index`'s search already scopes by `facet:`). Each facet
-/// gets its own small caption and a wrapped row of chips; plain (unfaceted) tags are their
-/// own trailing group with no caption. A flat comma list read fine at three tags; it stopped
-/// scanning as soon as facets and plain topical tags were mixed in the same string.
-fn tags_row(tags: &[String]) -> gtk4::Box {
-    let row = gtk4::Box::new(Orientation::Horizontal, 10);
-    let name_label = gtk4::Label::new(Some("Tags"));
-    name_label.add_css_class("dim-label");
-    name_label.set_xalign(1.0);
-    name_label.set_width_chars(13);
-    name_label.set_valign(gtk4::Align::Start);
-    row.append(&name_label);
-
-    let groups = gtk4::Box::new(Orientation::Vertical, 6);
-    groups.set_hexpand(true);
-
-    // Group into (facet, values), preserving first-seen facet order; unfaceted tags collect
-    // into their own trailing, caption-less group.
-    let mut faceted: Vec<(&str, Vec<&str>)> = Vec::new();
-    let mut plain: Vec<&str> = Vec::new();
-    for tag in tags {
-        match fond_bib::split_facet(tag) {
-            (Some(facet), value) => match faceted.iter_mut().find(|(f, _)| *f == facet) {
-                Some((_, values)) => values.push(value),
-                None => faceted.push((facet, vec![value])),
-            },
-            (None, value) => plain.push(value),
-        }
-    }
-    faceted.sort_by_key(|(facet, _)| *facet);
-
-    for (facet, values) in &faceted {
-        groups.append(&chip_group(Some(facet), values));
-    }
-    if !plain.is_empty() {
-        groups.append(&chip_group(None, &plain));
-    }
-
-    row.append(&groups);
-    row
-}
-
-/// One facet's worth of tag chips: an optional small caption, then a wrapped flow of chips.
-fn chip_group(facet: Option<&str>, values: &[&str]) -> gtk4::Box {
-    let col = gtk4::Box::new(Orientation::Vertical, 2);
-    if let Some(facet) = facet {
-        let caption = gtk4::Label::new(Some(facet));
-        caption.add_css_class("dim-label");
-        caption.add_css_class("caption");
-        caption.set_xalign(0.0);
-        col.append(&caption);
-    }
-    let flow = gtk4::FlowBox::new();
-    flow.set_selection_mode(gtk4::SelectionMode::None);
-    flow.set_row_spacing(4);
-    flow.set_column_spacing(4);
-    flow.set_homogeneous(false);
-    flow.set_max_children_per_line(u32::MAX);
-    for value in values {
-        let chip = gtk4::Label::new(Some(value));
-        chip.add_css_class("tag-chip");
-        flow.insert(&chip, -1);
-    }
-    col.append(&flow);
-    col
 }
 
 fn human_size(bytes: u64) -> String {

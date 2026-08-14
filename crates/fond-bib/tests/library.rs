@@ -672,6 +672,7 @@ fn delete_entry_removes_files_relations_and_collection_membership() {
         &fond_bib::Collection {
             name: "Reading".into(),
             description: None,
+            parent: None,
             keys: vec!["a".into(), "b".into()],
         },
     )
@@ -695,6 +696,30 @@ fn delete_entry_removes_files_relations_and_collection_membership() {
     // Deleting again is a harmless no-op.
     let again = lib.delete_entry("a").unwrap();
     assert!(again.files_removed.is_empty());
+}
+
+// ---- add_to_collection / remove_from_collection --------------------------------------
+
+#[test]
+fn add_to_collection_is_idempotent() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a"]);
+    lib.save_collection(
+        "reading",
+        &fond_bib::Collection {
+            name: "Reading".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    lib.add_to_collection("reading", "a").unwrap();
+    lib.add_to_collection("reading", "a").unwrap();
+    assert_eq!(lib.load_collection("reading").unwrap().keys, vec!["a"]);
+
+    lib.remove_from_collection("reading", "a").unwrap();
+    lib.remove_from_collection("reading", "a").unwrap();
+    assert!(lib.load_collection("reading").unwrap().keys.is_empty());
 }
 
 #[test]

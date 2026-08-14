@@ -270,7 +270,23 @@ pub struct TextSelection {
 /// one line. Filtering every character's own bounds against the rectangle is the approach a
 /// real PDF viewer's click-drag selection uses, and is the only one that is correct for a
 /// multi-line drag.
-pub fn select_text_in_rect(
+/// One line of a gathered selection: its accumulated bounding box, joined text (in document
+/// order, which is reading order for normal prose), and the individual characters that make
+/// it up — kept around so `select_text_range` can trim the first/last line down to an exact
+/// click position after the fact, without re-walking the page.
+struct Line {
+    left: f32,
+    right: f32,
+    bottom: f32,
+    top: f32,
+    text: String,
+    chars: Vec<(f32, f32, String)>,
+}
+
+/// Every character on `index` whose bounds overlap the rectangle, grouped into lines. Shared
+/// by `select_text_in_rect` (rectangle-bounded) and `select_text_range` (reading-order,
+/// line-aware) — both start from the same raw character gather.
+fn gather_lines(
     pdfium: &Pdfium,
     bytes: &[u8],
     index: u16,
@@ -278,7 +294,7 @@ pub fn select_text_in_rect(
     bottom: f32,
     right: f32,
     top: f32,
-) -> Result<Option<TextSelection>> {
+) -> Result<Vec<Line>> {
     let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
     let page = document.pages().get(index)?;
     let text = page.text()?;
@@ -300,20 +316,9 @@ pub fn select_text_in_rect(
             hits.push((bounds, c.unicode_string().unwrap_or_default()));
         }
     }
-    if hits.is_empty() {
-        return Ok(None);
-    }
 
-    // Group consecutive hits (already in document order, which is reading order for normal
-    // prose) into lines: a new hit starts a new line whenever its vertical range no longer
-    // overlaps the current line's accumulated range.
-    struct Line {
-        left: f32,
-        right: f32,
-        bottom: f32,
-        top: f32,
-        text: String,
-    }
+    // Group consecutive hits into lines: a new hit starts a new line whenever its vertical
+    // range no longer overlaps the current line's accumulated range.
     let mut lines: Vec<Line> = Vec::new();
     for (bounds, ch) in hits {
         let (l, r, b, t) = (
@@ -332,7 +337,8 @@ pub fn select_text_in_rect(
                 right: r,
                 bottom: b,
                 top: t,
-                text: ch,
+                text: ch.clone(),
+                chars: vec![(l, r, ch)],
             });
         } else {
             let line = lines.last_mut().expect("just checked non-empty");
@@ -341,9 +347,37 @@ pub fn select_text_in_rect(
             line.bottom = line.bottom.min(b);
             line.top = line.top.max(t);
             line.text.push_str(&ch);
+            line.chars.push((l, r, ch));
         }
     }
+    Ok(lines)
+}
 
+/// Drops every character in `line` outside `[min_x, max_x)` (either bound optional, meaning
+/// unconstrained on that side) and recomputes the line's bounding box and text from what's
+/// left. Used to trim a line-aware selection's first/last line down to the exact click
+/// position, once the rest of the line's characters have already established the line itself.
+fn trim_line(line: &mut Line, min_x: Option<f32>, max_x: Option<f32>) {
+    line.chars.retain(|(l, r, _)| {
+        min_x.map(|m| *r > m).unwrap_or(true) && max_x.map(|m| *l < m).unwrap_or(true)
+    });
+    if line.chars.is_empty() {
+        return;
+    }
+    line.left = line
+        .chars
+        .iter()
+        .map(|(l, _, _)| *l)
+        .fold(f32::INFINITY, f32::min);
+    line.right = line
+        .chars
+        .iter()
+        .map(|(_, r, _)| *r)
+        .fold(f32::NEG_INFINITY, f32::max);
+    line.text = line.chars.iter().map(|(_, _, c)| c.as_str()).collect();
+}
+
+fn lines_to_selection(lines: &[Line]) -> TextSelection {
     let quads = lines
         .iter()
         .map(|line| {
@@ -364,11 +398,75 @@ pub fn select_text_in_rect(
         .map(|l| l.text.trim())
         .collect::<Vec<_>>()
         .join(" ");
-
-    Ok(Some(TextSelection {
+    TextSelection {
         text: joined_text,
         quads,
-    }))
+    }
+}
+
+pub fn select_text_in_rect(
+    pdfium: &Pdfium,
+    bytes: &[u8],
+    index: u16,
+    left: f32,
+    bottom: f32,
+    right: f32,
+    top: f32,
+) -> Result<Option<TextSelection>> {
+    let lines = gather_lines(pdfium, bytes, index, left, bottom, right, top)?;
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(lines_to_selection(&lines)))
+}
+
+/// Find the text a drag from `(start_x, start_y)` to `(end_x, end_y)` (PDF points) covers on
+/// page `index`, the way a real text editor's click-drag selection works rather than a plain
+/// rectangle: dragging straight down through the middle of a paragraph selects each
+/// in-between line in full — left edge to right edge — not just the narrow column directly
+/// under the pointer, and only the first and last lines are trimmed to the actual start/end
+/// x position. `None` if the drag covers no text.
+///
+/// PDF y is bottom-up, so "top" (reading-order start) is whichever endpoint has the larger
+/// y — direction-agnostic, a drag can run in either direction. A single-line drag has no
+/// "middle" to leave untrimmed, so it degenerates to the same rectangle behaviour as
+/// `select_text_in_rect`.
+pub fn select_text_range(
+    pdfium: &Pdfium,
+    bytes: &[u8],
+    index: u16,
+    start_x: f32,
+    start_y: f32,
+    end_x: f32,
+    end_y: f32,
+) -> Result<Option<TextSelection>> {
+    let ((top_x, top_y), (bottom_x, bottom_y)) = if start_y >= end_y {
+        ((start_x, start_y), (end_x, end_y))
+    } else {
+        ((end_x, end_y), (start_x, start_y))
+    };
+
+    // Wider than any real PDF page (in points), so the initial gather is unconstrained
+    // horizontally — trimming to the actual click x happens after, only on the end lines.
+    const WIDE: f32 = 100_000.0;
+    let mut lines = gather_lines(pdfium, bytes, index, -WIDE, bottom_y, WIDE, top_y)?;
+    if lines.is_empty() {
+        return Ok(None);
+    }
+
+    if lines.len() == 1 {
+        let (lo, hi) = (top_x.min(bottom_x), top_x.max(bottom_x));
+        trim_line(&mut lines[0], Some(lo), Some(hi));
+    } else {
+        let last = lines.len() - 1;
+        trim_line(&mut lines[0], Some(top_x), None);
+        trim_line(&mut lines[last], None, Some(bottom_x));
+    }
+    lines.retain(|l| !l.chars.is_empty());
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(lines_to_selection(&lines)))
 }
 
 /// Blend semi-transparent highlight rectangles into an already-rendered page's pixels, given

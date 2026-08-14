@@ -705,6 +705,31 @@ impl Library {
         Ok(path)
     }
 
+    /// Add `key` to the collection at `slug`, if it isn't already a member. A no-op (not an
+    /// error) if it's already there — matches the idempotent load-mutate-save pattern the
+    /// membership dialog and `delete_entry`/merge already use inline, factored out here so a
+    /// single-collection assignment (e.g. dragging an entry onto a collection row) doesn't
+    /// need to reimplement it.
+    pub fn add_to_collection(&self, slug: &str, key: &str) -> Result<()> {
+        let mut coll = self.load_collection(slug)?;
+        if !coll.keys.iter().any(|k| k == key) {
+            coll.keys.push(key.to_string());
+            self.save_collection(slug, &coll)?;
+        }
+        Ok(())
+    }
+
+    /// Remove `key` from the collection at `slug`, if present. A no-op (not an error) if it
+    /// isn't there. See `add_to_collection`.
+    pub fn remove_from_collection(&self, slug: &str, key: &str) -> Result<()> {
+        let mut coll = self.load_collection(slug)?;
+        if coll.keys.iter().any(|k| k == key) {
+            coll.keys.retain(|k| k != key);
+            self.save_collection(slug, &coll)?;
+        }
+        Ok(())
+    }
+
     /// Delete a collection file. Missing is not an error.
     pub fn delete_collection(&self, slug: &str) -> Result<()> {
         let path = self.collection_path(slug);

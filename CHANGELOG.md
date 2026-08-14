@@ -2,6 +2,33 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.5.0] "Cross Reference" — 2026-08-14 — Nested collections and an editable-in-place detail pane
+
+"Select text" mode (and highlighting/underlining/strikeout too) now works the way a real
+text editor's click-drag selection does: dragging in a straight line down through a
+paragraph selects each whole in-between line, not just the narrow column directly under the
+pointer — only the first and last lines are trimmed to the exact start/end position. The
+cursor switches to an I-beam in Select mode, and the live drag preview now shows the actual
+line-aware selection (in a distinct blue tint for Select mode) instead of a plain rectangle.
+
+Adding a note right after copying a text selection on the same page now pre-fills the note
+with the selected text, quoted and tagged with its page number, instead of starting blank.
+
+**Collections can now nest.** A collection can have a parent (set at creation, or by hand in
+its `collections/<slug>.yml`), and the sidebar shows the resulting tree, indented — the
+"Collections…" membership dialog reflects the same nesting. Drag an entry from the list
+straight onto a collection in the sidebar to add it there, instead of only through the
+membership dialog.
+
+Each entry in the list now shows a small icon when a PDF and/or EPUB is available to open,
+at a glance, without opening the entry first.
+
+**The detail pane is directly editable — no dialog required.** Type, Title, Author(s), Year,
+Publisher, DOI, ISBN, Tags, Status, and Rating are now live fields: click into one, edit it,
+and it saves on Enter or when you click away. The "Edit citation info…" dialog is gone (its
+job is done inline now); "Edit note…" remains for the fields that aren't inline yet —
+reading progress, citation preferences, tasks, and the free-text note body.
+
 ## [0.4.0] "Quiet Margin" — 2026-08-14 — PDF reader usability pass
 
 The Contents/table-of-contents sidebar is now user-resizable via its Paned handle instead of

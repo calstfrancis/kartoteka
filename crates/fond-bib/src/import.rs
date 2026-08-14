@@ -253,8 +253,17 @@ impl Library {
         // Track which item ids we actually needed, to report only relevant misses.
         let mut needed: HashSet<i64> = HashSet::new();
 
-        // Collections → collections/<slug>.yml.
+        // Collections → collections/<slug>.yml. Slugs are pre-assigned for every Zotero
+        // collection up front (not lazily inside the loop below) so a child can resolve its
+        // parent's slug regardless of processing order, and even if the parent itself ends
+        // up empty of matched items and so gets no file written — same tolerance `fsck`
+        // already has for a collection key with no matching entry.
         let mut used_slugs: HashSet<String> = HashSet::new();
+        let mut name_to_slug: HashMap<String, String> = HashMap::new();
+        for coll in &data.collections {
+            let slug = unique_slug(&zotero::slugify(&coll.name), &mut used_slugs);
+            name_to_slug.insert(coll.name.clone(), slug);
+        }
         for coll in &data.collections {
             let mut keys = Vec::new();
             for id in &coll.item_ids {
@@ -268,7 +277,14 @@ impl Library {
             if keys.is_empty() {
                 continue; // nothing of this collection matched; skip the empty file
             }
-            let slug = unique_slug(&zotero::slugify(&coll.name), &mut used_slugs);
+            let slug = name_to_slug
+                .get(&coll.name)
+                .cloned()
+                .unwrap_or_else(|| unique_slug(&zotero::slugify(&coll.name), &mut used_slugs));
+            let parent = coll
+                .parent_name
+                .as_ref()
+                .and_then(|p| name_to_slug.get(p).cloned());
             let description = coll
                 .parent_name
                 .as_ref()
@@ -277,6 +293,7 @@ impl Library {
             let collection = Collection {
                 name: coll.name.clone(),
                 description,
+                parent,
                 keys,
             };
             let path = self.collection_path(&slug);

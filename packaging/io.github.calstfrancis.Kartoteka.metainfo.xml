@@ -46,6 +46,25 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.5.0" date="2026-08-14">
+      <description>
+        <p>0.5.0 "Cross Reference" — nested collections, drag-to-organize, and a detail pane
+        you edit in place.</p>
+        <ul>
+          <li>Text selection (and highlighting/underlining/strikeout) is now line-aware — a
+          straight vertical drag through a paragraph selects each whole in-between line, not
+          just the narrow column under the pointer.</li>
+          <li>Collections can nest: give a collection a parent and the sidebar shows the
+          resulting tree. Drag an entry from the list straight onto a collection to add it
+          there.</li>
+          <li>The detail pane is directly editable — Type, Title, Author(s), Year,
+          Publisher, DOI, ISBN, Tags, Status, and Rating all save on Enter or on click-away,
+          no dialog required.</li>
+          <li>Each entry in the list now shows a small icon when a PDF and/or EPUB is
+          available to open.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-08-14">
       <description>
         <p>0.4.0 "Quiet Margin" — a big PDF reader usability pass, and a hang fixed.</p>
