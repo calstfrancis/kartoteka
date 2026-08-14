@@ -2,6 +2,35 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.4.0-dev1] — PDF reader usability pass
+
+The Contents/table-of-contents sidebar is now user-resizable via its Paned handle instead of
+being pinned to the width of the longest chapter title, and can be dragged down to a slim
+strip. Continuous scrolling is now the reader's default mode (was single-page); switching
+between continuous and single-page already preserved your position and still does.
+
+The old per-page "This page" dropdown for editing/deleting annotations is gone — **right-click
+a highlight, underline, strikeout, or note** to edit its note text or delete it inline, or
+right-click blank page space to add a new note there. A new **Notes sidebar toggle** (next to
+Contents) lists every note and highlight in the whole document, with its highlighted snippet
+and note text readable at a glance rather than just an on-page icon — click an entry to jump
+to its page, or delete it from there too. Highlight and search-match colours are also more
+visible (raised from ~35%/50% to ~55%/65% opacity).
+
+Page navigation and zoom controls moved from the headerbar down to a new bottom status bar,
+freeing the headerbar's title slot to show the document's own name again.
+
+**Fixed:** opening a PDF (or switching into continuous-scroll mode) could hang the whole
+window for the document's full render time, sometimes appearing to freeze permanently —
+continuous mode's page layout used to rasterize every page synchronously before showing
+anything. Page sizing is now computed from cheap PDF metadata up front (instant), and each
+page's actual image renders incrementally in idle time afterward, starting from whichever
+page you opened on.
+
+Dragging a PDF onto the window to add it now tells you when a drop couldn't be read (an
+unrecognized drag source, or a remote file with no local path) instead of silently doing
+nothing.
+
 ## [0.3.0] "Loose Leaf" — 2026-08-13 — Markdown annotation export, multi-attachment reading
 
 Annotations are now readable without opening Kartoteka at all, à la Zotero's "add note from
