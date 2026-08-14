@@ -407,7 +407,10 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
                 // (e.g. it only provided plain text, or a non-local URI) — previously this
                 // failed completely silently, which looked identical to the drop just not
                 // registering at all.
-                toast(&widgets, "Couldn't read the dropped file — try dragging from a file manager");
+                toast(
+                    &widgets,
+                    "Couldn't read the dropped file — try dragging from a file manager",
+                );
                 return false;
             };
             if state.borrow().library.is_none() {
@@ -437,7 +440,10 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
                 }
             }
             if skipped_remote && !handled {
-                toast(&widgets, "Only local files can be dropped — try opening it first");
+                toast(
+                    &widgets,
+                    "Only local files can be dropped — try opening it first",
+                );
             }
             handled
         });
@@ -5266,7 +5272,12 @@ fn drag_pdf_rect(geom: &DragGeometry) -> Option<(f64, f64, f64, f64)> {
 
 /// Copies the text under a "Select text" mode drag to the clipboard instead of saving an
 /// annotation — the drag-to-annotate gesture's other mode.
-fn copy_drag_selection(widgets: &Rc<Widgets>, reader: &Rc<RefCell<ReaderState>>, page: u16, geom: &DragGeometry) {
+fn copy_drag_selection(
+    widgets: &Rc<Widgets>,
+    reader: &Rc<RefCell<ReaderState>>,
+    page: u16,
+    geom: &DragGeometry,
+) {
     let Some((x0, y_bottom, x1, y_top)) = drag_pdf_rect(geom) else {
         return;
     };
@@ -5545,8 +5556,7 @@ fn show_pdf_context_menu(
                     push_undo_snapshot(&reader);
                     {
                         let mut r = reader.borrow_mut();
-                        if let Some(a) = r.annotations.annotations.iter_mut().find(|a| a.id == id)
-                        {
+                        if let Some(a) = r.annotations.annotations.iter_mut().find(|a| a.id == id) {
                             a.note = (!text.is_empty()).then(|| text.to_string());
                         }
                     }
@@ -5787,7 +5797,8 @@ fn build_continuous_view(
                         copy_drag_selection(&widgets, &reader, page, &geom);
                         return;
                     }
-                    let saved = save_drag_annotation(&state, &widgets, &reader, &pdf_hash, page, geom);
+                    let saved =
+                        save_drag_annotation(&state, &widgets, &reader, &pdf_hash, page, geom);
                     if saved {
                         render_continuous_page(&reader, page);
                         sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
@@ -6767,7 +6778,11 @@ fn show_pdf_reader(
                 rebuild_notes();
                 sidebar_stack.set_visible_child_name("notes");
                 paned.set_start_child(Some(&sidebar_stack));
-            } else if sidebar_toggle.as_ref().map(|b| !b.is_active()).unwrap_or(true) {
+            } else if sidebar_toggle
+                .as_ref()
+                .map(|b| !b.is_active())
+                .unwrap_or(true)
+            {
                 paned.set_start_child(gtk4::Widget::NONE);
             }
         });
