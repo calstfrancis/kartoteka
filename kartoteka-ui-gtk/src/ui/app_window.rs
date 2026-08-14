@@ -4971,8 +4971,10 @@ struct ReaderState {
     page_pts: (f32, f32),
     /// Which kind the next drag creates — set by the mode `DropDown`, defaulting to
     /// `Highlight`. `Note` is never drawn this way (it has no on-page region); it's added
-    /// via the separate "Note…" button instead.
-    draw_kind: fond_bib::AnnotationKind,
+    /// via the separate "Note…" button instead. `None` is the drop-down's "Select text"
+    /// entry — a drag copies the covered text to the clipboard instead of saving an
+    /// annotation.
+    draw_kind: Option<fond_bib::AnnotationKind>,
     /// Every match from the last search (empty if none run yet, or the last search found
     /// nothing), and which one is "current" — `render()` blends that one's quads in a
     /// distinct colour when the current page matches, and prev/next-match cycle this index.
@@ -5120,11 +5122,13 @@ fn build_drag_preview_overlay(
 
 /// The `DropDown`'s fixed option order — index into this, not into `AnnotationKind`
 /// directly, since the drop-down deliberately excludes `Note` (drawn via its own button, not
-/// a drag gesture).
-const DRAW_KIND_OPTIONS: [(&str, fond_bib::AnnotationKind); 3] = [
-    ("Highlight", fond_bib::AnnotationKind::Highlight),
-    ("Underline", fond_bib::AnnotationKind::Underline),
-    ("Strikeout", fond_bib::AnnotationKind::Strikeout),
+/// a drag gesture) and adds a `None` "Select text" entry with no `AnnotationKind` of its own
+/// (a drag in that mode copies to the clipboard instead of saving an annotation).
+const DRAW_KIND_OPTIONS: [(&str, Option<fond_bib::AnnotationKind>); 4] = [
+    ("Select text", None),
+    ("Highlight", Some(fond_bib::AnnotationKind::Highlight)),
+    ("Underline", Some(fond_bib::AnnotationKind::Underline)),
+    ("Strikeout", Some(fond_bib::AnnotationKind::Strikeout)),
 ];
 
 const READER_BASE_WIDTH: f64 = 820.0;
@@ -5227,15 +5231,11 @@ struct DragGeometry {
     end_y: f64,
 }
 
-fn save_drag_annotation(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
-    reader: &Rc<RefCell<ReaderState>>,
-    pdf_hash: &str,
-    page: u16,
-    geom: DragGeometry,
-) -> bool {
-    let DragGeometry {
+/// The PDF-space rectangle (left, bottom, right, top, in points) a drag covers, given its
+/// pixel geometry — the inverse of the page's render scale. `None` if the geometry is
+/// degenerate (zero-sized render, or a page with no reported point size).
+fn drag_pdf_rect(geom: &DragGeometry) -> Option<(f64, f64, f64, f64)> {
+    let &DragGeometry {
         render_w,
         render_h,
         page_w_pts,
@@ -5246,7 +5246,7 @@ fn save_drag_annotation(
         end_y,
     } = geom;
     if render_w == 0 || render_h == 0 || page_w_pts <= 0.0 || page_h_pts <= 0.0 {
-        return false;
+        return None;
     }
     let scale_x = render_w as f64 / page_w_pts as f64;
     let scale_y = render_h as f64 / page_h_pts as f64;
@@ -5261,10 +5261,60 @@ fn save_drag_annotation(
     // PDF y is bottom-up; the drag's y is top-down pixel space.
     let y_top = page_h_pts as f64 - py0 / scale_y;
     let y_bottom = page_h_pts as f64 - py1 / scale_y;
+    Some((x0, y_bottom, x1, y_top))
+}
+
+/// Copies the text under a "Select text" mode drag to the clipboard instead of saving an
+/// annotation — the drag-to-annotate gesture's other mode.
+fn copy_drag_selection(widgets: &Rc<Widgets>, reader: &Rc<RefCell<ReaderState>>, page: u16, geom: &DragGeometry) {
+    let Some((x0, y_bottom, x1, y_top)) = drag_pdf_rect(geom) else {
+        return;
+    };
+    let selection = {
+        let r = reader.borrow();
+        fond_doc::select_text_in_rect(
+            &r.pdfium,
+            &r.bytes,
+            page,
+            x0 as f32,
+            y_bottom as f32,
+            x1 as f32,
+            y_top as f32,
+        )
+        .ok()
+        .flatten()
+    };
+    match selection {
+        Some(sel) if !sel.text.trim().is_empty() => {
+            if let Some(display) = gdk::Display::default() {
+                display.clipboard().set_text(&sel.text);
+            }
+            toast(widgets, "Copied to clipboard");
+        }
+        _ => toast(widgets, "No text found in selection"),
+    }
+}
+
+fn save_drag_annotation(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    reader: &Rc<RefCell<ReaderState>>,
+    pdf_hash: &str,
+    page: u16,
+    geom: DragGeometry,
+) -> bool {
+    let Some((x0, y_bottom, x1, y_top)) = drag_pdf_rect(&geom) else {
+        return false;
+    };
 
     let (draw_kind, draw_color) = {
         let r = reader.borrow();
         (r.draw_kind, r.draw_color.clone())
+    };
+    // "Select text" mode has no `AnnotationKind` to save under — the caller routes that mode
+    // to `copy_drag_selection` instead and never reaches here, but guard anyway.
+    let Some(draw_kind) = draw_kind else {
+        return false;
     };
 
     // Prefer the actual text under the drag — one quad per line it spans, hugging the
@@ -5723,23 +5773,21 @@ fn build_continuous_view(
                         let r = reader.borrow();
                         fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
                     };
-                    let saved = save_drag_annotation(
-                        &state,
-                        &widgets,
-                        &reader,
-                        &pdf_hash,
-                        page,
-                        DragGeometry {
-                            render_w,
-                            render_h,
-                            page_w_pts: page_pts.0,
-                            page_h_pts: page_pts.1,
-                            start_x,
-                            start_y,
-                            end_x,
-                            end_y,
-                        },
-                    );
+                    let geom = DragGeometry {
+                        render_w,
+                        render_h,
+                        page_w_pts: page_pts.0,
+                        page_h_pts: page_pts.1,
+                        start_x,
+                        start_y,
+                        end_x,
+                        end_y,
+                    };
+                    if reader.borrow().draw_kind.is_none() {
+                        copy_drag_selection(&widgets, &reader, page, &geom);
+                        return;
+                    }
+                    let saved = save_drag_annotation(&state, &widgets, &reader, &pdf_hash, page, geom);
                     if saved {
                         render_continuous_page(&reader, page);
                         sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
@@ -6054,7 +6102,7 @@ fn show_pdf_reader(
         annotations,
         render_px: (0, 0),
         page_pts: (0.0, 0.0),
-        draw_kind: fond_bib::AnnotationKind::Highlight,
+        draw_kind: Some(fond_bib::AnnotationKind::Highlight),
         search_matches: Vec::new(),
         search_current: 0,
         draw_color: COLOR_PRESETS[0].1.to_string(),
@@ -6112,7 +6160,12 @@ fn show_pdf_reader(
 
     let mode_labels: Vec<&str> = DRAW_KIND_OPTIONS.iter().map(|(l, _)| *l).collect();
     let mode_drop = gtk4::DropDown::from_strings(&mode_labels);
-    mode_drop.set_tooltip_text(Some("What a drag on the page creates"));
+    mode_drop.set_tooltip_text(Some("What a drag on the page does"));
+    // Index 0 is "Select text" — start on "Highlight" (index 1) to match `ReaderState`'s own
+    // default and the reader's original drag behaviour; `connect_selected_notify` below only
+    // fires on a change, not on construction, so leaving this at the DropDown's own default
+    // of 0 would show "Select text" while every drag still highlighted until first touched.
+    mode_drop.set_selected(1);
 
     let color_labels: Vec<&str> = COLOR_PRESETS.iter().map(|(l, _)| *l).collect();
     let color_drop = gtk4::DropDown::from_strings(&color_labels);
@@ -6783,23 +6836,21 @@ fn show_pdf_reader(
                         r.page_pts.1,
                     )
                 };
-                let saved = save_drag_annotation(
-                    &state,
-                    &widgets,
-                    &reader,
-                    &pdf_hash,
-                    page,
-                    DragGeometry {
-                        render_w,
-                        render_h,
-                        page_w_pts,
-                        page_h_pts,
-                        start_x,
-                        start_y,
-                        end_x,
-                        end_y,
-                    },
-                );
+                let geom = DragGeometry {
+                    render_w,
+                    render_h,
+                    page_w_pts,
+                    page_h_pts,
+                    start_x,
+                    start_y,
+                    end_x,
+                    end_y,
+                };
+                if reader.borrow().draw_kind.is_none() {
+                    copy_drag_selection(&widgets, &reader, page, &geom);
+                    return;
+                }
+                let saved = save_drag_annotation(&state, &widgets, &reader, &pdf_hash, page, geom);
                 if saved {
                     render();
                     // Keep continuous mode's copy of this page in sync too, in case it was
@@ -7112,10 +7163,11 @@ fn show_pdf_reader(
             };
             reader.borrow_mut().draw_kind = *kind;
             let text = match kind {
-                fond_bib::AnnotationKind::Highlight => "Drag over text to highlight it",
-                fond_bib::AnnotationKind::Underline => "Drag over text to underline it",
-                fond_bib::AnnotationKind::Strikeout => "Drag over text to strike it out",
-                fond_bib::AnnotationKind::Note => "Drag over the page",
+                None => "Drag over text to copy it",
+                Some(fond_bib::AnnotationKind::Highlight) => "Drag over text to highlight it",
+                Some(fond_bib::AnnotationKind::Underline) => "Drag over text to underline it",
+                Some(fond_bib::AnnotationKind::Strikeout) => "Drag over text to strike it out",
+                Some(fond_bib::AnnotationKind::Note) => "Drag over the page",
             };
             hint.set_text(text);
         });

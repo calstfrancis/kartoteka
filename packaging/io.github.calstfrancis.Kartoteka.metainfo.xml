@@ -46,6 +46,31 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.4.0" date="2026-08-14">
+      <description>
+        <p>0.4.0 "Quiet Margin" — a big PDF reader usability pass, and a hang fixed.</p>
+        <ul>
+          <li>Continuous scrolling is now the reader's default mode, and the Contents sidebar
+          is user-resizable instead of pinned to the width of the longest chapter title.</li>
+          <li>Right-click a highlight, underline, strikeout, or note to edit its note or
+          delete it, or right-click blank page space to add a new note — replacing the old
+          "This page" dropdown. A new Notes sidebar lists every note and highlight in the
+          whole document, readable at a glance, not just an on-page icon.</li>
+          <li>A new "Select text" drag mode copies the covered text to the clipboard instead
+          of creating an annotation. Highlight and search-match colours are also more
+          visible.</li>
+          <li>Page navigation and zoom moved to a new bottom status bar, freeing the
+          headerbar's title to show the document's own name.</li>
+          <li>Fixed: opening a PDF, or switching into continuous-scroll mode, could hang the
+          whole window for the document's full render time — page layout is now instant and
+          each page's image renders incrementally afterward.</li>
+          <li>Fixed: launching Kartoteka while it was already running opened a second window
+          instead of raising the existing one.</li>
+          <li>Dragging a PDF onto the window to add it now explains a failed drop instead of
+          silently doing nothing.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-08-13">
       <description>
         <p>0.3.0 "Loose Leaf" — annotations you can read outside Kartoteka, and proper support
