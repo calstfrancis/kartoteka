@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_json = "1"
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2", "https"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 pdfium-render = { version = "0.8", default-features = false, features = ["pdfium_latest", "thread_safe"] }
 tantivy = "0.24"
 blake3 = "1"
