@@ -13,10 +13,21 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-use quick_xml::events::Event;
+use quick_xml::events::{BytesText, Event};
 use quick_xml::Reader;
 
 use crate::error::{DocError, Result};
+
+/// Decodes and XML-unescapes a text event, matching quick-xml <=0.39's removed
+/// `BytesText::unescape()` (decode, then unescape with the predefined entities)
+/// so every call site below keeps its old behavior unchanged.
+fn unescape_text<'a>(t: &BytesText<'a>) -> std::result::Result<std::borrow::Cow<'a, str>, quick_xml::Error> {
+    let decoded = t.decode()?;
+    match quick_xml::escape::unescape(&decoded)? {
+        std::borrow::Cow::Borrowed(_) => Ok(decoded),
+        std::borrow::Cow::Owned(s) => Ok(s.into()),
+    }
+}
 
 /// The bibliographic fields we lift from an EPUB's OPF metadata. Everything is best-effort:
 /// a field absent from the OPF is `None`/empty.
@@ -192,7 +203,7 @@ fn strip_tags(xml: &str) -> String {
             }
             Ok(Event::Text(t)) => {
                 if skip_depth == 0 {
-                    if let Ok(s) = t.unescape() {
+                    if let Ok(s) = unescape_text(&t) {
                         let s = s.trim();
                         if !s.is_empty() {
                             out.push_str(s);
@@ -307,7 +318,7 @@ fn parse_nav_toc(xml: &str, base_dir: &str) -> Vec<TocEntry> {
             }
             Ok(Event::Text(t)) => {
                 if in_anchor {
-                    if let Ok(s) = t.unescape() {
+                    if let Ok(s) = unescape_text(&t) {
                         current_text.push_str(&s);
                     }
                 }
@@ -369,7 +380,7 @@ fn parse_ncx_toc(xml: &str, base_dir: &str) -> Vec<TocEntry> {
             }
             Ok(Event::Text(t)) => {
                 if in_text {
-                    if let Ok(s) = t.unescape() {
+                    if let Ok(s) = unescape_text(&t) {
                         text_buf.push_str(&s);
                     }
                 }
@@ -523,8 +534,7 @@ fn parse_opf_metadata(xml: &str) -> Result<EpubMetadata> {
             }
             Ok(Event::Text(t)) => {
                 if let Some(name) = &current {
-                    let text = t
-                        .unescape()
+                    let text = unescape_text(&t)
                         .map(|s| s.trim().to_string())
                         .unwrap_or_default();
                     if !text.is_empty() {
@@ -609,7 +619,7 @@ fn attr_value(e: &quick_xml::events::BytesStart, want: &[u8]) -> Option<String> 
     for attr in e.attributes().flatten() {
         if local_name(attr.key.as_ref()) == want_local {
             return attr
-                .unescape_value()
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .ok()
                 .map(|v| v.trim().to_string())
                 .filter(|s| !s.is_empty());
