@@ -18,7 +18,7 @@ repository = "https://github.com/calstfrancis/kartoteka"
 # Shared dependency versions. Only Milestone 1 dependencies are declared here; PDF,
 # tantivy, and network crates are added at their milestones (see docs/ROADMAP.md).
 [workspace.dependencies]
-hayagriva = "0.9"
+hayagriva = "0.10"
 biblatex = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
