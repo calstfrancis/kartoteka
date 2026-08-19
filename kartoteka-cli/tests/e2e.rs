@@ -30,6 +30,21 @@ fn full_vault_lifecycle() {
     assert!(lib.join("entries").is_dir());
     assert!(lib.join(".git").is_dir());
 
+    // `commit` below reads user.name/user.email via git2::Config::open_default(), which
+    // checks repo-local config before global — set it here (local only, not --global) so
+    // this doesn't depend on the machine/CI runner having a git identity configured at all.
+    // A fresh GitHub Actions runner never does, which is what actually broke this in CI.
+    for (key, value) in [
+        ("user.name", "Test User"),
+        ("user.email", "test@example.com"),
+    ] {
+        let out = Command::new("git")
+            .args(["-C", lib.to_str().unwrap(), "config", "--local", key, value])
+            .output()
+            .expect("failed to run git config");
+        assert!(out.status.success(), "git config {key} failed: {out:?}");
+    }
+
     // add from a file
     let snippet = lib.join("snippet.yml");
     std::fs::write(&snippet, SNIPPET).unwrap();
@@ -56,7 +71,7 @@ fn full_vault_lifecycle() {
     let out = kartoteka(lib, &["fsck"]);
     assert!(out.status.success(), "fsck should be clean: {out:?}");
 
-    // commit (uses the machine git identity)
+    // commit (uses the repo-local identity set above)
     let out = kartoteka(lib, &["commit", "-m", "seed library"]);
     assert!(out.status.success(), "commit failed: {out:?}");
 
