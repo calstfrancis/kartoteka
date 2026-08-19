@@ -2,6 +2,25 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.5.1] "Sound Index" — 2026-08-19 — Dependency security updates and a search-index race fix
+
+### Fixed
+
+- **Fixed a rare, intermittent failure rebuilding the search index** — a background
+  file-watcher thread tantivy sets up for search queries could still be touching the index
+  directory at the moment something tried to delete and rebuild it, occasionally failing the
+  rebuild outright. More likely to surface under load (e.g. background reindexing while other
+  work is happening) than in everyday single-library use, but a real bug either way.
+
+### Internal
+
+- Updated `rusqlite` (0.32→0.40), `hayagriva` (0.9→0.10), and `quick-xml` (0.37→0.41) —
+  closes two real CVSS-7.5 denial-of-service advisories in `quick-xml`
+  (RUSTSEC-2026-0194, RUSTSEC-2026-0195) that a `cargo audit` pass turned up, reachable via
+  EPUB text extraction. Two more `quick-xml` advisories remain, pulled in transitively via
+  `citationberg`'s own pin — not fixable from here until `citationberg` bumps its own
+  `quick-xml` dependency.
+
 ## [0.5.0] "Cross Reference" — 2026-08-14 — Nested collections and an editable-in-place detail pane
 
 "Select text" mode (and highlighting/underlining/strikeout too) now works the way a real

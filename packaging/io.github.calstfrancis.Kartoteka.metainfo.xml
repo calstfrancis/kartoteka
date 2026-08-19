@@ -46,6 +46,13 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.5.1" date="2026-08-19">
+      <description>
+        <p>0.5.1 "Sound Index" — fixes a rare, intermittent search-index rebuild failure, and
+        updates dependencies to close two real denial-of-service security advisories found in
+        a routine dependency audit.</p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-08-14">
       <description>
         <p>0.5.0 "Cross Reference" — nested collections, drag-to-organize, and a detail pane
