@@ -21,7 +21,9 @@ use crate::error::{DocError, Result};
 /// Decodes and XML-unescapes a text event, matching quick-xml <=0.39's removed
 /// `BytesText::unescape()` (decode, then unescape with the predefined entities)
 /// so every call site below keeps its old behavior unchanged.
-fn unescape_text<'a>(t: &BytesText<'a>) -> std::result::Result<std::borrow::Cow<'a, str>, quick_xml::Error> {
+fn unescape_text<'a>(
+    t: &BytesText<'a>,
+) -> std::result::Result<std::borrow::Cow<'a, str>, quick_xml::Error> {
     let decoded = t.decode()?;
     match quick_xml::escape::unescape(&decoded)? {
         std::borrow::Cow::Borrowed(_) => Ok(decoded),
