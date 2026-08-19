@@ -7,13 +7,25 @@ use std::process::{Command, Output};
 use fond_bib::library::Library;
 
 fn kartoteka(lib: &Path, args: &[&str]) -> Output {
+    kartoteka_with_home(lib, args, None)
+}
+
+/// `commit` reads user.name/user.email via `git2::Config::open_default()`, which — unlike the
+/// plain `git` CLI's own config discovery — only ever looks at the *global*/system config
+/// (`$HOME/.gitconfig` and friends), never at a repository-local `.git/config`, since it's
+/// called with no repository context at all. So a repo-local `git config --local` (tried
+/// first here, and it looked right locally since it happened to leave the *real* machine
+/// identity reachable as a fallback) never actually reaches it — only `HOME` does. Point
+/// `HOME` at a throwaway directory with its own `.gitconfig` so this is isolated from
+/// whatever identity (or lack of one) the machine/CI runner actually has.
+fn kartoteka_with_home(lib: &Path, args: &[&str], home: Option<&Path>) -> Output {
     let bin = env!("CARGO_BIN_EXE_kartoteka");
-    Command::new(bin)
-        .arg("-L")
-        .arg(lib)
-        .args(args)
-        .output()
-        .expect("failed to run kartoteka")
+    let mut cmd = Command::new(bin);
+    cmd.arg("-L").arg(lib).args(args);
+    if let Some(home) = home {
+        cmd.env("HOME", home);
+    }
+    cmd.output().expect("failed to run kartoteka")
 }
 
 const SNIPPET: &str =
@@ -30,20 +42,16 @@ fn full_vault_lifecycle() {
     assert!(lib.join("entries").is_dir());
     assert!(lib.join(".git").is_dir());
 
-    // `commit` below reads user.name/user.email via git2::Config::open_default(), which
-    // checks repo-local config before global — set it here (local only, not --global) so
-    // this doesn't depend on the machine/CI runner having a git identity configured at all.
-    // A fresh GitHub Actions runner never does, which is what actually broke this in CI.
-    for (key, value) in [
-        ("user.name", "Test User"),
-        ("user.email", "test@example.com"),
-    ] {
-        let out = Command::new("git")
-            .args(["-C", lib.to_str().unwrap(), "config", "--local", key, value])
-            .output()
-            .expect("failed to run git config");
-        assert!(out.status.success(), "git config {key} failed: {out:?}");
-    }
+    // A throwaway HOME with its own .gitconfig for `commit` below — see kartoteka_with_home's
+    // doc comment for why this, not a repo-local config, is what actually reaches
+    // git2::Config::open_default(). Isolated from the machine/CI runner's real identity (or
+    // lack of one) either way.
+    let fake_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fake_home.path().join(".gitconfig"),
+        "[user]\n\tname = Test User\n\temail = test@example.com\n",
+    )
+    .unwrap();
 
     // add from a file
     let snippet = lib.join("snippet.yml");
@@ -71,8 +79,12 @@ fn full_vault_lifecycle() {
     let out = kartoteka(lib, &["fsck"]);
     assert!(out.status.success(), "fsck should be clean: {out:?}");
 
-    // commit (uses the repo-local identity set above)
-    let out = kartoteka(lib, &["commit", "-m", "seed library"]);
+    // commit (needs the throwaway identity from fake_home above)
+    let out = kartoteka_with_home(
+        lib,
+        &["commit", "-m", "seed library"],
+        Some(fake_home.path()),
+    );
     assert!(out.status.success(), "commit failed: {out:?}");
 
     // clone and read the entry back through fond-bib
