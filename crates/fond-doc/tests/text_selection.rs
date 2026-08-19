@@ -176,16 +176,19 @@ fn straight_vertical_drag_selects_whole_middle_lines() {
         .expect("expected a selection spanning all three lines");
 
     assert_eq!(selection.quads.len(), 3, "one quad per line: {selection:?}");
-    // The first line is trimmed to start at the drag's x (mid-line), so "The" is dropped;
-    // the middle line is untrimmed — full text present regardless of the drag's x position.
+    // The first line is trimmed to keep only text at/after the drag's x, and the last line
+    // to keep only text at/before it (same x for both, since this is a straight vertical
+    // drag) — the middle line gets neither trim, so it's the one guarantee this test can make
+    // about *content*: full text present regardless of the drag's x position. Exactly where
+    // the first/last line's trim boundary falls depends on the substituted font's actual
+    // glyph widths (this PDF references "Helvetica" by name, not embedded), which varies
+    // across PDFium builds/versions — asserting a specific word survives that boundary on the
+    // first or last line is asserting on glyph metrics, not on select_text_range's logic, and
+    // was flaky here for exactly that reason (passed against a system-installed PDFium,
+    // failed against the newer build CI's own "fetch latest PDFium" step downloads).
     assert!(
         selection.text.contains("middle line in between"),
         "middle line should be selected in full: {:?}",
-        selection.text
-    );
-    assert!(
-        selection.text.contains("third"),
-        "got: {:?}",
         selection.text
     );
 }
