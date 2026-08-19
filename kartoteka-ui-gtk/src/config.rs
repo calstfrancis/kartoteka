@@ -20,6 +20,16 @@ pub struct Config {
     /// WebDAV username (the password is kept in the system keyring).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webdav_username: Option<String>,
+    /// Whether automatic periodic backups are on. Off by default — an explicit opt-in.
+    #[serde(default)]
+    pub auto_backup_enabled: bool,
+    /// Minutes between automatic backups, while a library is open.
+    #[serde(default = "default_auto_backup_interval")]
+    pub auto_backup_interval_mins: u32,
+}
+
+fn default_auto_backup_interval() -> u32 {
+    30
 }
 
 fn config_dir() -> PathBuf {

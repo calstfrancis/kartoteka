@@ -2,6 +2,25 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [dev]
+
+**Entries as a spreadsheet.** The entry list is now a sortable, Zotero-style spreadsheet
+(`Key` / `Title` / `Author` / `Year` / a compact PDF/EPUB availability column) instead of a
+card list — click a column header to sort by it, and double-click (or Enter on a focused
+cell) any Title/Author/Year cell to edit it in place, no dialog needed. The citation key is
+its own read-only column (it's also the on-disk filename); dragging it onto a collection in
+the sidebar still adds the entry to that collection, same as before. The sidebar and detail
+pane are unchanged.
+
+**Automatic backups.** Menu → "Automatic backups…" turns on a periodic backup while a
+library is open: commits any changes on a chosen interval (15 min / 30 min / hour / 4
+hours), pushing to GitHub if already signed in with a repo configured, and mirroring to
+WebDAV if that's set up too. Off by default; reuses whatever GitHub/WebDAV credentials are
+already configured via the existing manual backup flows, so there's nothing new to set up.
+Ticks are skipped when nothing has changed, and auto-backup never creates a new GitHub repo
+on its own — that first push still happens through the explicit "Back up (git commit)…"
+action.
+
 ## [0.5.1] "Sound Index" — 2026-08-19 — Dependency security updates and a search-index race fix
 
 ### Fixed

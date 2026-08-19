@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib, Orientation};
@@ -40,17 +41,6 @@ struct EntrySummary {
     has_epub: bool,
 }
 
-/// How the visible list is ordered. `Default` keeps load order (by key) for an empty query
-/// and relevance rank for a search; the others sort the visible set.
-#[derive(Default, Clone, Copy, PartialEq)]
-enum SortBy {
-    #[default]
-    Default,
-    Title,
-    Author,
-    Year,
-}
-
 #[derive(Default)]
 struct AppState {
     library: Option<Library>,
@@ -67,9 +57,6 @@ struct AppState {
     collection_filter: Option<String>,
     /// Saved searches (name → query), loaded from config.
     saved_searches: Vec<(String, String)>,
-    /// Column the list is sorted by, and direction (`true` = descending).
-    sort_by: SortBy,
-    sort_desc: bool,
 }
 
 struct Widgets {
@@ -77,11 +64,96 @@ struct Widgets {
     toasts: adw::ToastOverlay,
     subtitle: adw::WindowTitle,
     status_label: gtk4::Label,
-    listbox: gtk4::ListBox,
+    /// Backing store for the entries spreadsheet, in `AppState.visible` order — cleared and
+    /// refilled by `refresh_list`, then re-sorted/selected live by `column_view`/`selection`.
+    store: gio::ListStore,
+    selection: gtk4::SingleSelection,
     detail: gtk4::Box,
     collections_listbox: gtk4::ListBox,
     search: gtk4::SearchEntry,
 }
+
+/// A `glib::Object` wrapper around one `EntrySummary`, for use as a `gio::ListStore` row in
+/// the entries `ColumnView` — GTK's list widgets bind to `glib::Object` items, not plain Rust
+/// structs. `idx` is the entry's stable position in `AppState.entries`; unlike the row's
+/// position in the (sortable, filterable) `ColumnView` model, it never changes underneath an
+/// open detail view.
+mod entry_row {
+    use super::EntrySummary;
+    use glib::subclass::types::ObjectSubclassIsExt;
+
+    glib::wrapper! {
+        pub struct EntryRow(ObjectSubclass<imp::EntryRow>);
+    }
+
+    impl EntryRow {
+        pub(super) fn new(idx: usize, e: &EntrySummary) -> Self {
+            let obj: Self = glib::Object::new();
+            let imp = obj.imp();
+            imp.idx.set(idx);
+            *imp.key.borrow_mut() = e.key.clone();
+            *imp.title.borrow_mut() = e.title.clone();
+            *imp.author.borrow_mut() = e.author.clone();
+            *imp.year.borrow_mut() = e.year.clone();
+            imp.has_pdf.set(e.has_pdf);
+            imp.has_epub.set(e.has_epub);
+            obj
+        }
+
+        pub fn idx(&self) -> usize {
+            self.imp().idx.get()
+        }
+        pub fn key(&self) -> String {
+            self.imp().key.borrow().clone()
+        }
+        pub fn title(&self) -> String {
+            self.imp().title.borrow().clone()
+        }
+        pub fn author(&self) -> String {
+            self.imp().author.borrow().clone()
+        }
+        pub fn year(&self) -> String {
+            self.imp().year.borrow().clone()
+        }
+        pub fn has_pdf(&self) -> bool {
+            self.imp().has_pdf.get()
+        }
+        pub fn has_epub(&self) -> bool {
+            self.imp().has_epub.get()
+        }
+        /// Update the cached display fields after a save, so the row reflects the edit
+        /// immediately without waiting for the next full list rebuild.
+        pub fn set_display(&self, title: String, author: String, year: String) {
+            *self.imp().title.borrow_mut() = title;
+            *self.imp().author.borrow_mut() = author;
+            *self.imp().year.borrow_mut() = year;
+        }
+    }
+
+    mod imp {
+        use std::cell::{Cell, RefCell};
+
+        #[derive(Default)]
+        pub struct EntryRow {
+            pub idx: Cell<usize>,
+            pub key: RefCell<String>,
+            pub title: RefCell<String>,
+            pub author: RefCell<String>,
+            pub year: RefCell<String>,
+            pub has_pdf: Cell<bool>,
+            pub has_epub: Cell<bool>,
+        }
+
+        #[glib::object_subclass]
+        impl glib::subclass::types::ObjectSubclass for EntryRow {
+            const NAME: &'static str = "KartotekaEntryRow";
+            type Type = super::EntryRow;
+        }
+
+        impl glib::subclass::object::ObjectImpl for EntryRow {}
+    }
+}
+use entry_row::EntryRow;
 
 pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let state = Rc::new(RefCell::new(AppState::default()));
@@ -161,28 +233,18 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     search.set_margin_bottom(6);
     search.set_margin_start(6);
     search.set_margin_end(6);
-    // Sort control: a "Sort by" dropdown and an ascending/descending toggle.
-    let sort_row = gtk4::Box::new(Orientation::Horizontal, 6);
-    sort_row.set_margin_start(6);
-    sort_row.set_margin_end(6);
-    sort_row.set_margin_bottom(6);
-    let sort_drop = gtk4::DropDown::from_strings(&["Default", "Title", "Author", "Year"]);
-    sort_drop.set_hexpand(true);
-    sort_drop.set_tooltip_text(Some("Sort the list"));
-    let sort_dir = gtk4::ToggleButton::new();
-    sort_dir.set_icon_name("view-sort-descending-symbolic");
-    sort_dir.set_tooltip_text(Some("Descending order"));
-    sort_row.append(&sort_drop);
-    sort_row.append(&sort_dir);
 
-    let listbox = gtk4::ListBox::new();
-    listbox.set_selection_mode(gtk4::SelectionMode::Single);
-    listbox.add_css_class("fond-list");
+    // Entries spreadsheet: a sortable, in-place-editable `ColumnView` (Zotero-style) in place
+    // of the old card list — see `build_entries_column_view`. The factories it wires up need
+    // `Widgets` (for toasts/reload on a committed edit), which doesn't exist until after this
+    // block — `widgets_slot` is filled in once it does; edits can't happen before the window
+    // is shown, so it's always populated by the time a factory closure runs.
+    let widgets_slot: Rc<RefCell<Option<Rc<Widgets>>>> = Rc::new(RefCell::new(None));
+    let (column_view, store, selection) = build_entries_column_view(&state, &widgets_slot);
     let list_scroll = gtk4::ScrolledWindow::new();
-    list_scroll.set_child(Some(&listbox));
+    list_scroll.set_child(Some(&column_view));
     list_scroll.set_vexpand(true);
     sidebar.append(&search);
-    sidebar.append(&sort_row);
     sidebar.append(&list_scroll);
 
     // Detail pane: a vertical box of field rows, rebuilt on selection.
@@ -247,11 +309,13 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         toasts,
         subtitle: title,
         status_label,
-        listbox: listbox.clone(),
+        store: store.clone(),
+        selection: selection.clone(),
         detail,
         collections_listbox: collections_listbox.clone(),
         search: search.clone(),
     });
+    *widgets_slot.borrow_mut() = Some(widgets.clone());
 
     // Collection selection → set the filter and refresh the list. Resolved from data
     // attached to the row itself (`refresh_collections`/`collection_row`) rather than its
@@ -298,16 +362,14 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
 
     // --- wiring ---
 
-    // Row selection → show detail.
+    // Row selection → show detail. The selected item's `idx` is its stable position in
+    // `AppState.entries`, independent of the column sorter's current order.
     {
         let state = state.clone();
         let widgets = widgets.clone();
-        listbox.connect_row_selected(move |_, row| {
-            if let Some(row) = row {
-                let idx = row.index();
-                if idx >= 0 {
-                    show_detail(&state, &widgets, idx as usize);
-                }
+        selection.connect_selected_notify(move |sel| {
+            if let Some(row) = sel.selected_item().and_downcast::<EntryRow>() {
+                show_detail(&state, &widgets, row.idx());
             }
         });
     }
@@ -318,41 +380,6 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         let widgets = widgets.clone();
         search.connect_search_changed(move |entry| {
             state.borrow_mut().query = entry.text().to_string();
-            refresh_list(&state, &widgets);
-        });
-    }
-
-    // Sort column.
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        sort_drop.connect_selected_notify(move |drop| {
-            state.borrow_mut().sort_by = match drop.selected() {
-                1 => SortBy::Title,
-                2 => SortBy::Author,
-                3 => SortBy::Year,
-                _ => SortBy::Default,
-            };
-            refresh_list(&state, &widgets);
-        });
-    }
-    // Sort direction.
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        sort_dir.connect_toggled(move |btn| {
-            let desc = btn.is_active();
-            btn.set_icon_name(if desc {
-                "view-sort-descending-symbolic"
-            } else {
-                "view-sort-ascending-symbolic"
-            });
-            btn.set_tooltip_text(Some(if desc {
-                "Descending order"
-            } else {
-                "Ascending order"
-            }));
-            state.borrow_mut().sort_desc = desc;
             refresh_list(&state, &widgets);
         });
     }
@@ -460,7 +487,8 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     }
 
     // Hamburger actions (win.acquire / win.reindex / win.theme / win.about).
-    add_window_actions(&window, &state, &widgets, &config);
+    let auto_backup_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    add_window_actions(&window, &state, &widgets, &config, &auto_backup_timer);
 
     // Apply the saved colour scheme.
     apply_theme(
@@ -477,6 +505,11 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
             open_library(&state, &widgets, path);
         }
     }
+
+    // Start the automatic-backup timer if it was left on from a previous session. The
+    // ticking closure re-checks `state.library` each time, so a single timer started here
+    // (rather than one per library open/close) covers the whole window lifetime.
+    start_auto_backup_timer(&state, &widgets, &config, &auto_backup_timer);
 
     window
 }
@@ -524,6 +557,12 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
     activate_row(&rows, &popover, "Back up (git commit)…", "win.backup");
     activate_row(&rows, &popover, "Sign in to GitHub…", "win.github-signin");
     activate_row(&rows, &popover, "Back up to WebDAV…", "win.webdav-backup");
+    activate_row(
+        &rows,
+        &popover,
+        "Automatic backups…",
+        "win.auto-backup-settings",
+    );
     activate_row(&rows, &popover, "Reindex search", "win.reindex");
     rows.append(&popover_separator());
 
@@ -569,6 +608,7 @@ fn add_window_actions(
     state: &Rc<RefCell<AppState>>,
     widgets: &Rc<Widgets>,
     config: &Rc<RefCell<Config>>,
+    auto_backup_timer: &Rc<RefCell<Option<glib::SourceId>>>,
 ) {
     {
         let state = state.clone();
@@ -690,6 +730,17 @@ fn add_window_actions(
         let config = config.clone();
         let action = gio::SimpleAction::new("webdav-backup", None);
         action.connect_activate(move |_, _| show_webdav_dialog(&state, &widgets, &config));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let auto_backup_timer = auto_backup_timer.clone();
+        let action = gio::SimpleAction::new("auto-backup-settings", None);
+        action.connect_activate(move |_, _| {
+            show_auto_backup_dialog(&state, &widgets, &config, &auto_backup_timer)
+        });
         window.add_action(&action);
     }
     {
@@ -2396,6 +2447,237 @@ fn labeled(caption: &str, widget: &impl IsA<gtk4::Widget>) -> gtk4::Box {
     row
 }
 
+/// The automatic-backup interval choices offered in the dialog, and their minute values.
+const AUTO_BACKUP_INTERVALS: &[(&str, u32)] = &[
+    ("Every 15 minutes", 15),
+    ("Every 30 minutes", 30),
+    ("Every hour", 60),
+    ("Every 4 hours", 240),
+];
+
+/// (Re)start the automatic-backup timer from the current config: cancels any existing timer,
+/// then — if enabled — schedules a repeating tick. The tick itself checks `state.library` each
+/// time, so a single timer covers the window's whole lifetime rather than needing to be
+/// restarted whenever a library opens or closes.
+fn start_auto_backup_timer(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+    timer: &Rc<RefCell<Option<glib::SourceId>>>,
+) {
+    if let Some(id) = timer.borrow_mut().take() {
+        id.remove();
+    }
+    let (enabled, minutes) = {
+        let c = config.borrow();
+        (c.auto_backup_enabled, c.auto_backup_interval_mins.max(1))
+    };
+    if !enabled {
+        return;
+    }
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let config = config.clone();
+    let id = glib::timeout_add_local(Duration::from_secs(u64::from(minutes) * 60), move || {
+        run_auto_backup(&state, &widgets, &config);
+        glib::ControlFlow::Continue
+    });
+    *timer.borrow_mut() = Some(id);
+}
+
+/// One automatic-backup tick: commit locally (skipped if nothing changed since the last
+/// backup), then push to GitHub if already signed in *and* a remote is already configured
+/// (auto-backup never silently creates a new GitHub repo — that first push is still the
+/// explicit "Back up (git commit)…" action), then mirror to WebDAV if configured. Runs off the
+/// main thread since a commit/push/upload can take a while; failures surface as a toast,
+/// success stays silent (routine status, not worth interrupting for).
+#[allow(deprecated)]
+fn run_auto_backup(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+) {
+    let Some(root) = state
+        .borrow()
+        .library
+        .as_ref()
+        .map(|l| l.root().to_path_buf())
+    else {
+        return;
+    };
+
+    let github_token = secret_store::load_github_token();
+    let webdav_creds = {
+        let c = config.borrow();
+        match (
+            c.webdav_url.clone(),
+            c.webdav_username.clone(),
+            secret_store::load_webdav_password(),
+        ) {
+            (Some(url), Some(user), Some(pass)) if !url.is_empty() => Some((url, user, pass)),
+            _ => None,
+        }
+    };
+    let message = glib::DateTime::now_local()
+        .ok()
+        .and_then(|d| d.format("Auto-backup %Y-%m-%d %H:%M").ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "Auto-backup".to_string());
+
+    let (sender, receiver) =
+        glib::MainContext::channel::<Result<(), String>>(glib::Priority::DEFAULT);
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let vault = fond_vault::Vault::open(&root)
+                .or_else(|_| fond_vault::Vault::init(&root))
+                .map_err(|e| e.to_string())?;
+            let status = vault.status().map_err(|e| e.to_string())?;
+            if status.is_clean() {
+                return Ok(());
+            }
+            let identity = fond_vault::Identity::from_git_config().map_err(|e| e.to_string())?;
+            vault.stage_all().map_err(|e| e.to_string())?;
+            vault.commit(&message, &identity).map_err(|e| e.to_string())?;
+
+            if let Some(token) = github_token {
+                if vault.remote_url("origin").is_some() {
+                    vault.push_github("origin", &token).map_err(|e| {
+                        format!("committed locally, but GitHub push failed: {e}")
+                    })?;
+                }
+            }
+            if let Some((url, user, pass)) = webdav_creds {
+                webdav::upload_library(&url, &user, &pass, &root).map_err(|e| {
+                    format!("committed locally, but WebDAV backup failed: {e}")
+                })?;
+            }
+            Ok(())
+        })();
+        let _ = sender.send(result);
+    });
+
+    let widgets = widgets.clone();
+    receiver.attach(None, move |result| {
+        if let Err(e) = result {
+            toast(&widgets, &format!("Automatic backup: {e}"));
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// Configure automatic backups: a single switch plus an interval picker. Reuses whatever
+/// GitHub sign-in / WebDAV credentials are already set up elsewhere — there is nothing else to
+/// configure here, by design ("very very easy").
+#[allow(deprecated)]
+fn show_auto_backup_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+    timer: &Rc<RefCell<Option<glib::SourceId>>>,
+) {
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Automatic backups"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(420, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 12);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let intro = gtk4::Label::new(Some(
+        "While a library is open, commit any changes on this schedule. If already signed in \
+         to GitHub with a repo configured, also push; if WebDAV is set up, also mirror there.",
+    ));
+    intro.set_wrap(true);
+    intro.set_xalign(0.0);
+    content.append(&intro);
+
+    let enabled_row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let enabled_label = gtk4::Label::new(Some("Enable automatic backups"));
+    enabled_label.set_xalign(0.0);
+    enabled_label.set_hexpand(true);
+    enabled_label.set_halign(gtk4::Align::Start);
+    let enabled_switch = gtk4::Switch::new();
+    enabled_switch.set_halign(gtk4::Align::End);
+    enabled_switch.set_active(config.borrow().auto_backup_enabled);
+    enabled_row.append(&enabled_label);
+    enabled_row.append(&enabled_switch);
+    content.append(&enabled_row);
+
+    let interval_labels: Vec<&str> = AUTO_BACKUP_INTERVALS.iter().map(|(l, _)| *l).collect();
+    let interval_drop = gtk4::DropDown::from_strings(&interval_labels);
+    let current_minutes = {
+        let m = config.borrow().auto_backup_interval_mins;
+        if m == 0 {
+            30
+        } else {
+            m
+        }
+    };
+    let selected = AUTO_BACKUP_INTERVALS
+        .iter()
+        .position(|(_, m)| *m == current_minutes)
+        .unwrap_or(1);
+    interval_drop.set_selected(selected as u32);
+    content.append(&labeled("Interval", &interval_drop));
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let timer = timer.clone();
+        let dialog = dialog.clone();
+        let enabled_switch = enabled_switch.clone();
+        let interval_drop = interval_drop.clone();
+        save.connect_clicked(move |_| {
+            let minutes = AUTO_BACKUP_INTERVALS
+                .get(interval_drop.selected() as usize)
+                .map(|(_, m)| *m)
+                .unwrap_or(30);
+            {
+                let mut c = config.borrow_mut();
+                c.auto_backup_enabled = enabled_switch.is_active();
+                c.auto_backup_interval_mins = minutes;
+                c.save();
+            }
+            start_auto_backup_timer(&state, &widgets, &config, &timer);
+            toast(
+                &widgets,
+                if enabled_switch.is_active() {
+                    "Automatic backups on"
+                } else {
+                    "Automatic backups off"
+                },
+            );
+            dialog.close();
+        });
+    }
+
+    dialog.present();
+}
+
 fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let path = state
         .borrow()
@@ -2410,16 +2692,26 @@ fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 /// Select the entry with citation key `key` in the list, revealing it first (clearing the
 /// search and collection filter) if it is currently filtered out. No-op with a toast if the
 /// key is not in the library.
-fn select_key(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
-    let visible_pos = |state: &Rc<RefCell<AppState>>| -> Option<usize> {
-        let s = state.borrow();
-        s.visible.iter().position(|&i| s.entries[i].key == key)
-    };
-
-    if let Some(pos) = visible_pos(state) {
-        if let Some(row) = widgets.listbox.row_at_index(pos as i32) {
-            widgets.listbox.select_row(Some(&row));
+/// Select the row for `key` in the (possibly sorted) spreadsheet, if it's currently shown, and
+/// refresh the detail pane for it. Returns whether it was found.
+fn select_visible_key(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) -> bool {
+    for i in 0..widgets.selection.n_items() {
+        if let Some(row) = widgets.selection.item(i).and_downcast::<EntryRow>() {
+            if row.key() == key {
+                widgets.selection.set_selected(i);
+                show_detail(state, widgets, row.idx());
+                return true;
+            }
         }
+    }
+    false
+}
+
+/// Select the entry with citation key `key` in the list, revealing it first (clearing the
+/// search and collection filter) if it is currently filtered out. No-op with a toast if the
+/// key is not in the library.
+fn select_key(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    if select_visible_key(state, widgets, key) {
         return;
     }
 
@@ -2436,11 +2728,7 @@ fn select_key(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
     }
     widgets.search.set_text("");
     refresh_list(state, widgets);
-    if let Some(pos) = visible_pos(state) {
-        if let Some(row) = widgets.listbox.row_at_index(pos as i32) {
-            widgets.listbox.select_row(Some(&row));
-        }
-    }
+    select_visible_key(state, widgets, key);
 }
 
 /// Modal dialog to acquire a reference by DOI / arXiv / ISBN. The network lookup runs on a
@@ -3914,140 +4202,363 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 .collect()
         };
         s.visible = visible;
-
-        // Apply the chosen sort over the visible set. `Default` leaves load/relevance order.
-        let sort_by = s.sort_by;
-        let desc = s.sort_desc;
-        if sort_by != SortBy::Default {
-            let st = &mut *s;
-            let entries = &st.entries;
-            st.visible.sort_by(|&a, &b| {
-                let key = |i: usize| -> String {
-                    let e = &entries[i];
-                    match sort_by {
-                        SortBy::Title => e.title.to_lowercase(),
-                        SortBy::Author => e.author.to_lowercase(),
-                        SortBy::Year => e.year.clone(),
-                        SortBy::Default => String::new(),
-                    }
-                };
-                key(a).cmp(&key(b))
-            });
-            if desc {
-                st.visible.reverse();
-            }
-        }
     }
 
-    // Rebuild rows.
-    while let Some(child) = widgets.listbox.first_child() {
-        widgets.listbox.remove(&child);
-    }
+    // Refill the spreadsheet's backing store — display order only (matches the old load/
+    // relevance order); the `ColumnView`'s own sorter, not this order, decides what's shown
+    // on screen, and survives the refill untouched.
+    widgets.store.remove_all();
     let has_rows = {
         let s = state.borrow();
-        let last = s.visible.len().saturating_sub(1);
-        for (i, &idx) in s.visible.iter().enumerate() {
-            let e = &s.entries[idx];
-            let row = make_row(e);
-            if i == 0 {
-                row.add_css_class("fond-card-first");
-            }
-            if i == last {
-                row.add_css_class("fond-card-last");
-            }
-            widgets.listbox.append(&row);
+        for &idx in &s.visible {
+            widgets.store.append(&EntryRow::new(idx, &s.entries[idx]));
         }
         !s.visible.is_empty()
     };
 
-    // Select the top row so the detail pane always reflects the current list.
+    // Select the top row (in current sorted order) so the detail pane always reflects the
+    // current list.
     if has_rows {
-        if let Some(first) = widgets.listbox.row_at_index(0) {
-            widgets.listbox.select_row(Some(&first));
+        widgets.selection.set_selected(0);
+        if let Some(row) = widgets.selection.selected_item().and_downcast::<EntryRow>() {
+            show_detail(state, widgets, row.idx());
         }
     } else {
         clear_box(&widgets.detail);
     }
 }
 
-fn make_row(e: &EntrySummary) -> gtk4::ListBoxRow {
-    let vbox = gtk4::Box::new(Orientation::Vertical, 2);
-    vbox.set_margin_top(6);
-    vbox.set_margin_bottom(6);
-    vbox.set_margin_start(8);
-    vbox.set_margin_end(8);
-
-    let title = gtk4::Label::new(Some(if e.title.is_empty() { &e.key } else { &e.title }));
-    title.set_halign(gtk4::Align::Start);
-    title.set_xalign(0.0);
-    title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-    title.add_css_class("fond-row-title");
-
-    let meta_text = match (e.author.is_empty(), e.year.is_empty()) {
-        (false, false) => format!("{} · {}", e.author, e.year),
-        (false, true) => e.author.clone(),
-        (true, false) => e.year.clone(),
-        (true, true) => e.key.clone(),
-    };
-    let meta = gtk4::Label::new(Some(&meta_text));
-    meta.set_halign(gtk4::Align::Start);
-    meta.set_xalign(0.0);
-    meta.set_hexpand(true);
-    meta.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-    meta.add_css_class("fond-row-meta");
-
-    // Which readable formats are available, at a glance — the same "PDF"/"EPUB" language the
-    // detail pane's own attachment rows and Read button use, not a generic "has file" mark.
-    let meta_row = gtk4::Box::new(Orientation::Horizontal, 4);
-    meta_row.append(&meta);
-    if e.has_pdf {
-        let icon = gtk4::Image::from_icon_name("x-office-document-symbolic");
-        icon.set_pixel_size(12);
-        icon.add_css_class("dim-label");
-        icon.set_tooltip_text(Some("PDF available"));
-        meta_row.append(&icon);
-    }
-    if e.has_epub {
-        // Adwaita has no dedicated e-book glyph — a plain document icon distinguishable from
-        // the PDF one (`x-office-document-symbolic`) is the closest available, backed up by
-        // the tooltip and the detail pane's own labelled attachment rows.
-        let icon = gtk4::Image::from_icon_name("text-x-generic-symbolic");
-        icon.set_pixel_size(12);
-        icon.add_css_class("dim-label");
-        icon.set_tooltip_text(Some("EPUB available"));
-        meta_row.append(&icon);
-    }
-
-    vbox.append(&title);
-    vbox.append(&meta_row);
-
-    let row = gtk4::ListBoxRow::new();
-    row.add_css_class("fond-card");
-    row.add_css_class("fond-row");
-    row.set_child(Some(&vbox));
-
-    // Drag this entry's citation key onto a collection row (see `refresh_collections`'s
-    // `DropTarget`) to add it to that collection.
-    let drag = gtk4::DragSource::new();
-    drag.set_actions(gdk::DragAction::COPY);
-    {
-        let key = e.key.clone();
-        drag.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&key.to_value())));
-    }
-    row.add_controller(drag);
-
-    row
+/// Which citation field a spreadsheet cell edit applies to.
+#[derive(Clone, Copy)]
+enum EditField {
+    Title,
+    Author,
+    Year,
 }
 
-fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, visible_index: usize) {
-    let s = state.borrow();
-    let Some(&entry_idx) = s.visible.get(visible_index) else {
+/// Commit an in-place edit made in the entries spreadsheet: reload the full current fields for
+/// `idx`'s entry, apply just the one changed field, and save — same read-merge-write shape as
+/// the detail pane's own `save_citation`, and the same reload-and-reselect afterward, so a
+/// spreadsheet edit and a detail-pane edit behave identically (including re-running the search
+/// index and picking the entry back out by key rather than by position).
+fn commit_cell_edit(
+    state: &Rc<RefCell<AppState>>,
+    widgets_slot: &Rc<RefCell<Option<Rc<Widgets>>>>,
+    idx: usize,
+    field: EditField,
+    new_value: String,
+) {
+    let Some(widgets) = widgets_slot.borrow().clone() else {
         return;
     };
+    let key = {
+        let s = state.borrow();
+        match s.entries.get(idx) {
+            Some(e) => e.key.clone(),
+            None => return,
+        }
+    };
+    let mut fields = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            return;
+        };
+        let Ok(parsed) = library.load_entry(&key) else {
+            return;
+        };
+        fond_bib::entry::read_fields(&parsed.entry)
+    };
+    let new_value = new_value.trim().to_string();
+    let changed = match field {
+        EditField::Title => {
+            let changed = fields.title != new_value;
+            fields.title = new_value;
+            changed
+        }
+        EditField::Author => {
+            let joined = new_value
+                .split([';', '\n'])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let changed = fields.authors != joined;
+            fields.authors = joined;
+            changed
+        }
+        EditField::Year => {
+            let changed = fields.year != new_value;
+            fields.year = new_value;
+            changed
+        }
+    };
+    if !changed {
+        return;
+    }
+    let result = {
+        let s = state.borrow();
+        s.library.as_ref().map(|lib| lib.edit_fields(&key, &fields))
+    };
+    match result {
+        Some(Ok(())) => {
+            rebuild_index_silent(state);
+            reload_current(state, &widgets);
+            select_key(state, &widgets, &key);
+        }
+        Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
+        None => {}
+    }
+}
+
+/// Layout for one `ColumnViewColumn`: header text, whether it should expand to fill leftover
+/// space, and a fixed width (ignored when `expand` is set).
+struct ColumnSpec {
+    title: &'static str,
+    expand: bool,
+    width: i32,
+}
+
+/// Add an editable text column (`EditableLabel`, spreadsheet-cell style: shows as plain text,
+/// double-click or Enter to edit) bound to one `EntryRow` field, committing via
+/// `commit_cell_edit` when editing ends. `get`/`empty_fallback` render the cell; `field`
+/// selects which citation field a commit writes.
+fn add_editable_column(
+    column_view: &gtk4::ColumnView,
+    state: &Rc<RefCell<AppState>>,
+    widgets_slot: &Rc<RefCell<Option<Rc<Widgets>>>>,
+    spec: ColumnSpec,
+    field: EditField,
+    get: fn(&EntryRow) -> String,
+) {
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let label = gtk4::EditableLabel::new("");
+        label.set_xalign(0.0);
+        item.set_child(Some(&label));
+    });
+    {
+        let state = state.clone();
+        let widgets_slot = widgets_slot.clone();
+        factory.connect_bind(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+                return;
+            };
+            let (Some(row), Some(label)) = (
+                item.item().and_downcast::<EntryRow>(),
+                item.child().and_downcast::<gtk4::EditableLabel>(),
+            ) else {
+                return;
+            };
+            label.set_text(&get(&row));
+
+            let state = state.clone();
+            let widgets_slot = widgets_slot.clone();
+            let row_for_commit = row.clone();
+            let label_id = label.connect_editing_notify(move |label| {
+                if label.is_editing() {
+                    return;
+                }
+                let text = label.text().to_string();
+                if text == get(&row_for_commit) {
+                    return;
+                }
+                commit_cell_edit(&state, &widgets_slot, row_for_commit.idx(), field, text);
+            });
+            // Recycled `EditableLabel`s are reused for a different row on the next bind — drop
+            // the previous row's commit handler first so a stale closure (and its now-wrong
+            // `idx`) can't fire.
+            unsafe {
+                if let Some(old) = label.steal_data::<glib::SignalHandlerId>("commit-handler") {
+                    label.disconnect(old);
+                }
+                label.set_data("commit-handler", label_id);
+            }
+        });
+    }
+    let column = gtk4::ColumnViewColumn::new(Some(spec.title), Some(factory));
+    column.set_expand(spec.expand);
+    if spec.width > 0 {
+        column.set_fixed_width(spec.width);
+    }
+    column.set_resizable(true);
+    let sorter = gtk4::CustomSorter::new(move |a, b| {
+        let a = a.downcast_ref::<EntryRow>().map(&get).unwrap_or_default();
+        let b = b.downcast_ref::<EntryRow>().map(&get).unwrap_or_default();
+        a.to_lowercase().cmp(&b.to_lowercase()).into()
+    });
+    column.set_sorter(Some(&sorter));
+    column_view.append_column(&column);
+}
+
+/// Build the entries spreadsheet: a `ColumnView` over a `SortListModel`/`SingleSelection`
+/// wrapping a `gio::ListStore<EntryRow>`. Columns: citation key (read-only — it's also the
+/// on-disk filename), title/author/year (editable in place), and a compact PDF/EPUB
+/// availability indicator. Clicking a column header sorts by it, spreadsheet-style; the
+/// `ListStore` itself stays in `AppState.visible` order and is only ever cleared/refilled by
+/// `refresh_list` — sort order lives entirely in the `ColumnView`'s own sorter, so it survives
+/// a refill (a re-filter or a reload after an edit) without needing to be reapplied.
+fn build_entries_column_view(
+    state: &Rc<RefCell<AppState>>,
+    widgets_slot: &Rc<RefCell<Option<Rc<Widgets>>>>,
+) -> (gtk4::ColumnView, gio::ListStore, gtk4::SingleSelection) {
+    let store = gio::ListStore::new::<EntryRow>();
+
+    let column_view = gtk4::ColumnView::new(None::<gtk4::SingleSelection>);
+    column_view.add_css_class("fond-list");
+    column_view.set_show_row_separators(true);
+
+    // Citation key: monospace, read-only, and the drag source for adding an entry to a
+    // collection (see `refresh_collections`'s `DropTarget`) — same drag behaviour the old
+    // card row offered, moved onto the one column that can't be accidentally entered into
+    // edit mode by the drag gesture's initial click.
+    let key_factory = gtk4::SignalListItemFactory::new();
+    key_factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let label = gtk4::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.add_css_class("monospace");
+        label.add_css_class("dim-label");
+        let drag = gtk4::DragSource::new();
+        drag.set_actions(gdk::DragAction::COPY);
+        {
+            let item = item.clone();
+            drag.connect_prepare(move |_, _, _| {
+                item.item()
+                    .and_downcast::<EntryRow>()
+                    .map(|r| gdk::ContentProvider::for_value(&r.key().to_value()))
+            });
+        }
+        label.add_controller(drag);
+        item.set_child(Some(&label));
+    });
+    key_factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        if let (Some(row), Some(label)) = (
+            item.item().and_downcast::<EntryRow>(),
+            item.child().and_downcast::<gtk4::Label>(),
+        ) {
+            label.set_text(&row.key());
+        }
+    });
+    let key_column = gtk4::ColumnViewColumn::new(Some("Key"), Some(key_factory));
+    key_column.set_fixed_width(150);
+    key_column.set_resizable(true);
+    let key_sorter = gtk4::CustomSorter::new(move |a, b| {
+        let a = a.downcast_ref::<EntryRow>().map(EntryRow::key).unwrap_or_default();
+        let b = b.downcast_ref::<EntryRow>().map(EntryRow::key).unwrap_or_default();
+        a.cmp(&b).into()
+    });
+    key_column.set_sorter(Some(&key_sorter));
+    column_view.append_column(&key_column);
+
+    add_editable_column(
+        &column_view,
+        state,
+        widgets_slot,
+        ColumnSpec {
+            title: "Title",
+            expand: true,
+            width: 0,
+        },
+        EditField::Title,
+        EntryRow::title,
+    );
+    add_editable_column(
+        &column_view,
+        state,
+        widgets_slot,
+        ColumnSpec {
+            title: "Author",
+            expand: false,
+            width: 180,
+        },
+        EditField::Author,
+        EntryRow::author,
+    );
+    add_editable_column(
+        &column_view,
+        state,
+        widgets_slot,
+        ColumnSpec {
+            title: "Year",
+            expand: false,
+            width: 70,
+        },
+        EditField::Year,
+        EntryRow::year,
+    );
+
+    // Formats: a compact, read-only PDF/EPUB availability indicator — the same "PDF"/"EPUB"
+    // language the detail pane's own attachment rows and Read button use.
+    let formats_factory = gtk4::SignalListItemFactory::new();
+    formats_factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let b = gtk4::Box::new(Orientation::Horizontal, 4);
+        b.set_halign(gtk4::Align::Start);
+        item.set_child(Some(&b));
+    });
+    formats_factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let (Some(row), Some(b)) = (
+            item.item().and_downcast::<EntryRow>(),
+            item.child().and_downcast::<gtk4::Box>(),
+        ) else {
+            return;
+        };
+        while let Some(child) = b.first_child() {
+            b.remove(&child);
+        }
+        if row.has_pdf() {
+            let icon = gtk4::Image::from_icon_name("x-office-document-symbolic");
+            icon.set_pixel_size(14);
+            icon.add_css_class("dim-label");
+            icon.set_tooltip_text(Some("PDF available"));
+            b.append(&icon);
+        }
+        if row.has_epub() {
+            // Adwaita has no dedicated e-book glyph — a plain document icon distinguishable
+            // from the PDF one (`x-office-document-symbolic`) is the closest available,
+            // backed up by the tooltip and the detail pane's own labelled attachment rows.
+            let icon = gtk4::Image::from_icon_name("text-x-generic-symbolic");
+            icon.set_pixel_size(14);
+            icon.add_css_class("dim-label");
+            icon.set_tooltip_text(Some("EPUB available"));
+            b.append(&icon);
+        }
+    });
+    let formats_column = gtk4::ColumnViewColumn::new(Some("Files"), Some(formats_factory));
+    formats_column.set_fixed_width(60);
+    column_view.append_column(&formats_column);
+
+    let sort_model = gtk4::SortListModel::new(Some(store.clone()), column_view.sorter());
+    let selection = gtk4::SingleSelection::new(Some(sort_model));
+    selection.set_autoselect(false);
+    selection.set_can_unselect(true);
+    column_view.set_model(Some(&selection));
+
+    (column_view, store, selection)
+}
+
+fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: usize) {
+    let s = state.borrow();
     let Some(library) = s.library.as_ref() else {
         return;
     };
-    let summary = &s.entries[entry_idx];
+    let Some(summary) = s.entries.get(entry_idx) else {
+        return;
+    };
     let key = summary.key.clone();
 
     let b = &widgets.detail;
@@ -4985,11 +5496,8 @@ fn show_export_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
 /// Re-render the detail pane for the currently selected row (after an edit).
 fn refresh_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
-    if let Some(row) = widgets.listbox.selected_row() {
-        let idx = row.index();
-        if idx >= 0 {
-            show_detail(state, widgets, idx as usize);
-        }
+    if let Some(row) = widgets.selection.selected_item().and_downcast::<EntryRow>() {
+        show_detail(state, widgets, row.idx());
     }
 }
 
