@@ -6,6 +6,26 @@ use std::fs;
 use fond_bib::library::Library;
 use fond_index::SearchIndex;
 
+/// `fs::remove_dir_all`, tolerant of tantivy's background directory-watcher thread (set up by
+/// any reader built with the default reload policy, e.g. via `SearchIndex::search`) still
+/// touching a file in `dir` from a just-dropped `SearchIndex` — that races to a transient
+/// `ENOTEMPTY` under load. Mirrors `remove_dir_all_retrying` in `fond-index`'s own `rebuild()`;
+/// duplicated here rather than exposed from the crate since this test is the only external
+/// caller that deletes the index directory directly instead of going through `rebuild()`.
+fn remove_dir_all_retrying(dir: &std::path::Path) {
+    for attempt in 0..20 {
+        match fs::remove_dir_all(dir) {
+            Ok(()) => return,
+            // raw_os_error, not ErrorKind::DirectoryNotEmpty — see the matching comment on
+            // fond-index's own remove_dir_all_retrying (MSRV 1.80, that variant needs 1.83).
+            Err(e) if e.raw_os_error() == Some(39) && attempt + 1 < 20 => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => panic!("remove_dir_all({}): {e}", dir.display()),
+        }
+    }
+}
+
 fn seed() -> (tempfile::TempDir, Library) {
     let dir = tempfile::tempdir().unwrap();
     let lib = Library::init(dir.path()).unwrap();
@@ -109,8 +129,17 @@ fn rebuild_from_scratch_after_deletion_is_consistent() {
     let idx = SearchIndex::rebuild(&lib, &dir, |_| None, |_| None).unwrap();
     let before = idx.search("theology", 10).unwrap().len();
 
+    // `search()` opens a reader with tantivy's default reload policy, which
+    // watches the directory (a background thread inside MmapDirectory) for
+    // meta.json changes — still alive here since `idx` isn't dropped yet.
+    // Under load that watcher can still be touching a file in `dir` when
+    // remove_dir_all walks it, racing to an intermittent ENOTEMPTY. Drop the
+    // old index first so its directory handle (and watcher) are gone before
+    // the directory itself is.
+    drop(idx);
+
     // Nuke the derived index and rebuild — identical results.
-    fs::remove_dir_all(&dir).unwrap();
+    remove_dir_all_retrying(&dir);
     let idx = SearchIndex::rebuild(&lib, &dir, |_| None, |_| None).unwrap();
     let after = idx.search("theology", 10).unwrap().len();
     assert_eq!(before, after);

@@ -117,6 +117,31 @@ fn node_type_str(t: NodeType) -> &'static str {
     }
 }
 
+/// `fs::remove_dir_all`, tolerant of a background filesystem-watcher thread (tantivy's
+/// `MmapDirectory` sets one up for any reader built with the default reload policy) still
+/// touching a file inside `dir` from a not-yet-dropped previous `Index`/`SearchIndex` — that
+/// race surfaces as a transient `ENOTEMPTY` on the final `rmdir`, not on any specific file, so
+/// there's nothing narrower to synchronize on here than a short retry. Callers should still
+/// prefer dropping any live `SearchIndex` over the same `dir` first; this is a safety net for
+/// when that isn't possible (e.g. a caller elsewhere in the app that outlives this call).
+fn remove_dir_all_retrying(dir: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 20;
+    const DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+    for attempt in 0..ATTEMPTS {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            // raw_os_error, not ErrorKind::DirectoryNotEmpty — that variant only stabilized in
+            // Rust 1.83, above this workspace's 1.80 MSRV. 39 is ENOTEMPTY on Linux, the only
+            // platform this app targets.
+            Err(e) if e.raw_os_error() == Some(39) && attempt + 1 < ATTEMPTS => {
+                std::thread::sleep(DELAY);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("loop always returns before exhausting ATTEMPTS")
+}
+
 /// An opened search index, ready to query.
 pub struct SearchIndex {
     index: Index,
@@ -153,7 +178,7 @@ impl SearchIndex {
         G: FnMut(&str) -> Option<String>,
     {
         if dir.exists() {
-            std::fs::remove_dir_all(dir).map_err(|e| IndexError::Io {
+            remove_dir_all_retrying(dir).map_err(|e| IndexError::Io {
                 path: dir.to_path_buf(),
                 source: e,
             })?;
