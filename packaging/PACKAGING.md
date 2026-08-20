@@ -50,13 +50,20 @@ Per the Fond workflow, **Claude does the version bump + docs + commit + tag; Cal
 build.** flatpak-builder is never run by Claude.
 
 - Dev build: `./dev-build.sh` (builds + installs locally; does not publish).
-- Release: `./publish-flatpak.sh <version>` (builds, exports into the OSTree repo, pushes).
+- Release: `./publish-flatpak.sh <version>` — as of 2026-08-20, this just pushes the commit
+  and tag; `.github/workflows/release-flatpak.yml` does the actual build, GPG-sign, and
+  publish to the OSTree repo (same CI-published pattern as Zerkalo — see the repo root's
+  `RELEASE-CI-SETUP.md` for the one-time secrets setup this needs, and `CLAUDE.md`'s
+  "Release workflow" section for the full house convention). If CI is down or the build
+  needs local debugging, `./publish-flatpak-local.sh <version>` does the full local
+  build+export+push this script used to do by itself.
 
-Both read the version from `kartoteka-ui-gtk/Cargo.toml`.
+Both scripts read the version from `kartoteka-ui-gtk/Cargo.toml`.
 
 ## Status
 
-This scaffold is authored but **not yet validated against a real `flatpak-builder` run**.
-Expected first-build follow-ups: generate `cargo-sources.json`, confirm the PDFium archive
-layout (`pdfium/lib/libpdfium.so`), and confirm the GNOME `runtime-version` matches an
-installed platform.
+Validated in production: released 0.1.0 through 0.6.0 via this manifest, both the local
+build path (`publish-flatpak-local.sh`) and, from 0.6.0 onward, the CI-published path
+(`release-flatpak.yml`). `cargo-sources.json` generation, the PDFium archive layout
+(`pdfium/lib/libpdfium.so`), and the GNOME `runtime-version` are all confirmed working —
+this is no longer an unvalidated scaffold.

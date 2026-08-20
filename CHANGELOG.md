@@ -2,6 +2,16 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [dev]
+
+**Internal: releases now build and publish via GitHub Actions, not locally.**
+`publish-flatpak.sh` now just pushes the commit and tag; `.github/workflows/release-flatpak.yml`
+does the flatpak build, GPG-signing, and publish to the OSTree repo, matching Zerkalo's
+setup (and refusing to publish unless CI passed for that commit). The old fully-local flow
+still exists at `publish-flatpak-local.sh` as a fallback. No user-facing change; takes effect
+starting with the next release — 0.6.0 itself was already published via the old manual flow
+before this landed. See `RELEASE-CI-SETUP.md` for the one-time secrets setup this needs.
+
 ## [0.6.0] "Deep Stacks" — 2026-08-20 — Optional columns, bulk actions, smarter duplicates, and a whole-library relations map
 
 **Optional spreadsheet columns for Tags, Status, and custom fields.** Menu → "Columns…"
