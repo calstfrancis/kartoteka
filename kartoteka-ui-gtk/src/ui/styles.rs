@@ -15,6 +15,12 @@ const GLOBAL_CSS: &str = "\
         border-radius: 999px; \
         padding: 1px 9px; \
         font-size: 0.85em; \
+    } \
+    columnview.fond-list row:nth-child(even) { \
+        background: alpha(@window_fg_color, 0.05); \
+    } \
+    columnview.fond-list row:nth-child(even):selected { \
+        background: @accent_bg_color; \
     }";
 
 /// Loads all static, app-wide CSS once, at startup.

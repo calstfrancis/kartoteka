@@ -106,6 +106,137 @@ pub fn serialize_entry_as(entry: &HEntry, new_key: &str) -> Result<String> {
     })
 }
 
+/// Which role a book's own author(s) play when embedded as a book-part's `parent:` block
+/// (see `book_part_yaml`). The common case for a multi-contributor anthology is `Editor` —
+/// whoever the book is catalogued under functions as the volume's editor once individual
+/// chapters get their own entries; `Author` keeps them as the parent's author instead, for
+/// a single- or co-authored book being split into named chapters/sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentRole {
+    Editor,
+    Author,
+}
+
+/// `source`'s own fields as a YAML mapping suitable for embedding as another entry's
+/// `parent:` block, with `author` renamed to `editor` when `role` is `Editor`.
+fn parent_block(source: &HEntry, role: ParentRole) -> Result<serde_yaml_ng::Value> {
+    use serde_yaml_ng::Value;
+
+    let text = serialize_entry(source)?;
+    let doc: Value = serde_yaml_ng::from_str(&text).map_err(|e| BibError::Yaml {
+        path: Path::new("<entry>").to_path_buf(),
+        message: e.to_string(),
+    })?;
+    let mut inner = doc
+        .as_mapping()
+        .and_then(|m| m.values().next())
+        .cloned()
+        .unwrap_or_else(|| Value::Mapping(Default::default()));
+    if role == ParentRole::Editor {
+        if let Some(map) = inner.as_mapping_mut() {
+            if let Some(author) = map.remove(Value::String("author".to_string())) {
+                map.insert(Value::String("editor".to_string()), author);
+            }
+        }
+    }
+    Ok(inner)
+}
+
+/// Build a new "book part" (chapter/section) entry's YAML from an existing book/anthology
+/// `source`: `source`'s own fields become the new entry's `parent:` block (see
+/// `parent_block`), so the part cites correctly ("In: Editor (Ed.), Book Title…") without
+/// duplicating data the source entry already owns — unlike copy-and-edit workflows (e.g.
+/// Zotero's "Create Book Section From Item"), where the two entries start drifting apart the
+/// moment either is edited afterward; see `refresh_book_part_parent` for pulling the source's
+/// latest fields back in later. `part_type` is normally `"chapter"`. Returns YAML under a
+/// placeholder key; the caller re-keys it (`Library::add_from_yaml` already generates a
+/// fresh key from title/author when it sees one).
+pub fn book_part_yaml(
+    source: &HEntry,
+    role: ParentRole,
+    part_type: &str,
+    title: &str,
+    authors: &str,
+    pages: &str,
+) -> Result<String> {
+    use serde_yaml_ng::Value;
+
+    let mut fields = serde_yaml_ng::Mapping::new();
+    fields.insert(
+        Value::String("type".to_string()),
+        Value::String(part_type.to_string()),
+    );
+    if !title.trim().is_empty() {
+        fields.insert(
+            Value::String("title".to_string()),
+            Value::String(title.trim().to_string()),
+        );
+    }
+    let names: Vec<Value> = authors
+        .split(['\n', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| Value::String(s.to_string()))
+        .collect();
+    if !names.is_empty() {
+        fields.insert(Value::String("author".to_string()), Value::Sequence(names));
+    }
+    if !pages.trim().is_empty() {
+        fields.insert(
+            Value::String("page-range".to_string()),
+            Value::String(pages.trim().to_string()),
+        );
+    }
+    fields.insert(
+        Value::String("parent".to_string()),
+        parent_block(source, role)?,
+    );
+
+    let mut outer = serde_yaml_ng::Mapping::new();
+    outer.insert(
+        Value::String("new-item".to_string()),
+        Value::Mapping(fields),
+    );
+    serde_yaml_ng::to_string(&Value::Mapping(outer)).map_err(|e| BibError::Yaml {
+        path: Path::new("<book-part>").to_path_buf(),
+        message: e.to_string(),
+    })
+}
+
+/// Re-derive `existing_yaml`'s `parent:` block from `source`'s *current* fields, leaving
+/// every other field (the part's own title/author/pages/…) untouched — "Refresh from source
+/// book", for when the source book's own metadata changes after a part was created from it.
+/// Returns YAML still keyed to the entry's own key; the caller validates it with a parse
+/// round-trip before writing (same as `apply_fields_to_yaml`).
+pub fn refresh_book_part_parent(
+    existing_yaml: &str,
+    source: &HEntry,
+    role: ParentRole,
+) -> Result<String> {
+    use serde_yaml_ng::Value;
+
+    let mut doc: Value = serde_yaml_ng::from_str(existing_yaml).map_err(|e| BibError::Yaml {
+        path: Path::new("<entry>").to_path_buf(),
+        message: e.to_string(),
+    })?;
+    let inner = doc
+        .as_mapping_mut()
+        .and_then(|m| m.values_mut().next())
+        .and_then(|v| v.as_mapping_mut())
+        .ok_or_else(|| BibError::Yaml {
+            path: Path::new("<entry>").to_path_buf(),
+            message: "entry YAML is not a single keyed mapping".to_string(),
+        })?;
+    inner.insert(
+        Value::String("parent".to_string()),
+        parent_block(source, role)?,
+    );
+    serde_yaml_ng::to_string(&doc).map_err(|e| BibError::Yaml {
+        path: Path::new("<entry>").to_path_buf(),
+        message: e.to_string(),
+    })
+}
+
 /// The subset of bibliographic fields the GUI's structured citation editor exposes. Values
 /// are the human-facing strings shown in the form; `authors` is one `Family, Given` per line
 /// (matching how the entry lists them). Everything else on the entry is left untouched.
@@ -260,5 +391,81 @@ fn set_or_remove(map: &mut serde_yaml_ng::Mapping, key: &str, value: &str) {
         map.remove(&k);
     } else {
         map.insert(k, serde_yaml_ng::Value::String(value.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod book_part_tests {
+    use super::*;
+
+    fn anthology() -> HEntry {
+        let yaml = "the-book:\n  type: book\n  title: Essays on Being\n  author:\n    - Doe, Jane\n  date: 1985\n  publisher: Big Press\n";
+        parse_single(yaml, Path::new("the-book.yml")).unwrap().entry
+    }
+
+    #[test]
+    fn book_part_yaml_embeds_source_as_editor_parent() {
+        let book = anthology();
+        let yaml = book_part_yaml(
+            &book,
+            ParentRole::Editor,
+            "chapter",
+            "On Personhood",
+            "Smith, John",
+            "45-67",
+        )
+        .unwrap();
+        let parsed = parse_single(&yaml, Path::new("new-item.yml")).unwrap();
+        assert_eq!(
+            title_string(&parsed.entry).as_deref(),
+            Some("On Personhood")
+        );
+        assert_eq!(
+            parsed.entry.page_range().map(|r| r.to_string()),
+            Some("45-67".to_string())
+        );
+        let parent = parsed.entry.parents().first().expect("has a parent");
+        assert_eq!(title_string(parent).as_deref(), Some("Essays on Being"));
+        assert!(
+            parent.editors().is_some(),
+            "source author should become parent editor"
+        );
+        assert!(
+            parent.authors().is_none(),
+            "author should be moved, not duplicated"
+        );
+    }
+
+    #[test]
+    fn refresh_pulls_in_a_retitled_source() {
+        let mut book = anthology();
+        let original = book_part_yaml(
+            &book,
+            ParentRole::Editor,
+            "chapter",
+            "On Personhood",
+            "Smith, John",
+            "",
+        )
+        .unwrap();
+        let added = parse_single(&original, Path::new("new-item.yml")).unwrap();
+
+        book.set_title("Essays on Being, Revised".to_string().into());
+        let refreshed = refresh_book_part_parent(
+            &serialize_entry_as(&added.entry, &added.key).unwrap(),
+            &book,
+            ParentRole::Editor,
+        )
+        .unwrap();
+        let reparsed = parse_single(&refreshed, Path::new("new-item.yml")).unwrap();
+        assert_eq!(
+            title_string(&reparsed.entry).as_deref(),
+            Some("On Personhood")
+        );
+        let parent = reparsed.entry.parents().first().expect("has a parent");
+        assert_eq!(
+            title_string(parent).as_deref(),
+            Some("Essays on Being, Revised")
+        );
     }
 }

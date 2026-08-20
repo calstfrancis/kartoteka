@@ -166,7 +166,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Kartoteka")
-        .default_width(1000)
+        .default_width(1300)
         .default_height(680)
         .build();
 
@@ -248,7 +248,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     // block — `widgets_slot` is filled in once it does; edits can't happen before the window
     // is shown, so it's always populated by the time a factory closure runs.
     let widgets_slot: Rc<RefCell<Option<Rc<Widgets>>>> = Rc::new(RefCell::new(None));
-    let (column_view, store, selection) = build_entries_column_view(&state, &widgets_slot);
+    let (column_view, store, selection) = build_entries_column_view();
     let list_scroll = gtk4::ScrolledWindow::new();
     list_scroll.set_child(Some(&column_view));
     list_scroll.set_vexpand(true);
@@ -270,8 +270,12 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let inner_paned = gtk4::Paned::new(Orientation::Horizontal);
     inner_paned.set_start_child(Some(&sidebar));
     inner_paned.set_end_child(Some(&detail_scroll));
-    inner_paned.set_resize_start_child(false);
-    inner_paned.set_position(300);
+    inner_paned.set_resize_start_child(true);
+    inner_paned.set_resize_end_child(false);
+    // Wide enough on open that the spreadsheet's Key/Title/Author/Year/Files columns are all
+    // comfortably visible without immediately having to drag the divider — the detail card
+    // only needs to show one entry's fields, not compete with the list for space.
+    inner_paned.set_position(780);
 
     let paned = gtk4::Paned::new(Orientation::Horizontal);
     paned.set_start_child(Some(&collections_box));
@@ -598,6 +602,9 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
 
     activate_row(&rows, &popover, "New library…", "win.new-library");
     activate_row(&rows, &popover, "Open library…", "win.open-library");
+    activate_row(&rows, &popover, "Move library…", "win.move-library").set_tooltip_text(Some(
+        "Relocate the current library's folder — e.g. onto a different drive",
+    ));
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "New item…", "win.new-item");
     activate_row(&rows, &popover, "Acquire…", "win.acquire");
@@ -608,6 +615,7 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
     activate_row(&rows, &popover, "Import…", "win.import");
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Manage tags…", "win.tags");
+    activate_row(&rows, &popover, "Custom fields…", "win.custom-fields");
     activate_row(&rows, &popover, "Nodes…", "win.nodes").set_tooltip_text(Some(
         "People, places, and other things you can connect your references to",
     ));
@@ -698,6 +706,14 @@ fn add_window_actions(
     {
         let state = state.clone();
         let widgets = widgets.clone();
+        let config = config.clone();
+        let action = gio::SimpleAction::new("move-library", None);
+        action.connect_activate(move |_, _| show_move_library_dialog(&state, &widgets, &config));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
         let action = gio::SimpleAction::new("acquire", None);
         action.connect_activate(move |_, _| show_acquire_dialog(&state, &widgets));
         window.add_action(&action);
@@ -766,6 +782,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("tags", None);
         action.connect_activate(move |_, _| show_tags_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("custom-fields", None);
+        action.connect_activate(move |_, _| show_custom_fields_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -1942,6 +1965,215 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.present();
 }
 
+/// Create a new "book part" entry (a chapter/section) from an existing book/anthology,
+/// `source_key`: the source's own fields become the new entry's `parent:` block (see
+/// `fond_bib::entry::book_part_yaml`), so citing the part also correctly credits the book
+/// without copying its data — editing the book later can be pulled into the part with
+/// "Refresh from source book…" instead of the two silently drifting apart the way a plain
+/// duplicate-then-retype (Zotero's "Create Book Section From Item") would.
+fn show_create_book_part_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    source_key: String,
+) {
+    let source_title = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        match library.load_entry(&source_key) {
+            Ok(parsed) => {
+                bibentry::title_string(&parsed.entry).unwrap_or_else(|| source_key.clone())
+            }
+            Err(e) => {
+                toast(widgets, &friendly::bib_error(&e));
+                return;
+            }
+        }
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Create book part"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let create = gtk4::Button::with_label("Create");
+    create.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&create);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let intro = gtk4::Label::new(Some(&format!(
+        "A new entry citing its own title/author/pages, crediting \u{201c}{source_title}\u{201d} \
+         as the book it's from.",
+    )));
+    intro.set_wrap(true);
+    intro.set_xalign(0.0);
+    intro.add_css_class("dim-label");
+    content.append(&intro);
+
+    let title_entry = gtk4::Entry::new();
+    let authors_entry = gtk4::Entry::builder()
+        .placeholder_text("Last, First; Last, First")
+        .build();
+    let pages_entry = gtk4::Entry::builder().placeholder_text("45-67").build();
+    content.append(&labeled("Chapter title", &title_entry));
+    content.append(&labeled("Chapter author(s)", &authors_entry));
+    content.append(&labeled("Pages", &pages_entry));
+
+    // Whether the source's own author(s) become the new part's editor (the common case —
+    // an edited anthology is usually catalogued with the editor filling Kartoteka's one
+    // "Author(s)" field, since there's no separate editor field on the book form) or stay
+    // as its author (a single/co-authored book being split into named sections).
+    let role_row = gtk4::Box::new(Orientation::Vertical, 4);
+    let role_label = gtk4::Label::new(Some("The book's listed author(s) are its:"));
+    role_label.set_xalign(0.0);
+    role_label.add_css_class("caption-heading");
+    role_row.append(&role_label);
+    let role_drop =
+        gtk4::DropDown::from_strings(&["Editor(s) of this collection", "Author(s) of this book"]);
+    role_row.append(&role_drop);
+    content.append(&role_row);
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        create.connect_clicked(move |_| {
+            let title = title_entry.text().trim().to_string();
+            if title.is_empty() {
+                toast(&widgets, "The chapter needs a title");
+                return;
+            }
+            let role = match role_drop.selected() {
+                0 => fond_bib::entry::ParentRole::Editor,
+                _ => fond_bib::entry::ParentRole::Author,
+            };
+            let role_str = match role {
+                fond_bib::entry::ParentRole::Editor => "editor",
+                fond_bib::entry::ParentRole::Author => "author",
+            };
+            let result = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .map(|lib| -> fond_bib::Result<Vec<String>> {
+                        let source = lib.load_entry(&source_key)?;
+                        let yaml = fond_bib::entry::book_part_yaml(
+                            &source.entry,
+                            role,
+                            "chapter",
+                            &title,
+                            &authors_entry.text(),
+                            &pages_entry.text(),
+                        )?;
+                        lib.add_from_yaml(&yaml)
+                    })
+            };
+            match result {
+                Some(Ok(keys)) if !keys.is_empty() => {
+                    let new_key = keys[0].clone();
+                    let note_result = {
+                        let s = state.borrow();
+                        s.library.as_ref().map(|lib| {
+                            let mut note =
+                                lib.load_note(&new_key).ok().flatten().unwrap_or_default();
+                            note.frontmatter.derived_from_book = Some(source_key.clone());
+                            note.frontmatter.derived_from_role = Some(role_str.to_string());
+                            lib.write_note(&new_key, &note)
+                        })
+                    };
+                    if let Some(Err(e)) = note_result {
+                        toast(&widgets, &friendly::bib_error(&e));
+                    }
+                    toast(&widgets, &format!("Created {new_key}"));
+                    rebuild_index_silent(&state);
+                    reload_current(&state, &widgets);
+                    select_key(&state, &widgets, &new_key);
+                    dialog.close();
+                }
+                Some(Ok(_)) => toast(&widgets, "No entry was created"),
+                Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
+                None => {}
+            }
+        });
+    }
+
+    dialog.present();
+}
+
+/// "Refresh from source book…": re-derive a book part's `parent:` block from its source
+/// book's *current* fields (see `fond_bib::entry::refresh_book_part_parent`), leaving the
+/// part's own title/author/pages untouched. No confirmation dialog — same one-step feel as
+/// any other inline edit, and it's non-destructive (only the `parent:` block changes).
+fn refresh_book_part(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    key: String,
+    source_key: String,
+) {
+    let role = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        let role_str = library
+            .load_note(&key)
+            .ok()
+            .flatten()
+            .and_then(|n| n.frontmatter.derived_from_role);
+        match role_str.as_deref() {
+            Some("author") => fond_bib::entry::ParentRole::Author,
+            _ => fond_bib::entry::ParentRole::Editor,
+        }
+    };
+    let result = {
+        let s = state.borrow();
+        s.library.as_ref().map(|lib| -> fond_bib::Result<()> {
+            let source = lib.load_entry(&source_key)?;
+            let part = lib.load_entry(&key)?;
+            let part_yaml = fond_bib::entry::serialize_entry_as(&part.entry, &part.key)?;
+            let refreshed =
+                fond_bib::entry::refresh_book_part_parent(&part_yaml, &source.entry, role)?;
+            let reparsed = fond_bib::entry::parse_single(&refreshed, &lib.entry_path(&key))?;
+            lib.write_entry(&reparsed.entry)?;
+            Ok(())
+        })
+    };
+    match result {
+        Some(Ok(())) => {
+            rebuild_index_silent(state);
+            reload_current(state, widgets);
+            select_key(state, widgets, &key);
+            toast(widgets, "Refreshed from source book");
+        }
+        Some(Err(e)) => toast(widgets, &friendly::bib_error(&e)),
+        None => {}
+    }
+}
+
 /// A row with a caption, a value label, and a "Choose…" button that opens a file picker
 /// and writes the chosen path into `slot` (updating the label and calling `on_change`).
 fn file_pick_row(
@@ -2221,12 +2453,27 @@ fn save_library_copy(widgets: &Rc<Widgets>, root: PathBuf, dest_parent: PathBuf)
     });
 }
 
-/// Recursively copy `src` into `dest`, skipping `.git` and `.kartoteka`.
+/// Recursively copy `src` into `dest`, skipping `.git` and `.kartoteka` — a fresh backup
+/// snapshot doesn't need version-control internals or the disposable search/metadata cache.
 fn copy_library_dir(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
-    for entry in walkdir::WalkDir::new(src)
-        .into_iter()
-        .filter_entry(|e| !matches!(e.file_name().to_str(), Some(".git" | ".kartoteka")))
-    {
+    copy_dir_filtered(src, dest, true)
+}
+
+/// Recursively copy every file of `src` into `dest`, `.git` and `.kartoteka` included —
+/// used for relocating a library (`move_library`), where those need to survive the move
+/// intact (git history, the search index that'd otherwise just be rebuilt anyway).
+fn copy_dir_all(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    copy_dir_filtered(src, dest, false)
+}
+
+fn copy_dir_filtered(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    skip_git_and_cache: bool,
+) -> std::io::Result<()> {
+    for entry in walkdir::WalkDir::new(src).into_iter().filter_entry(|e| {
+        !skip_git_and_cache || !matches!(e.file_name().to_str(), Some(".git" | ".kartoteka"))
+    }) {
         let entry = entry.map_err(std::io::Error::other)?;
         let rel = entry
             .path()
@@ -2243,6 +2490,103 @@ fn copy_library_dir(src: &std::path::Path, dest: &std::path::Path) -> std::io::R
         }
     }
     Ok(())
+}
+
+/// Move the currently-open library to a different folder: pick a new parent, relocate
+/// everything there (git history and search index included — this is the same library,
+/// just living somewhere else), and repoint config/UI at the new path.
+fn show_move_library_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+) {
+    let root = state
+        .borrow()
+        .library
+        .as_ref()
+        .map(|l| l.root().to_path_buf());
+    let Some(root) = root else {
+        toast(widgets, "Open a library first");
+        return;
+    };
+
+    let dialog = gtk4::FileDialog::builder()
+        .title("Choose the new location")
+        .build();
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let config = config.clone();
+    let parent = widgets.window.clone();
+    dialog.select_folder(Some(&parent), gio::Cancellable::NONE, move |result| {
+        if let Ok(folder) = result {
+            if let Some(new_parent) = folder.path() {
+                move_library(&state, &widgets, &config, root.clone(), new_parent);
+            }
+        }
+    });
+}
+
+#[allow(deprecated)]
+fn move_library(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+    root: PathBuf,
+    new_parent: PathBuf,
+) {
+    let Some(name) = root.file_name().map(|n| n.to_os_string()) else {
+        return;
+    };
+    let new_root = new_parent.join(&name);
+    if new_root == root {
+        toast(widgets, "That's already where this library is");
+        return;
+    }
+    if new_root.exists() {
+        toast(
+            widgets,
+            &format!(
+                "\"{}\" already has a folder named \"{}\"",
+                new_parent.display(),
+                name.to_string_lossy()
+            ),
+        );
+        return;
+    }
+
+    toast(widgets, "Moving library…");
+    let (sender, receiver) =
+        glib::MainContext::channel::<Result<(), String>>(glib::Priority::DEFAULT);
+    let worker_root = root.clone();
+    let worker_new_root = new_root.clone();
+    std::thread::spawn(move || {
+        // A plain rename is instant and preserves everything, but only works within the same
+        // filesystem — falls back to a full copy-then-remove across filesystems/devices.
+        let result = std::fs::rename(&worker_root, &worker_new_root).or_else(|_| {
+            copy_dir_all(&worker_root, &worker_new_root)?;
+            std::fs::remove_dir_all(&worker_root)
+        });
+        let _ = sender.send(result.map_err(|e| e.to_string()));
+    });
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let config = config.clone();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok(()) => {
+                config.borrow_mut().library_path = Some(new_root.clone());
+                config.borrow().save();
+                open_library(&state, &widgets, new_root.clone());
+                toast(
+                    &widgets,
+                    &format!("Moved library to {}", new_root.display()),
+                );
+            }
+            Err(e) => toast(&widgets, &format!("Couldn't move the library: {e}")),
+        }
+        glib::ControlFlow::Break
+    });
 }
 
 fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
@@ -3713,6 +4057,224 @@ fn show_tags_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.present();
 }
 
+/// A field name → its `CustomFieldType` in the fixed order the three-way dropdowns below use.
+/// Self-referential slot for a rebuild closure a row's own button needs to call (see
+/// `show_custom_fields_dialog`'s `populate_cell`) — same pattern as `RebuildNotesCell`.
+type RebuildCell = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
+const CUSTOM_FIELD_TYPES: &[(&str, fond_bib::CustomFieldType)] = &[
+    ("Text", fond_bib::CustomFieldType::Text),
+    ("Number", fond_bib::CustomFieldType::Number),
+    ("Tag", fond_bib::CustomFieldType::Tag),
+];
+
+/// Manage library-wide custom fields: define a new one (name + type), or remove one that's
+/// no longer wanted. A field defined here shows up — initially empty — on every entry's
+/// detail pane (see `show_detail`); removing it here removes the row everywhere, but leaves
+/// any values already saved sitting harmlessly in each entry's note frontmatter (so
+/// recreating a field with the same name brings old values straight back).
+fn show_custom_fields_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Custom fields"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, 520);
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    view.add_top_bar(&header);
+
+    let outer = gtk4::Box::new(Orientation::Vertical, 10);
+    outer.set_margin_top(14);
+    outer.set_margin_bottom(14);
+    outer.set_margin_start(16);
+    outer.set_margin_end(16);
+
+    let subtitle = gtk4::Label::new(Some(
+        "Fields you add here appear on every reference's detail pane. Choose Text for free \
+         notes, Number for a numeric value, or Tag for comma-separated values (shown the \
+         same way the built-in Tags field is).",
+    ));
+    subtitle.set_wrap(true);
+    subtitle.set_xalign(0.0);
+    subtitle.add_css_class("dim-label");
+    subtitle.add_css_class("caption");
+    outer.append(&subtitle);
+
+    // Add-field row: name, type, add button.
+    let add_row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let name_entry = gtk4::Entry::builder()
+        .placeholder_text("Field name, e.g. Methodology")
+        .hexpand(true)
+        .build();
+    let type_labels: Vec<&str> = CUSTOM_FIELD_TYPES.iter().map(|(l, _)| *l).collect();
+    let type_drop = gtk4::DropDown::from_strings(&type_labels);
+    let add_button = gtk4::Button::from_icon_name("list-add-symbolic");
+    add_button.add_css_class("suggested-action");
+    add_row.append(&name_entry);
+    add_row.append(&type_drop);
+    add_row.append(&add_button);
+    outer.append(&add_row);
+
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list.add_css_class("fond-list");
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
+    scroll.set_child(Some(&list));
+    scroll.set_vexpand(true);
+    outer.append(&scroll);
+
+    view.set_content(Some(&outer));
+    dialog.set_content(Some(&view));
+
+    // Self-referential slot: a row's own delete button needs to trigger a fresh rebuild of
+    // the list it lives in, but `populate` isn't done being built (and so can't be cloned
+    // into its own row closures) until after this whole `Rc::new` call returns.
+    let populate_cell: RebuildCell = Rc::new(RefCell::new(None));
+
+    let populate: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let list = list.clone();
+        let populate_cell = populate_cell.clone();
+        move || {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            let defs = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .and_then(|lib| lib.load_custom_field_defs().ok())
+                    .unwrap_or_default()
+            };
+            if defs.fields.is_empty() {
+                let row = gtk4::ListBoxRow::new();
+                row.set_selectable(false);
+                row.set_activatable(false);
+                let l = gtk4::Label::new(Some("No custom fields yet — add one above"));
+                l.add_css_class("dim-label");
+                l.set_margin_top(12);
+                l.set_margin_bottom(12);
+                row.set_child(Some(&l));
+                list.append(&row);
+                return;
+            }
+            let last = defs.fields.len().saturating_sub(1);
+            for (i, def) in defs.fields.iter().enumerate() {
+                let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
+                hbox.set_margin_start(4);
+                hbox.set_margin_end(4);
+                let name_label = gtk4::Label::new(Some(&def.name));
+                name_label.set_xalign(0.0);
+                name_label.set_hexpand(true);
+                let type_label = gtk4::Label::new(Some(
+                    CUSTOM_FIELD_TYPES
+                        .iter()
+                        .find(|(_, t)| *t == def.field_type)
+                        .map(|(l, _)| *l)
+                        .unwrap_or("?"),
+                ));
+                type_label.add_css_class("fond-row-meta");
+                let delete = gtk4::Button::from_icon_name("user-trash-symbolic");
+                delete.add_css_class("flat");
+                delete.set_tooltip_text(Some("Remove this field"));
+                {
+                    let state = state.clone();
+                    let widgets = widgets.clone();
+                    let name = def.name.clone();
+                    let populate_cell = populate_cell.clone();
+                    delete.connect_clicked(move |_| {
+                        let result = {
+                            let s = state.borrow();
+                            s.library.as_ref().map(|lib| {
+                                let mut defs = lib.load_custom_field_defs().unwrap_or_default();
+                                defs.fields.retain(|f| f.name != name);
+                                lib.save_custom_field_defs(&defs)
+                            })
+                        };
+                        match result {
+                            Some(Ok(_)) => {
+                                if let Some(p) = populate_cell.borrow().as_ref() {
+                                    p();
+                                }
+                                reload_current(&state, &widgets);
+                            }
+                            Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
+                            None => {}
+                        }
+                    });
+                }
+                hbox.append(&name_label);
+                hbox.append(&type_label);
+                hbox.append(&delete);
+                let row = gtk4::ListBoxRow::new();
+                row.set_activatable(false);
+                row.add_css_class("fond-card");
+                row.add_css_class("fond-row");
+                if i == 0 {
+                    row.add_css_class("fond-card-first");
+                }
+                if i == last {
+                    row.add_css_class("fond-card-last");
+                }
+                row.set_child(Some(&hbox));
+                list.append(&row);
+            }
+        }
+    });
+    *populate_cell.borrow_mut() = Some(populate.clone());
+    populate();
+
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let populate = populate.clone();
+        let name_entry = name_entry.clone();
+        let type_drop = type_drop.clone();
+        add_button.connect_clicked(move |_| {
+            let name = name_entry.text().trim().to_string();
+            if name.is_empty() {
+                toast(&widgets, "Give the field a name");
+                return;
+            }
+            let field_type = CUSTOM_FIELD_TYPES[type_drop.selected() as usize].1;
+            let result = {
+                let s = state.borrow();
+                s.library.as_ref().map(|lib| {
+                    let mut defs = lib.load_custom_field_defs().unwrap_or_default();
+                    if defs.fields.iter().any(|f| f.name == name) {
+                        return Err(format!("\"{name}\" already exists"));
+                    }
+                    defs.fields.push(fond_bib::CustomFieldDef {
+                        name: name.clone(),
+                        field_type,
+                    });
+                    lib.save_custom_field_defs(&defs)
+                        .map_err(|e| friendly::bib_error(&e))
+                })
+            };
+            match result {
+                Some(Ok(_)) => {
+                    name_entry.set_text("");
+                    populate();
+                    reload_current(&state, &widgets);
+                }
+                Some(Err(e)) => toast(&widgets, &e),
+                None => {}
+            }
+        });
+    }
+
+    dialog.present();
+}
+
 /// Aggregate every note's `tasks:` into one library-wide view — a derived read (and
 /// check/uncheck) over data that's authoritative per-entry (`notes/<key>.md`), matching
 /// `fond_bib::note`'s own doc comment: "a global task view is a derived aggregation over
@@ -4667,88 +5229,6 @@ fn show_empty_list_hint(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     widgets.detail.append(&page);
 }
 
-/// Which citation field a spreadsheet cell edit applies to.
-#[derive(Clone, Copy)]
-enum EditField {
-    Title,
-    Author,
-    Year,
-}
-
-/// Commit an in-place edit made in the entries spreadsheet: reload the full current fields for
-/// `idx`'s entry, apply just the one changed field, and save — same read-merge-write shape as
-/// the detail pane's own `save_citation`, and the same reload-and-reselect afterward, so a
-/// spreadsheet edit and a detail-pane edit behave identically (including re-running the search
-/// index and picking the entry back out by key rather than by position).
-fn commit_cell_edit(
-    state: &Rc<RefCell<AppState>>,
-    widgets_slot: &Rc<RefCell<Option<Rc<Widgets>>>>,
-    idx: usize,
-    field: EditField,
-    new_value: String,
-) {
-    let Some(widgets) = widgets_slot.borrow().clone() else {
-        return;
-    };
-    let key = {
-        let s = state.borrow();
-        match s.entries.get(idx) {
-            Some(e) => e.key.clone(),
-            None => return,
-        }
-    };
-    let mut fields = {
-        let s = state.borrow();
-        let Some(library) = s.library.as_ref() else {
-            return;
-        };
-        let Ok(parsed) = library.load_entry(&key) else {
-            return;
-        };
-        fond_bib::entry::read_fields(&parsed.entry)
-    };
-    let new_value = new_value.trim().to_string();
-    let changed = match field {
-        EditField::Title => {
-            let changed = fields.title != new_value;
-            fields.title = new_value;
-            changed
-        }
-        EditField::Author => {
-            let joined = new_value
-                .split([';', '\n'])
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let changed = fields.authors != joined;
-            fields.authors = joined;
-            changed
-        }
-        EditField::Year => {
-            let changed = fields.year != new_value;
-            fields.year = new_value;
-            changed
-        }
-    };
-    if !changed {
-        return;
-    }
-    let result = {
-        let s = state.borrow();
-        s.library.as_ref().map(|lib| lib.edit_fields(&key, &fields))
-    };
-    match result {
-        Some(Ok(())) => {
-            rebuild_index_silent(state);
-            reload_current(state, &widgets);
-            select_key(state, &widgets, &key);
-        }
-        Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-        None => {}
-    }
-}
-
 /// Layout for one `ColumnViewColumn`: header text, whether it should expand to fill leftover
 /// space, and a fixed width (ignored when `expand` is set).
 struct ColumnSpec {
@@ -4757,66 +5237,32 @@ struct ColumnSpec {
     width: i32,
 }
 
-/// Add an editable text column (`EditableLabel`, spreadsheet-cell style: shows as plain text,
-/// double-click or Enter to edit) bound to one `EntryRow` field, committing via
-/// `commit_cell_edit` when editing ends. `get`/`empty_fallback` render the cell; `field`
-/// selects which citation field a commit writes.
-fn add_editable_column(
-    column_view: &gtk4::ColumnView,
-    state: &Rc<RefCell<AppState>>,
-    widgets_slot: &Rc<RefCell<Option<Rc<Widgets>>>>,
-    spec: ColumnSpec,
-    field: EditField,
-    get: fn(&EntryRow) -> String,
-) {
+/// Add a plain read-only text column bound to one `EntryRow` field. Editing lives entirely
+/// in the detail pane on the right now (see `show_detail`) — the spreadsheet is for
+/// scanning and sorting, not for typing into; a stray click that used to open an inline
+/// editor here now just selects the row like every other column already does.
+fn add_text_column(column_view: &gtk4::ColumnView, spec: ColumnSpec, get: fn(&EntryRow) -> String) {
     let factory = gtk4::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
             return;
         };
-        let label = gtk4::EditableLabel::new("");
+        let label = gtk4::Label::new(None);
         label.set_xalign(0.0);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         item.set_child(Some(&label));
     });
-    {
-        let state = state.clone();
-        let widgets_slot = widgets_slot.clone();
-        factory.connect_bind(move |_, item| {
-            let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
-                return;
-            };
-            let (Some(row), Some(label)) = (
-                item.item().and_downcast::<EntryRow>(),
-                item.child().and_downcast::<gtk4::EditableLabel>(),
-            ) else {
-                return;
-            };
+    factory.connect_bind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        if let (Some(row), Some(label)) = (
+            item.item().and_downcast::<EntryRow>(),
+            item.child().and_downcast::<gtk4::Label>(),
+        ) {
             label.set_text(&get(&row));
-
-            let state = state.clone();
-            let widgets_slot = widgets_slot.clone();
-            let row_for_commit = row.clone();
-            let label_id = label.connect_editing_notify(move |label| {
-                if label.is_editing() {
-                    return;
-                }
-                let text = label.text().to_string();
-                if text == get(&row_for_commit) {
-                    return;
-                }
-                commit_cell_edit(&state, &widgets_slot, row_for_commit.idx(), field, text);
-            });
-            // Recycled `EditableLabel`s are reused for a different row on the next bind — drop
-            // the previous row's commit handler first so a stale closure (and its now-wrong
-            // `idx`) can't fire.
-            unsafe {
-                if let Some(old) = label.steal_data::<glib::SignalHandlerId>("commit-handler") {
-                    label.disconnect(old);
-                }
-                label.set_data("commit-handler", label_id);
-            }
-        });
-    }
+        }
+    });
     let column = gtk4::ColumnViewColumn::new(Some(spec.title), Some(factory));
     column.set_expand(spec.expand);
     if spec.width > 0 {
@@ -4834,15 +5280,13 @@ fn add_editable_column(
 
 /// Build the entries spreadsheet: a `ColumnView` over a `SortListModel`/`SingleSelection`
 /// wrapping a `gio::ListStore<EntryRow>`. Columns: citation key (read-only — it's also the
-/// on-disk filename), title/author/year (editable in place), and a compact PDF/EPUB
-/// availability indicator. Clicking a column header sorts by it, spreadsheet-style; the
-/// `ListStore` itself stays in `AppState.visible` order and is only ever cleared/refilled by
-/// `refresh_list` — sort order lives entirely in the `ColumnView`'s own sorter, so it survives
-/// a refill (a re-filter or a reload after an edit) without needing to be reapplied.
-fn build_entries_column_view(
-    state: &Rc<RefCell<AppState>>,
-    widgets_slot: &Rc<RefCell<Option<Rc<Widgets>>>>,
-) -> (gtk4::ColumnView, gio::ListStore, gtk4::SingleSelection) {
+/// on-disk filename), title/author/year (read-only — edit those in the detail pane), and a
+/// compact PDF/EPUB availability indicator. Clicking a column header sorts by it,
+/// spreadsheet-style; the `ListStore` itself stays in `AppState.visible` order and is only
+/// ever cleared/refilled by `refresh_list` — sort order lives entirely in the `ColumnView`'s
+/// own sorter, so it survives a refill (a re-filter or a reload after an edit) without
+/// needing to be reapplied.
+fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::SingleSelection) {
     let store = gio::ListStore::new::<EntryRow>();
 
     let column_view = gtk4::ColumnView::new(None::<gtk4::SingleSelection>);
@@ -4908,40 +5352,31 @@ fn build_entries_column_view(
     key_column.set_sorter(Some(&key_sorter));
     column_view.append_column(&key_column);
 
-    add_editable_column(
+    add_text_column(
         &column_view,
-        state,
-        widgets_slot,
         ColumnSpec {
             title: "Title",
             expand: true,
             width: 0,
         },
-        EditField::Title,
         EntryRow::title,
     );
-    add_editable_column(
+    add_text_column(
         &column_view,
-        state,
-        widgets_slot,
         ColumnSpec {
             title: "Author",
             expand: false,
             width: 180,
         },
-        EditField::Author,
         EntryRow::author,
     );
-    add_editable_column(
+    add_text_column(
         &column_view,
-        state,
-        widgets_slot,
         ColumnSpec {
             title: "Year",
             expand: false,
             width: 70,
         },
-        EditField::Year,
         EntryRow::year,
     );
 
@@ -5460,6 +5895,46 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             rows.append(&row);
         }
 
+        // Book part (chapter/section) authoring — §book parts. Only offered from a
+        // book/anthology entry itself; the resulting part's own "Refresh from source
+        // book…" lives on the part, not here.
+        if matches!(current_fields.entry_type.as_str(), "book" | "anthology") {
+            let row = popover_button("Create book part…", false);
+            row.set_tooltip_text(Some(
+                "Start a new chapter/section entry that cites this book, e.g. for one \
+                 contributor's chapter in an edited collection",
+            ));
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                show_create_book_part_dialog(&state, &widgets, key.clone());
+            });
+            rows.append(&row);
+        }
+        if let Some(source_key) = note
+            .as_ref()
+            .and_then(|n| n.frontmatter.derived_from_book.clone())
+        {
+            let row = popover_button("Refresh from source book…", false);
+            row.set_tooltip_text(Some(
+                "Re-pull this part's book-level fields (title, editor, publisher, …) from \
+                 the source book — for when the book's own entry was edited since this part \
+                 was created",
+            ));
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                refresh_book_part(&state, &widgets, key.clone(), source_key.clone());
+            });
+            rows.append(&row);
+        }
+
         rows.append(&popover_separator());
 
         if let Some((path, filename, _)) = present_any_attachment.clone() {
@@ -5576,6 +6051,31 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     let rating_drop = gtk4::DropDown::from_strings(&["(none)", "1", "2", "3", "4", "5"]);
     rating_drop.set_selected(current_rating.map(|r| r as u32).unwrap_or(0));
 
+    // Library-wide custom fields (§ custom fields): one row per definition, seeded from
+    // this entry's own note (empty if it's never had a value). All three types use a plain
+    // `Entry` — Number isn't a stepper because most custom numeric fields aren't naturally
+    // "step from what's already there" (a page count, an alternate rating scale, …), and
+    // Tag is comma-separated exactly like the built-in Tags field above.
+    let custom_defs = library
+        .load_custom_field_defs()
+        .map(|d| d.fields)
+        .unwrap_or_default();
+    let current_custom: HashMap<String, String> = note
+        .as_ref()
+        .map(|n| n.frontmatter.custom_fields.clone())
+        .unwrap_or_default();
+    let custom_entries: Vec<(String, gtk4::Entry)> = custom_defs
+        .iter()
+        .map(|def| {
+            let value = current_custom.get(&def.name).cloned().unwrap_or_default();
+            let entry = gtk4::Entry::builder().text(&value).build();
+            if def.field_type == fond_bib::CustomFieldType::Tag {
+                entry.set_placeholder_text(Some("comma, separated, values"));
+            }
+            (def.name.clone(), entry)
+        })
+        .collect();
+
     // Same shape as `save_citation`: rebuild the whole editable subset from live widget
     // state, skip the write if it matches what was on disk at render time, otherwise
     // load-mutate-write the note fresh (not the possibly-stale `note` this closure closes
@@ -5589,6 +6089,8 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         let tags_entry = tags_entry.clone();
         let status_drop = status_drop.clone();
         let rating_drop = rating_drop.clone();
+        let current_custom = current_custom.clone();
+        let custom_entries = custom_entries.clone();
         Rc::new(move || {
             let new_tags: Vec<String> = tags_entry
                 .text()
@@ -5606,9 +6108,17 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 0 => None,
                 n => Some(n as u8),
             };
+            let new_custom: HashMap<String, String> = custom_entries
+                .iter()
+                .filter_map(|(name, entry)| {
+                    let v = entry.text().trim().to_string();
+                    (!v.is_empty()).then_some((name.clone(), v))
+                })
+                .collect();
             if new_tags == current_tags
                 && new_status == current_status
                 && new_rating == current_rating
+                && new_custom == current_custom
             {
                 return;
             }
@@ -5619,6 +6129,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                     note.frontmatter.tags = new_tags;
                     note.frontmatter.read_status = new_status;
                     note.frontmatter.rating = new_rating;
+                    note.frontmatter.custom_fields = new_custom.clone();
                     lib.write_note(&key, &note)
                 })
             };
@@ -5649,9 +6160,20 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         let save = save_note_fields.clone();
         rating_drop.connect_selected_notify(move |_| save());
     }
+    for (_, entry) in &custom_entries {
+        let save = save_note_fields.clone();
+        entry.connect_activate(move |_| save());
+        let save = save_note_fields.clone();
+        let focus = gtk4::EventControllerFocus::new();
+        focus.connect_leave(move |_| save());
+        entry.add_controller(focus);
+    }
     fields.append(&labeled("Tags", &tags_entry));
     fields.append(&labeled("Status", &status_drop));
     fields.append(&labeled("Rating", &rating_drop));
+    for (name, entry) in &custom_entries {
+        fields.append(&labeled(name, entry));
+    }
 
     let mut note_body = String::new();
     if let Some(note) = &note {

@@ -3,6 +3,7 @@
 //! See `docs/DATA-MODEL.md`. Keeping this out of `entries/*.yml` is what lets the
 //! generated `library.yml` stay pure Hayagriva.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -103,6 +104,24 @@ pub struct NoteFrontmatter {
     /// Per-item to-dos (§20).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<Task>,
+    /// Values for library-wide custom fields (see `custom_field::CustomFieldDefs`), keyed
+    /// by field name. Always plain strings regardless of the field's declared type — a
+    /// `Tag`-type value is comma-separated, a `Number`-type value is numeral text. A field
+    /// with no value here just doesn't show one; nothing needs backfilling when a new
+    /// field is defined.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub custom_fields: HashMap<String, String>,
+    /// Set when this entry was created via "Create book part…" from another entry in this
+    /// library (that entry's key) — lets "Refresh from source book" re-pull the parent
+    /// book's current fields later, instead of the copy silently drifting out of sync the
+    /// way a plain duplicate-and-edit (Zotero's "Create Book Section From Item") would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from_book: Option<String>,
+    /// Whether the source book's author(s) were copied into the new part's `parent:` block
+    /// as `editor` or kept as `author` — remembered so a refresh regenerates the same shape
+    /// instead of guessing. `None` for anything not created this way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from_role: Option<String>,
 }
 
 /// Split a faceted tag into `(facet, value)`. A tag containing `:` is faceted

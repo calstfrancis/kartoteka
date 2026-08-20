@@ -4,6 +4,33 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [dev]
 
+**Spreadsheet: read-only cells, zebra striping, more room by default.** Cells in the
+entries spreadsheet are no longer editable in place — editing lives entirely in the
+detail pane on the right now, matching how attachments/tags/notes already work. Rows
+alternate with a subtle background tint to make wide rows easier to track across
+columns, and the window opens with substantially more space given to the spreadsheet
+(the detail pane starts narrower — drag the divider if you want it back).
+
+**Custom fields.** Menu → "Custom fields…" lets you define your own fields — a name and
+a type (Text, Number, or Tag/comma-separated, styled like the built-in Tags field) —
+that then appear on every entry's detail pane. Values are per-entry as usual; the
+definitions are library-wide and travel with the library (`custom-fields.yml` at the
+library root, git-tracked like everything else).
+
+**Move library…** (Menu) relocates the current library's folder — its git history and
+search index included — to a new location, e.g. a different drive; updates the saved
+path so it reopens there next time. A plain rename where possible, falling back to a
+full copy for a cross-filesystem move.
+
+**Create book part…** (an entry's "More" menu, on a Book/Anthology entry) starts a new
+chapter/section entry — for one contributor's chapter in an edited anthology — that
+credits the source book as its `parent:` (title, editor/author, publisher, date, ISBN…)
+without duplicating those fields onto the new entry. Choose whether the book's listed
+author(s) become the part's editor (the common case) or stay as author. Unlike a
+copy-and-retype workflow, the part remembers where it came from: **"Refresh from source
+book…"** on the resulting entry re-pulls the book's current fields on demand, so editing
+the book later doesn't leave every chapter's citation quietly out of date.
+
 **Friendlier for first-time and non-technical users.** A round of accessibility/onboarding
 work:
 - **First-run welcome page** instead of a blank window: "New library…" and "Open existing

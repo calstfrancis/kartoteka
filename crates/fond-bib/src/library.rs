@@ -11,6 +11,7 @@ use hayagriva::Library as HLibrary;
 use crate::ai::AiMetadata;
 use crate::annotation::AnnotationSidecar;
 use crate::collection::Collection;
+use crate::custom_field::CustomFieldDefs;
 use crate::entry::{self, ParsedEntry};
 use crate::error::{BibError, Result};
 use crate::key;
@@ -30,6 +31,7 @@ pub const NODES_DIR: &str = "nodes";
 pub const ATTACHMENTS_DIR: &str = "attachments";
 pub const DERIVED_DIR: &str = ".kartoteka";
 pub const LIBRARY_YML: &str = "library.yml";
+pub const CUSTOM_FIELDS_YML: &str = "custom-fields.yml";
 
 const GITIGNORE_BODY: &str = "attachments/\n.kartoteka/\n";
 
@@ -106,6 +108,10 @@ impl Library {
 
     pub fn library_yml_path(&self) -> PathBuf {
         self.root.join(LIBRARY_YML)
+    }
+
+    pub fn custom_fields_path(&self) -> PathBuf {
+        self.root.join(CUSTOM_FIELDS_YML)
     }
 
     fn dir_stems(&self, dir: &str, ext: &str) -> Result<Vec<String>> {
@@ -246,7 +252,7 @@ impl Library {
                 slug,
             }),
             Target::Entry(key) | Target::Dangling(key) => Ok(RelationHost::Note {
-                note: self.load_note(&key)?.unwrap_or_default(),
+                note: Box::new(self.load_note(&key)?.unwrap_or_default()),
                 key,
             }),
         }
@@ -261,9 +267,12 @@ impl Library {
                 node: self.load_node(&slug)?,
                 slug,
             })),
-            Target::Entry(key) | Target::Dangling(key) => Ok(self
-                .load_note(&key)?
-                .map(|note| RelationHost::Note { key, note })),
+            Target::Entry(key) | Target::Dangling(key) => {
+                Ok(self.load_note(&key)?.map(|note| RelationHost::Note {
+                    key,
+                    note: Box::new(note),
+                }))
+            }
         }
     }
 
@@ -688,6 +697,25 @@ impl Library {
         let path = self.ai_path(key);
         ensure_parent(&path)?;
         fs::write(&path, ai.to_yaml()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    /// Load the library-wide custom field definitions. An absent file (no custom fields
+    /// defined yet — the common case) is not an error, just an empty list.
+    pub fn load_custom_field_defs(&self) -> Result<CustomFieldDefs> {
+        let path = self.custom_fields_path();
+        if !path.is_file() {
+            return Ok(CustomFieldDefs::default());
+        }
+        let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
+        CustomFieldDefs::parse(&text, &path)
+    }
+
+    /// Write the library-wide custom field definitions.
+    pub fn save_custom_field_defs(&self, defs: &CustomFieldDefs) -> Result<PathBuf> {
+        let path = self.custom_fields_path();
+        ensure_parent(&path)?;
+        fs::write(&path, defs.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -1379,7 +1407,7 @@ pub struct UsageMap {
 /// edge algorithms (`set_relations`, `reconcile_relations`, …) operate uniformly over the
 /// notes ∪ nodes universe without caring which file type backs a given id.
 enum RelationHost {
-    Note { key: String, note: Note },
+    Note { key: String, note: Box<Note> },
     Node { slug: String, node: Node },
 }
 
