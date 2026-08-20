@@ -26,6 +26,21 @@ pub struct Config {
     /// Minutes between automatic backups, while a library is open.
     #[serde(default = "default_auto_backup_interval")]
     pub auto_backup_interval_mins: u32,
+    /// Window size/maximized state, restored on launch — the "internal window sizing" the
+    /// UI standard calls for remembering across sessions, alongside the pane positions
+    /// below. Unset (a first run) falls back to the window's own built-in defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_width: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_height: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_maximized: Option<bool>,
+    /// Collections-sidebar/rest split (the outer `Paned`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collections_pane_position: Option<i32>,
+    /// Entries-spreadsheet/detail-pane split (the inner `Paned`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_pane_position: Option<i32>,
 }
 
 fn default_auto_backup_interval() -> u32 {

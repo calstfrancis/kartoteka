@@ -68,6 +68,7 @@ struct Widgets {
     /// Backing store for the entries spreadsheet, in `AppState.visible` order — cleared and
     /// refilled by `refresh_list`, then re-sorted/selected live by `column_view`/`selection`.
     store: gio::ListStore,
+    column_view: gtk4::ColumnView,
     selection: gtk4::SingleSelection,
     detail: gtk4::Box,
     collections_listbox: gtk4::ListBox,
@@ -163,12 +164,65 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let state = Rc::new(RefCell::new(AppState::default()));
     let config = Rc::new(RefCell::new(config));
 
+    // Window size and pane positions are restored from last session below (the "internal
+    // window sizing remembered across sessions" that, along with the column/pane layout,
+    // makes the app pick up where you left it rather than resetting every launch).
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Kartoteka")
-        .default_width(1300)
-        .default_height(680)
+        .default_width(config.borrow().window_width.unwrap_or(1300))
+        .default_height(config.borrow().window_height.unwrap_or(680))
         .build();
+    if config.borrow().window_maximized.unwrap_or(false) {
+        window.maximize();
+    }
+
+    // Debounced config save, shared by every "remember this across sessions" signal below
+    // (window size/maximized, both pane positions) — one shared timer so a flurry of resize
+    // events while dragging a divider collapses into a single write ~400ms after it stops,
+    // matching the debounce-and-guard idiom CLAUDE.md's UI standard calls for.
+    let config_save_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let schedule_config_save = {
+        let config = config.clone();
+        let timer = config_save_timer.clone();
+        Rc::new(move || {
+            if let Some(id) = timer.borrow_mut().take() {
+                id.remove();
+            }
+            let config = config.clone();
+            let timer_for_clear = timer.clone();
+            let id = glib::timeout_add_local(Duration::from_millis(400), move || {
+                config.borrow().save();
+                *timer_for_clear.borrow_mut() = None;
+                glib::ControlFlow::Break
+            });
+            *timer.borrow_mut() = Some(id);
+        })
+    };
+    {
+        let config = config.clone();
+        let schedule_config_save = schedule_config_save.clone();
+        window.connect_default_width_notify(move |w| {
+            config.borrow_mut().window_width = Some(w.default_width());
+            schedule_config_save();
+        });
+    }
+    {
+        let config = config.clone();
+        let schedule_config_save = schedule_config_save.clone();
+        window.connect_default_height_notify(move |w| {
+            config.borrow_mut().window_height = Some(w.default_height());
+            schedule_config_save();
+        });
+    }
+    {
+        let config = config.clone();
+        let schedule_config_save = schedule_config_save.clone();
+        window.connect_maximized_notify(move |w| {
+            config.borrow_mut().window_maximized = Some(w.is_maximized());
+            schedule_config_save();
+        });
+    }
 
     let toolbar_view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -274,14 +328,32 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     inner_paned.set_resize_end_child(false);
     // Wide enough on open that the spreadsheet's Key/Title/Author/Year/Files columns are all
     // comfortably visible without immediately having to drag the divider — the detail card
-    // only needs to show one entry's fields, not compete with the list for space.
-    inner_paned.set_position(780);
+    // only needs to show one entry's fields, not compete with the list for space. Restored
+    // from last session if this isn't a first run.
+    inner_paned.set_position(config.borrow().detail_pane_position.unwrap_or(780));
 
     let paned = gtk4::Paned::new(Orientation::Horizontal);
     paned.set_start_child(Some(&collections_box));
     paned.set_end_child(Some(&inner_paned));
     paned.set_resize_start_child(false);
-    paned.set_position(190);
+    paned.set_position(config.borrow().collections_pane_position.unwrap_or(190));
+
+    {
+        let config = config.clone();
+        let schedule_config_save = schedule_config_save.clone();
+        paned.connect_position_notify(move |p| {
+            config.borrow_mut().collections_pane_position = Some(p.position());
+            schedule_config_save();
+        });
+    }
+    {
+        let config = config.clone();
+        let schedule_config_save = schedule_config_save.clone();
+        inner_paned.connect_position_notify(move |p| {
+            config.borrow_mut().detail_pane_position = Some(p.position());
+            schedule_config_save();
+        });
+    }
 
     // First-run / no-library state: a friendly status page instead of a blank three-pane
     // window, shown until a library is open — `content_stack` switches to "library" the
@@ -330,6 +402,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         subtitle: title,
         status_label,
         store: store.clone(),
+        column_view: column_view.clone(),
         selection: selection.clone(),
         detail,
         collections_listbox: collections_listbox.clone(),
@@ -402,6 +475,16 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         search.connect_search_changed(move |entry| {
             state.borrow_mut().query = entry.text().to_string();
             refresh_list(&state, &widgets);
+        });
+    }
+    // Escape in the search field clears it and returns focus to the list — `SearchEntry`
+    // fires `stop-search` on Escape but doesn't act on it itself; a search with no way to
+    // back out of via the keyboard is a real keyboard-navigation gap, not just a nicety.
+    {
+        let widgets = widgets.clone();
+        search.connect_stop_search(move |entry| {
+            entry.set_text("");
+            widgets.column_view.grab_focus();
         });
     }
 
@@ -675,9 +758,88 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
     }
     rows.append(&popover_separator());
 
+    activate_row(&rows, &popover, "Keyboard shortcuts", "win.shortcuts");
     activate_row(&rows, &popover, "About Kartoteka", "win.about");
 
     popover
+}
+
+/// Every accelerator with a `win.*`/reader-local action behind it, grouped for the shortcuts
+/// dialog — the single place a new accelerator needs to also be added for it to actually be
+/// discoverable (`Ctrl+?`/`F1`, or Menu → "Keyboard shortcuts").
+const SHORTCUT_GROUPS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Library",
+        &[
+            ("Ctrl+O", "Open library…"),
+            ("Ctrl+Shift+N", "New library…"),
+        ],
+    ),
+    (
+        "Entries",
+        &[
+            ("Ctrl+N", "New item…"),
+            ("Ctrl+K", "Cite (search and copy a citation)…"),
+            ("Ctrl+F", "Focus the search field"),
+        ],
+    ),
+    (
+        "PDF/EPUB reader",
+        &[("Ctrl+Z", "Undo"), ("Ctrl+Shift+Z", "Redo")],
+    ),
+    (
+        "Help",
+        &[("Ctrl+? or F1", "Keyboard shortcuts (this list)")],
+    ),
+];
+
+/// A plain, hand-built list of every keyboard shortcut in the app — same "hand-built rows,
+/// not a rigid template" house style as the hamburger popover, rather than
+/// `Gtk.ShortcutsWindow`'s more constrained group/section model.
+fn show_shortcuts_dialog(widgets: &Rc<Widgets>) {
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Keyboard shortcuts"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(420, 520);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    view.add_top_bar(&header);
+
+    let outer = gtk4::Box::new(Orientation::Vertical, 16);
+    outer.set_margin_top(16);
+    outer.set_margin_bottom(16);
+    outer.set_margin_start(18);
+    outer.set_margin_end(18);
+
+    for (group, shortcuts) in SHORTCUT_GROUPS {
+        let group_label = gtk4::Label::new(Some(group));
+        group_label.set_xalign(0.0);
+        group_label.add_css_class("caption-heading");
+        group_label.add_css_class("dim-label");
+        outer.append(&group_label);
+        for (accel, action) in *shortcuts {
+            let row = gtk4::Box::new(Orientation::Horizontal, 12);
+            let action_label = gtk4::Label::new(Some(action));
+            action_label.set_xalign(0.0);
+            action_label.set_hexpand(true);
+            let accel_label = gtk4::Label::new(Some(accel));
+            accel_label.add_css_class("dim-label");
+            accel_label.add_css_class("caption");
+            row.append(&action_label);
+            row.append(&accel_label);
+            outer.append(&row);
+        }
+    }
+
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_child(Some(&outer));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+    dialog.present();
 }
 
 fn add_window_actions(
@@ -732,8 +894,27 @@ fn add_window_actions(
         action.connect_activate(move |_, _| show_cite_picker(&state, &widgets));
         window.add_action(&action);
     }
+    {
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("focus-search", None);
+        action.connect_activate(move |_, _| {
+            widgets.search.grab_focus();
+        });
+        window.add_action(&action);
+    }
+    {
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("shortcuts", None);
+        action.connect_activate(move |_, _| show_shortcuts_dialog(&widgets));
+        window.add_action(&action);
+    }
     if let Some(app) = window.application() {
         app.set_accels_for_action("win.cite", &["<Primary>k"]);
+        app.set_accels_for_action("win.new-item", &["<Primary>n"]);
+        app.set_accels_for_action("win.open-library", &["<Primary>o"]);
+        app.set_accels_for_action("win.new-library", &["<Primary><Shift>n"]);
+        app.set_accels_for_action("win.focus-search", &["<Primary>f"]);
+        app.set_accels_for_action("win.shortcuts", &["<Primary>question", "F1"]);
     }
     {
         let state = state.clone();
@@ -4116,6 +4297,7 @@ fn show_custom_fields_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets
     let type_drop = gtk4::DropDown::from_strings(&type_labels);
     let add_button = gtk4::Button::from_icon_name("list-add-symbolic");
     add_button.add_css_class("suggested-action");
+    add_button.set_tooltip_text(Some("Add this field"));
     add_row.append(&name_entry);
     add_row.append(&type_drop);
     add_row.append(&add_button);
@@ -4925,6 +5107,427 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
     search.grab_focus();
 }
 
+/// One node in the relations-map prototype: an entry (`"work"`) or a node, classified by
+/// `fond_bib::NodeType` so the graph can colour/label it distinctly. `label` is resolved the
+/// same way `target_display` does for the plain backlinks panel in `show_detail`.
+#[derive(serde::Serialize)]
+struct GraphNode {
+    id: String,
+    label: String,
+    kind: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct GraphEdge {
+    from: String,
+    to: String,
+    label: &'static str,
+}
+
+#[derive(serde::Serialize, Default)]
+struct GraphPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    center: Option<String>,
+    nodes: Vec<GraphNode>,
+    edges: Vec<GraphEdge>,
+}
+
+/// Resolve `id` (an entry key or a node slug) to its graph label and kind. Falls back to the
+/// bare id for a dangling target (same "still show *something*" fallback `target_display` uses).
+fn graph_node_kind(lib: &Library, id: &str) -> (String, &'static str) {
+    if let Ok(parsed) = lib.load_entry(id) {
+        let title = bibentry::title_string(&parsed.entry).unwrap_or_default();
+        return (
+            if title.is_empty() {
+                id.to_string()
+            } else {
+                title
+            },
+            "work",
+        );
+    }
+    if let Ok(node) = lib.load_node(id) {
+        let kind = match node.frontmatter.node_type {
+            fond_bib::NodeType::Person => "person",
+            fond_bib::NodeType::School => "school",
+            fond_bib::NodeType::Concept => "concept",
+            fond_bib::NodeType::Event => "event",
+            fond_bib::NodeType::Place => "place",
+            fond_bib::NodeType::WorkUncataloged => "work",
+        };
+        let label = if node.frontmatter.label.is_empty() {
+            id.to_string()
+        } else {
+            node.frontmatter.label
+        };
+        return (label, kind);
+    }
+    (id.to_string(), "other")
+}
+
+/// Every relation recorded on `id`'s own note — forward *and* inverse together, which is
+/// exactly the point: an inverse edge is Kartoteka's maintained backlink (if A cites B, B's
+/// note carries the inverse `cited-by → A` edge), so this one call already gives `id`'s full
+/// local neighbourhood, not just what it points at. One edge per target (a target related two
+/// ways is rare and not worth two overlapping lines in a v0 map).
+fn graph_expand(lib: &Library, id: &str) -> GraphPatch {
+    let mut patch = GraphPatch::default();
+    let mut seen = std::collections::HashSet::new();
+    for r in lib.relations(id).unwrap_or_default() {
+        if !seen.insert(r.target.clone()) {
+            continue;
+        }
+        let (label, kind) = graph_node_kind(lib, &r.target);
+        patch.nodes.push(GraphNode {
+            id: r.target.clone(),
+            label,
+            kind,
+        });
+        patch.edges.push(GraphEdge {
+            from: id.to_string(),
+            to: r.target,
+            label: r.predicate.label(),
+        });
+    }
+    patch
+}
+
+/// **Prototype.** An entry-centered map of its relations: force-directed, pan/zoomable,
+/// click a node to pull *its* connections in too (expanding outward — the center never
+/// moves). Read-only for now — no editing relations from here, no navigating into an entry;
+/// just exploring the shape of what's connected to what. Rendered in a `WebView` (Canvas 2D
+/// plus a small hand-written force simulation) rather than hand-built with `Cairo`/
+/// `GtkDrawingArea` — graph layout and hit-testing are things a browser already does well,
+/// and this reuses the same `WebView`-embedding and Rust↔JS bridge pattern the EPUB reader
+/// established, just with the message flowing JS→Rust via `UserContentManager` (new to this
+/// codebase) instead of only Rust→JS.
+fn show_relations_graph(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    let (center_label, initial) = {
+        let s = state.borrow();
+        let Some(lib) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        let (label, kind) = graph_node_kind(lib, key);
+        let mut patch = graph_expand(lib, key);
+        patch.center = Some(key.to_string());
+        patch.nodes.insert(
+            0,
+            GraphNode {
+                id: key.to_string(),
+                label: label.clone(),
+                kind,
+            },
+        );
+        (label, patch)
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(&format!("Relations map: {center_label}")));
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(900, 700);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    let hint = gtk4::Label::new(Some("Prototype — click a node to expand it"));
+    hint.add_css_class("dim-label");
+    header.set_title_widget(Some(&hint));
+    view.add_top_bar(&header);
+
+    let web_view = webkit6::WebView::new();
+    web_view.set_vexpand(true);
+    web_view.set_hexpand(true);
+
+    if let Some(ucm) = webkit6::prelude::WebViewExt::user_content_manager(&web_view) {
+        ucm.register_script_message_handler("kartoteka", None);
+        let state = state.clone();
+        let view_for_reply = web_view.clone();
+        ucm.connect_script_message_received(Some("kartoteka"), move |_, js_value| {
+            let raw = js_value.to_str();
+            let Ok(msg) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                return;
+            };
+            let Some(id) = msg.get("expand").and_then(|v| v.as_str()) else {
+                return;
+            };
+            let patch = {
+                let s = state.borrow();
+                match s.library.as_ref() {
+                    Some(lib) => graph_expand(lib, id),
+                    None => return,
+                }
+            };
+            let json = serde_json::to_string(&patch).unwrap_or_else(|_| "{}".to_string());
+            view_for_reply.evaluate_javascript(
+                &format!("mergeGraph({json})"),
+                None,
+                None,
+                gio::Cancellable::NONE,
+                |_| {},
+            );
+        });
+    }
+
+    {
+        let initial_json = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".to_string());
+        web_view.connect_load_changed(move |view, event| {
+            if event == webkit6::LoadEvent::Finished {
+                view.evaluate_javascript(
+                    &format!("initGraph({initial_json})"),
+                    None,
+                    None,
+                    gio::Cancellable::NONE,
+                    |_| {},
+                );
+            }
+        });
+    }
+    web_view.load_html(RELATIONS_GRAPH_HTML, None);
+
+    view.set_content(Some(&web_view));
+    dialog.set_content(Some(&view));
+    dialog.present();
+}
+
+/// Self-contained HTML/JS for the relations-map prototype: no external resources (offline,
+/// same as everything else in Kartoteka), a small hand-written force simulation (no need to
+/// vendor d3-force for the node counts a one-entry-deep, click-to-expand map produces),
+/// Canvas 2D rendering, and pan (drag empty space) / zoom (scroll). `initGraph`/`mergeGraph`
+/// are called from Rust; a node click posts `{"expand": "<id>"}` back via
+/// `window.webkit.messageHandlers.kartoteka`.
+const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #fafafa; }
+  @media (prefers-color-scheme: dark) { html, body { background: #1e1e1e; } }
+  canvas { display: block; cursor: grab; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function() {
+  var canvas = document.getElementById('c');
+  var ctx = canvas.getContext('2d');
+  function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+  window.addEventListener('resize', resize);
+  resize();
+
+  var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  var fg = dark ? '#e3e3e3' : '#2e2e2e';
+  var dim = dark ? '#8a8a8a' : '#8a8a8a';
+  var edgeColor = dark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)';
+  var kindColor = {
+    work: dark ? '#5aa0e6' : '#3d78c2',
+    person: dark ? '#7fc97f' : '#4a9e4a',
+    school: dark ? '#e0b04a' : '#c4922a',
+    concept: dark ? '#c98adb' : '#a35bc2',
+    event: dark ? '#e08a6a' : '#c26a48',
+    place: dark ? '#6ac9c9' : '#3a9d9d',
+    other: dark ? '#999999' : '#777777'
+  };
+
+  var nodes = new Map(); // id -> {id,label,kind,x,y,vx,vy,pinned,loading}
+  var edges = []; // {from,to,label}
+  var centerId = null;
+  var offsetX = 0, offsetY = 0, scale = 1;
+
+  function addNode(n) {
+    if (nodes.has(n.id)) return;
+    var angle = Math.random() * Math.PI * 2;
+    var r = 120 + Math.random() * 60;
+    var cx = centerId && nodes.has(centerId) ? nodes.get(centerId).x : canvas.width / 2;
+    var cy = centerId && nodes.has(centerId) ? nodes.get(centerId).y : canvas.height / 2;
+    nodes.set(n.id, {
+      id: n.id, label: n.label, kind: n.kind,
+      x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r,
+      vx: 0, vy: 0, pinned: false, loading: false
+    });
+  }
+
+  window.initGraph = function(data) {
+    nodes.clear();
+    edges = [];
+    centerId = data.center || null;
+    (data.nodes || []).forEach(function(n) {
+      if (n.id === centerId) {
+        nodes.set(n.id, {
+          id: n.id, label: n.label, kind: n.kind,
+          x: canvas.width / 2, y: canvas.height / 2, vx: 0, vy: 0, pinned: true, loading: false
+        });
+      } else {
+        addNode(n);
+      }
+    });
+    (data.edges || []).forEach(function(e) { edges.push(e); });
+  };
+
+  window.mergeGraph = function(data) {
+    (data.nodes || []).forEach(addNode);
+    (data.edges || []).forEach(function(e) {
+      var exists = edges.some(function(x) {
+        return (x.from === e.from && x.to === e.to) || (x.from === e.to && x.to === e.from);
+      });
+      if (!exists) edges.push(e);
+    });
+    // Only one expand request is ever in flight at a time in this prototype, so clearing
+    // every "loading" spinner on any merge is enough — no need to track which node it was.
+    nodes.forEach(function(nd) { nd.loading = false; });
+  };
+
+  // ---- physics: simple repulsion + spring edges + weak centering ----
+  function step() {
+    var arr = Array.from(nodes.values());
+    var REPEL = 2600, SPRING = 0.02, REST = 90, DAMP = 0.85, CENTER_PULL = 0.0025;
+    for (var i = 0; i < arr.length; i++) {
+      for (var j = i + 1; j < arr.length; j++) {
+        var a = arr[i], b = arr[j];
+        var dx = a.x - b.x, dy = a.y - b.y;
+        var d2 = dx * dx + dy * dy + 0.01;
+        var f = REPEL / d2;
+        var d = Math.sqrt(d2);
+        var fx = (dx / d) * f, fy = (dy / d) * f;
+        if (!a.pinned) { a.vx += fx; a.vy += fy; }
+        if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
+      }
+    }
+    edges.forEach(function(e) {
+      var a = nodes.get(e.from), b = nodes.get(e.to);
+      if (!a || !b) return;
+      var dx = b.x - a.x, dy = b.y - a.y;
+      var d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      var f = (d - REST) * SPRING;
+      var fx = (dx / d) * f, fy = (dy / d) * f;
+      if (!a.pinned) { a.vx += fx; a.vy += fy; }
+      if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
+    });
+    var cx = canvas.width / 2, cy = canvas.height / 2;
+    arr.forEach(function(n) {
+      if (n.pinned) { n.x = cx; n.y = cy; return; }
+      n.vx += (cx - n.x) * CENTER_PULL;
+      n.vy += (cy - n.y) * CENTER_PULL;
+      n.vx *= DAMP; n.vy *= DAMP;
+      n.x += n.vx; n.y += n.vy;
+    });
+  }
+
+  function draw() {
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.translate(offsetX, offsetY);
+    ctx.scale(scale, scale);
+
+    ctx.strokeStyle = edgeColor;
+    ctx.fillStyle = dim;
+    ctx.font = '11px sans-serif';
+    edges.forEach(function(e) {
+      var a = nodes.get(e.from), b = nodes.get(e.to);
+      if (!a || !b) return;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.fillText(e.label, (a.x + b.x) / 2 + 4, (a.y + b.y) / 2 - 4);
+    });
+
+    nodes.forEach(function(n) {
+      var r = n.id === centerId ? 22 : 14;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = kindColor[n.kind] || kindColor.other;
+      ctx.fill();
+      if (n.id === centerId) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = fg;
+        ctx.stroke();
+      }
+      if (n.loading) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = fg;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r + 4, (Date.now() / 200) % (Math.PI * 2), (Date.now() / 200) % (Math.PI * 2) + 1.5);
+        ctx.stroke();
+      }
+      ctx.fillStyle = fg;
+      ctx.font = n.id === centerId ? 'bold 12px sans-serif' : '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(n.label, n.x, n.y + r + 14);
+    });
+    ctx.restore();
+  }
+
+  function tick() {
+    step();
+    draw();
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // ---- interaction: click a node to expand, drag empty space to pan, scroll to zoom ----
+  function toWorld(px, py) {
+    return { x: (px - offsetX) / scale, y: (py - offsetY) / scale };
+  }
+  function hitNode(px, py) {
+    var w = toWorld(px, py);
+    var hit = null;
+    nodes.forEach(function(n) {
+      var r = (n.id === centerId ? 22 : 14) + 4;
+      var dx = w.x - n.x, dy = w.y - n.y;
+      if (dx * dx + dy * dy <= r * r) hit = n;
+    });
+    return hit;
+  }
+
+  var dragging = false, dragStart = null, draggedNode = null;
+  canvas.addEventListener('mousedown', function(ev) {
+    var n = hitNode(ev.offsetX, ev.offsetY);
+    if (n && n.id !== centerId) {
+      draggedNode = n;
+      n.pinned = true;
+    } else {
+      dragging = true;
+      dragStart = { x: ev.offsetX - offsetX, y: ev.offsetY - offsetY };
+    }
+  });
+  canvas.addEventListener('mousemove', function(ev) {
+    if (draggedNode) {
+      var w = toWorld(ev.offsetX, ev.offsetY);
+      draggedNode.x = w.x; draggedNode.y = w.y;
+    } else if (dragging) {
+      offsetX = ev.offsetX - dragStart.x;
+      offsetY = ev.offsetY - dragStart.y;
+    }
+  });
+  window.addEventListener('mouseup', function(ev) {
+    if (draggedNode) {
+      // A plain click (no real drag) on a node expands it instead of leaving it pinned.
+      draggedNode.pinned = false;
+      draggedNode = null;
+    }
+    dragging = false;
+  });
+  canvas.addEventListener('click', function(ev) {
+    if (dragging) return;
+    var n = hitNode(ev.offsetX, ev.offsetY);
+    if (!n || n.loading) return;
+    n.loading = true;
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.kartoteka) {
+      window.webkit.messageHandlers.kartoteka.postMessage(JSON.stringify({ expand: n.id }));
+    }
+  });
+  canvas.addEventListener('wheel', function(ev) {
+    ev.preventDefault();
+    var delta = ev.deltaY > 0 ? 0.9 : 1.1;
+    scale = Math.max(0.2, Math.min(3, scale * delta));
+  }, { passive: false });
+})();
+</script>
+</body>
+</html>"##;
+
 /// Save the current search query as a named saved search (a virtual collection).
 fn save_search_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let query = state.borrow().query.trim().to_string();
@@ -5292,6 +5895,10 @@ fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::Singl
     let column_view = gtk4::ColumnView::new(None::<gtk4::SingleSelection>);
     column_view.add_css_class("fond-list");
     column_view.set_show_row_separators(true);
+    // Drag a column header to reorder it — native GTK4 column-view behaviour, no extra
+    // wiring needed. Column order itself isn't persisted across sessions (same as widths,
+    // which GTK doesn't persist either); it resets to Key/Title/Author/Year/Files each launch.
+    column_view.set_reorderable(true);
 
     // Citation key: monospace, read-only, and the drag source for adding an entry to a
     // collection (see `refresh_collections`'s `DropTarget`) — same drag behaviour the old
@@ -5831,6 +6438,23 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             row.connect_clicked(move |_| {
                 popover.popdown();
                 relations_dialog(&state, &widgets, &key);
+            });
+        }
+        rows.append(&row);
+
+        let row = popover_button("Relations map… (prototype)", false);
+        row.set_tooltip_text(Some(
+            "Explore this entry's connections visually — click a node to expand its own \
+             connections outward",
+        ));
+        {
+            let popover = popover.clone();
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let key = key.clone();
+            row.connect_clicked(move |_| {
+                popover.popdown();
+                show_relations_graph(&state, &widgets, &key);
             });
         }
         rows.append(&row);
@@ -9810,6 +10434,11 @@ fn show_epub_reader(
     let web_view = webkit6::WebView::new();
     web_view.set_vexpand(true);
     web_view.set_hexpand(true);
+    // Scale text size only, not the page layout/images — "zoom" on a WebView otherwise
+    // scales everything, which reads as zooming a picture rather than adjusting font size.
+    if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
+        settings.set_zoom_text_only(true);
+    }
 
     let hint = gtk4::Label::new(Some("Select text, choose a kind, then click Apply"));
     hint.add_css_class("dim-label");
@@ -9845,12 +10474,44 @@ fn show_epub_reader(
     let apply_button = gtk4::Button::with_label("Apply");
     apply_button.set_tooltip_text(Some("Mark the selected text"));
 
+    // Font size: text-only zoom (see `set_zoom_text_only` above), stepped like the PDF
+    // reader's own zoom buttons. Not persisted across sessions (unlike window/pane sizing)
+    // — a book-length reading choice you're more likely to want to readjust per-book than
+    // to lock in globally.
+    let font_zoom: Rc<Cell<f64>> = Rc::new(Cell::new(1.0));
+    let zoom_out_button = gtk4::Button::from_icon_name("zoom-out-symbolic");
+    zoom_out_button.add_css_class("flat");
+    zoom_out_button.set_tooltip_text(Some("Smaller text"));
+    let zoom_in_button = gtk4::Button::from_icon_name("zoom-in-symbolic");
+    zoom_in_button.add_css_class("flat");
+    zoom_in_button.set_tooltip_text(Some("Larger text"));
+    {
+        let web_view = web_view.clone();
+        let font_zoom = font_zoom.clone();
+        zoom_out_button.connect_clicked(move |_| {
+            let z = (font_zoom.get() - 0.1).max(0.5);
+            font_zoom.set(z);
+            web_view.set_zoom_level(z);
+        });
+    }
+    {
+        let web_view = web_view.clone();
+        let font_zoom = font_zoom.clone();
+        zoom_in_button.connect_clicked(move |_| {
+            let z = (font_zoom.get() + 0.1).min(3.0);
+            font_zoom.set(z);
+            web_view.set_zoom_level(z);
+        });
+    }
+
     // pack_end order is the reverse of visual order (same gotcha CLAUDE.md notes for the
     // hamburger menu) — Apply packed first so it ends up rightmost: Mode, Colour, Apply,
-    // left to right. Sidebar toggles go at the header's start, per house style.
+    // Font size. Sidebar toggles go at the header's start, per house style.
     header.pack_end(&apply_button);
     header.pack_end(&color_drop);
     header.pack_end(&mode_drop);
+    header.pack_end(&zoom_in_button);
+    header.pack_end(&zoom_out_button);
     if let Some(sidebar_toggle) = &sidebar_toggle {
         header.pack_start(sidebar_toggle);
     }
@@ -10498,6 +11159,7 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
         due.set_text(task.and_then(|t| t.due.as_deref()).unwrap_or(""));
         let delete = gtk4::Button::from_icon_name("user-trash-symbolic");
         delete.add_css_class("flat");
+        delete.set_tooltip_text(Some("Delete this task"));
         hbox.append(&done);
         hbox.append(&text);
         hbox.append(&due);

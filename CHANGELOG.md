@@ -4,6 +4,32 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [dev]
 
+**Relations map (prototype).** An entry's "More" menu has a new "Relations map…" —
+an entry-centered, force-directed visualization of its typed relations (cites,
+influenced by, authored by, …), including the automatically-maintained inverse edges
+(so it doubles as a backlinks view: who cites *this*, not just what this cites). Click
+a node to pull its own connections in too, expanding outward from the entry you
+started on; drag nodes, pan empty space, scroll to zoom. Read-only for now — no
+editing relations or navigating into an entry from the map, just exploring the shape
+of what's connected. Rendered in a `WebView` (Canvas 2D, a small hand-written force
+simulation, no external resources) rather than hand-built in Cairo — the same
+`WebView`-embedding pattern the EPUB reader uses, extended with a JS→Rust message
+channel (`UserContentManager`) for node clicks, new to the app. Marked "(prototype)"
+in the UI; not yet a finished feature.
+
+**Re-arrangeable columns, remembered window sizing, more keyboard access.**
+- The entries spreadsheet's columns can now be dragged by their headers to reorder them
+  (native GTK behaviour — order resets to Key/Title/Author/Year/Files each launch, same
+  as column widths already did).
+- Window size/maximized state and both pane positions (collections sidebar, detail pane)
+  are now remembered across sessions instead of resetting to the same defaults every launch.
+- New keyboard shortcuts: Ctrl+N (New item), Ctrl+O (Open library), Ctrl+Shift+N (New
+  library), Ctrl+F (focus search), Ctrl+? / F1 (Keyboard shortcuts — a new help dialog,
+  also in the menu). Escape in the search field now clears it and returns focus to the list.
+- The EPUB reader gets font-size controls (A-/A+ in the header) — text-only zoom, so
+  images and layout width stay put while the text scales.
+
+
 **EPUB reader: notes sidebar, more mark kinds.** The EPUB reader gets a persistent
 Notes/highlights sidebar — every annotation in reading order, click to jump to it,
 edit its comment inline, delete it — matching the PDF reader's own sidebar (Contents
