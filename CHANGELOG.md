@@ -2,7 +2,38 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [dev]
+## [0.6.0] "Deep Stacks" — 2026-08-20 — Optional columns, bulk actions, smarter duplicates, and a whole-library relations map
+
+**Optional spreadsheet columns for Tags, Status, and custom fields.** Menu → "Columns…"
+lets you turn on a Tags and/or Status column, plus one column per custom field you've
+defined — off by default so the sheet stays uncluttered until you ask for them. Column
+order (drag a header to reorder, as before) and which optional columns are visible are
+now both remembered across sessions instead of resetting to Key/Title/Author/Year/Files
+every launch.
+
+**Bulk select.** The header's new "Select multiple" toggle adds a checkbox column and an
+action bar for tagging, adding to a collection, or deleting several entries at once,
+instead of one at a time in the detail pane.
+
+**Date custom fields.** Custom Fields now offers a fourth type, Date, with a calendar
+picker (stored as `YYYY-MM-DD`) — for things like "date read" or "date acquired" that
+want a picker rather than a text box a typo could silently break sorting on.
+
+**Smarter duplicate detection.** "Find duplicates…" now also lists "possible
+duplicates" — entries with highly similar titles (a typo or a differently-punctuated
+subtitle) that the existing exact DOI/ISBN/title+year matching missed. Shown separately
+from exact matches since these are guesses, with the same per-group Merge button.
+
+**Relations map: whole-library view + analytics.** Menu → "Relations map (whole
+library)…" opens a bird's-eye map of everything connected to everything in your
+library (not just one entry's neighbourhood), with a sidebar ranking the most-connected
+and most-cited entries. Same click-to-expand/double-click-to-open interaction as the
+entry-centered map.
+
+**EPUB reader: in-chapter search and undo/redo.** Ctrl+F (or the header's search
+button) opens a find bar that highlights and cycles matches in the current chapter,
+same as a browser's. Undo/Redo (Ctrl+Z / Ctrl+Shift+Z, and header buttons) now cover
+adding, editing, and deleting marks — matching the PDF reader's own undo/redo.
 
 **Relations map (prototype), fleshed out.** An entry's "More" menu has "Relations
 map…" — an entry-centered, force-directed visualization of its typed relations (cites,
@@ -29,8 +60,7 @@ yet a finished feature.
 
 **Re-arrangeable columns, remembered window sizing, more keyboard access.**
 - The entries spreadsheet's columns can now be dragged by their headers to reorder them
-  (native GTK behaviour — order resets to Key/Title/Author/Year/Files each launch, same
-  as column widths already did).
+  (native GTK behaviour; order is now remembered across sessions — see above).
 - Window size/maximized state and both pane positions (collections sidebar, detail pane)
   are now remembered across sessions instead of resetting to the same defaults every launch.
 - New keyboard shortcuts: Ctrl+N (New item), Ctrl+O (Open library), Ctrl+Shift+N (New
@@ -46,7 +76,7 @@ edit its comment inline, delete it — matching the PDF reader's own sidebar (Co
 moved into the same sidebar-toggle pattern alongside it). Marking text is no longer
 highlight-only: a mode picker adds Underline and Strikeout, plus a colour picker for
 highlights. See `EPUB-READER-PLAN.md` for the full parity plan and what's still ahead
-(zoom, in-book search, undo/redo, reading position tracking).
+(reading position tracking).
 
 **Spreadsheet: read-only cells, zebra striping, more room by default.** Cells in the
 entries spreadsheet are no longer editable in place — editing lives entirely in the

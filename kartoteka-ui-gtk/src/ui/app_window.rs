@@ -40,6 +40,14 @@ struct EntrySummary {
     /// once at load time rather than re-reading each entry's note on every list render.
     has_pdf: bool,
     has_epub: bool,
+    /// Comma-joined, for the optional Tags spreadsheet column.
+    tags: String,
+    /// `""`/"unread"/"reading"/"read", for the optional Status spreadsheet column.
+    status: String,
+    /// This entry's own custom-field values (§ custom fields), for optional per-field
+    /// spreadsheet columns — same values `show_detail`'s custom field rows show, just also
+    /// available at list-row granularity without a per-entry note re-read.
+    custom_fields: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -58,6 +66,13 @@ struct AppState {
     collection_filter: Option<String>,
     /// Saved searches (name → query), loaded from config.
     saved_searches: Vec<(String, String)>,
+    /// Whether the spreadsheet's checkbox column and bulk-action bar are showing — see
+    /// `show_bulk_bar`/the "Select" header toggle.
+    bulk_mode: bool,
+    /// Keys checked in bulk-select mode. Cleared on entering/leaving bulk mode and on every
+    /// bulk action's completion, but *not* on an ordinary list refresh — an edit elsewhere
+    /// shouldn't silently drop an in-progress bulk selection.
+    bulk_selected: HashSet<String>,
 }
 
 struct Widgets {
@@ -76,6 +91,11 @@ struct Widgets {
     /// Switches between the first-run "no library open" status page and the actual
     /// three-pane library view — see `open_library`.
     content_stack: gtk4::Stack,
+    config: Rc<RefCell<Config>>,
+    /// Per-library custom-field spreadsheet columns currently in `column_view`, kept so
+    /// `sync_custom_field_columns` can remove the previous library's set before adding the
+    /// new one. See `open_library`.
+    custom_columns: Rc<RefCell<Vec<gtk4::ColumnViewColumn>>>,
 }
 
 /// A `glib::Object` wrapper around one `EntrySummary`, for use as a `gio::ListStore` row in
@@ -102,6 +122,9 @@ mod entry_row {
             *imp.year.borrow_mut() = e.year.clone();
             imp.has_pdf.set(e.has_pdf);
             imp.has_epub.set(e.has_epub);
+            *imp.tags.borrow_mut() = e.tags.clone();
+            *imp.status.borrow_mut() = e.status.clone();
+            *imp.custom_fields.borrow_mut() = e.custom_fields.clone();
             obj
         }
 
@@ -126,6 +149,20 @@ mod entry_row {
         pub fn has_epub(&self) -> bool {
             self.imp().has_epub.get()
         }
+        pub fn tags(&self) -> String {
+            self.imp().tags.borrow().clone()
+        }
+        pub fn status(&self) -> String {
+            self.imp().status.borrow().clone()
+        }
+        pub fn custom_field(&self, name: &str) -> String {
+            self.imp()
+                .custom_fields
+                .borrow()
+                .get(name)
+                .cloned()
+                .unwrap_or_default()
+        }
         /// Update the cached display fields after a save, so the row reflects the edit
         /// immediately without waiting for the next full list rebuild.
         pub fn set_display(&self, title: String, author: String, year: String) {
@@ -136,6 +173,7 @@ mod entry_row {
     }
 
     mod imp {
+        use super::super::HashMap;
         use std::cell::{Cell, RefCell};
 
         #[derive(Default)]
@@ -147,6 +185,9 @@ mod entry_row {
             pub year: RefCell<String>,
             pub has_pdf: Cell<bool>,
             pub has_epub: Cell<bool>,
+            pub tags: RefCell<String>,
+            pub status: RefCell<String>,
+            pub custom_fields: RefCell<HashMap<String, String>>,
         }
 
         #[glib::object_subclass]
@@ -250,6 +291,15 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     reload_button.set_tooltip_text(Some("Reload library"));
     header.pack_end(&reload_button);
 
+    // Bulk-select toggle: turns on the spreadsheet's checkbox column and the bulk-action bar
+    // below it (see `bulk_bar`) — for tagging, collecting, or deleting several entries at
+    // once instead of one at a time in the detail pane.
+    let bulk_toggle = gtk4::ToggleButton::builder()
+        .icon_name("object-select-symbolic")
+        .tooltip_text("Select multiple entries")
+        .build();
+    header.pack_end(&bulk_toggle);
+
     toolbar_view.add_top_bar(&header);
 
     // Collections pane (leftmost): "All entries" + one row per collection, with a + to
@@ -303,10 +353,66 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     // is shown, so it's always populated by the time a factory closure runs.
     let widgets_slot: Rc<RefCell<Option<Rc<Widgets>>>> = Rc::new(RefCell::new(None));
     let (column_view, store, selection) = build_entries_column_view();
+    apply_column_visibility(&column_view, &config.borrow());
+    reorder_columns(&column_view, &config.borrow().column_order);
+    // Column order changes (drag-to-reorder) show up as `items-changed` on the columns
+    // model — the same debounced-save timer as window size/pane position, so a drag that
+    // passes through several intermediate positions collapses into one write.
+    {
+        let config = config.clone();
+        let schedule_config_save = schedule_config_save.clone();
+        column_view
+            .columns()
+            .connect_items_changed(move |columns, _, _, _| {
+                let order: Vec<String> = (0..columns.n_items())
+                    .filter_map(|i| {
+                        columns
+                            .item(i)
+                            .and_downcast::<gtk4::ColumnViewColumn>()
+                            .and_then(|c| c.id().map(|id| id.to_string()))
+                    })
+                    .collect();
+                config.borrow_mut().column_order = order;
+                schedule_config_save();
+            });
+    }
+    let custom_columns: Rc<RefCell<Vec<gtk4::ColumnViewColumn>>> =
+        Rc::new(RefCell::new(Vec::new()));
+
+    // Bulk-action bar: hidden until the header's "Select multiple" toggle turns it (and the
+    // checkbox column) on. The three buttons are wired once `widgets` exists, further down.
+    let bulk_bar = gtk4::Box::new(Orientation::Horizontal, 8);
+    bulk_bar.add_css_class("toolbar");
+    bulk_bar.set_visible(false);
+    let bulk_count_label = gtk4::Label::new(Some("0 selected"));
+    bulk_count_label.add_css_class("dim-label");
+    bulk_count_label.set_hexpand(true);
+    bulk_count_label.set_xalign(0.0);
+    let bulk_tag_button = gtk4::Button::with_label("Add tag…");
+    let bulk_collection_button = gtk4::Button::with_label("Add to collection…");
+    let bulk_delete_button = gtk4::Button::with_label("Delete");
+    bulk_delete_button.add_css_class("destructive-action");
+    bulk_bar.append(&bulk_count_label);
+    bulk_bar.append(&bulk_tag_button);
+    bulk_bar.append(&bulk_collection_button);
+    bulk_bar.append(&bulk_delete_button);
+
+    let on_bulk_change: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let bulk_count_label = bulk_count_label.clone();
+        Rc::new(move || {
+            let n = state.borrow().bulk_selected.len();
+            bulk_count_label.set_text(&format!("{n} selected"));
+        })
+    };
+    let select_column = add_bulk_select_column(&column_view, &state, on_bulk_change.clone());
+    select_column.set_visible(false);
+
     let list_scroll = gtk4::ScrolledWindow::new();
     list_scroll.set_child(Some(&column_view));
     list_scroll.set_vexpand(true);
     sidebar.append(&search);
+    sidebar.append(&bulk_bar);
     sidebar.append(&list_scroll);
 
     // Detail pane: a vertical box of field rows, rebuilt on selection.
@@ -408,6 +514,8 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         collections_listbox: collections_listbox.clone(),
         search: search.clone(),
         content_stack: content_stack.clone(),
+        config: config.clone(),
+        custom_columns: custom_columns.clone(),
     });
     *widgets_slot.borrow_mut() = Some(widgets.clone());
 
@@ -513,6 +621,58 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         let config = config.clone();
         open_button.connect_clicked(move |_| {
             open_library_picker(&state, &widgets, &config);
+        });
+    }
+
+    // Bulk-select mode: show/hide the checkbox column and action bar, and clear whatever was
+    // checked when leaving it — a stale selection from a previous session in the bar would be
+    // confusing, and re-entering should start from a clean slate.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let bulk_bar = bulk_bar.clone();
+        let select_column = select_column.clone();
+        let on_bulk_change = on_bulk_change.clone();
+        bulk_toggle.connect_toggled(move |b| {
+            let on = b.is_active();
+            state.borrow_mut().bulk_mode = on;
+            if !on {
+                state.borrow_mut().bulk_selected.clear();
+            }
+            select_column.set_visible(on);
+            bulk_bar.set_visible(on);
+            // Force the (recycled) checkbox cells to re-bind against the now-cleared/still
+            // showing state, since GTK only rebinds on an actual model change.
+            let n = widgets.store.n_items();
+            widgets.store.items_changed(0, n, n);
+            on_bulk_change();
+        });
+    }
+
+    // Bulk actions: add a tag, add to a collection, or delete — applied to every currently
+    // checked key. All three clear the bulk selection and reload on completion.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let on_bulk_change = on_bulk_change.clone();
+        bulk_tag_button.connect_clicked(move |b| {
+            show_bulk_tag_popover(&state, &widgets, b.upcast_ref(), &on_bulk_change);
+        });
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let on_bulk_change = on_bulk_change.clone();
+        bulk_collection_button.connect_clicked(move |b| {
+            show_bulk_collection_popover(&state, &widgets, b.upcast_ref(), &on_bulk_change);
+        });
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let on_bulk_change = on_bulk_change.clone();
+        bulk_delete_button.connect_clicked(move |_| {
+            confirm_bulk_delete(&state, &widgets, &on_bulk_change);
         });
     }
 
@@ -699,8 +859,21 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Manage tags…", "win.tags");
     activate_row(&rows, &popover, "Custom fields…", "win.custom-fields");
+    activate_row(&rows, &popover, "Columns…", "win.columns").set_tooltip_text(Some(
+        "Show or hide optional spreadsheet columns — Tags, Status, and any custom fields",
+    ));
     activate_row(&rows, &popover, "Nodes…", "win.nodes").set_tooltip_text(Some(
         "People, places, and other things you can connect your references to",
+    ));
+    activate_row(
+        &rows,
+        &popover,
+        "Relations map (whole library)…",
+        "win.library-graph",
+    )
+    .set_tooltip_text(Some(
+        "A bird's-eye view of everything connected to everything, plus most-connected/\
+             most-cited rankings",
     ));
     activate_row(&rows, &popover, "Tasks…", "win.tasks");
     activate_row(&rows, &popover, "Find duplicates…", "win.duplicates");
@@ -975,8 +1148,22 @@ fn add_window_actions(
     {
         let state = state.clone();
         let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("columns", None);
+        action.connect_activate(move |_, _| show_columns_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
         let action = gio::SimpleAction::new("nodes", None);
         action.connect_activate(move |_, _| show_nodes_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("library-graph", None);
+        action.connect_activate(move |_, _| show_library_graph(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -3652,12 +3839,39 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
         }
     };
 
+    let defs = library.load_custom_field_defs().unwrap_or_default();
+    sync_custom_field_columns(
+        &widgets.column_view,
+        &widgets.custom_columns,
+        &defs,
+        &widgets.config.borrow(),
+    );
+
     let mut entries = Vec::new();
     match library.keys_sorted() {
         Ok(keys) => {
             for key in keys {
                 if let Ok(parsed) = library.load_entry(&key) {
-                    let (has_pdf, has_epub) = attachment_presence(&library, &key);
+                    let note = library.load_note(&key).ok().flatten();
+                    let (has_pdf, has_epub) = attachment_presence(&library, note.as_ref());
+                    let tags = note
+                        .as_ref()
+                        .map(|n| n.frontmatter.tags.join(", "))
+                        .unwrap_or_default();
+                    let status = note
+                        .as_ref()
+                        .and_then(|n| n.frontmatter.read_status)
+                        .map(|s| match s {
+                            fond_bib::ReadStatus::Unread => "unread",
+                            fond_bib::ReadStatus::Reading => "reading",
+                            fond_bib::ReadStatus::Read => "read",
+                        })
+                        .unwrap_or_default()
+                        .to_string();
+                    let custom_fields = note
+                        .as_ref()
+                        .map(|n| n.frontmatter.custom_fields.clone())
+                        .unwrap_or_default();
                     entries.push(EntrySummary {
                         author: bibentry::author_names(&parsed.entry),
                         year: bibentry::year(&parsed.entry)
@@ -3667,6 +3881,9 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
                         key,
                         has_pdf,
                         has_epub,
+                        tags,
+                        status,
+                        custom_fields,
                     });
                 }
             }
@@ -4048,38 +4265,14 @@ fn collection_row(label: &str, icon: &str, depth: usize) -> gtk4::ListBoxRow {
     row
 }
 
-/// List duplicate groups (matched by DOI/ISBN/title+year) with a Merge button each.
-fn show_duplicates_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
-    let groups = {
-        let s = state.borrow();
-        let Some(library) = s.library.as_ref() else {
-            toast(widgets, "Open a library first");
-            return;
-        };
-        library.find_duplicates().unwrap_or_default()
-    };
-    if groups.is_empty() {
-        toast(widgets, "No duplicates found");
-        return;
-    }
-
-    let dialog = adw::Window::new();
-    dialog.set_title(Some(&format!("Duplicates ({})", groups.len())));
-    dialog.set_modal(true);
-    dialog.set_transient_for(Some(&widgets.window));
-    dialog.set_default_size(520, 520);
-    let view = adw::ToolbarView::new();
-    let bare_header = adw::HeaderBar::new();
-    bare_header.add_css_class("fond-chrome");
-    view.add_top_bar(&bare_header);
-
-    let list = gtk4::Box::new(Orientation::Vertical, 12);
-    list.set_margin_top(14);
-    list.set_margin_bottom(14);
-    list.set_margin_start(16);
-    list.set_margin_end(16);
-
-    for group in &groups {
+/// Append one card (title/key list + Merge button) per duplicate group to `list`.
+fn append_duplicate_cards(
+    list: &gtk4::Box,
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    groups: &[Vec<String>],
+) {
+    for group in groups {
         let card = gtk4::Box::new(Orientation::Vertical, 4);
         card.add_css_class("card");
         card.set_margin_top(2);
@@ -4110,7 +4303,6 @@ fn show_duplicates_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) 
         {
             let state = state.clone();
             let widgets = widgets.clone();
-            let dialog = dialog.clone();
             let group = group.clone();
             merge.connect_clicked(move |btn| {
                 let result = {
@@ -4129,12 +4321,71 @@ fn show_duplicates_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) 
                     Some(Err(e)) => toast(&widgets, &format!("Merge failed: {e}")),
                     None => {}
                 }
-                let _ = &dialog;
             });
         }
         inner.append(&merge);
         card.append(&inner);
         list.append(&card);
+    }
+}
+
+/// List duplicate groups: exact matches (DOI/ISBN/title+year) plus, separately, "possible"
+/// matches from title-similarity alone (`Library::find_duplicates_fuzzy`) — a typo or a
+/// differently-punctuated subtitle the exact match misses. Each group gets its own Merge
+/// button; there's nothing to "reject" a fuzzy suggestion beyond just not merging it.
+fn show_duplicates_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let (groups, fuzzy_groups) = {
+        let s = state.borrow();
+        let Some(library) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        (
+            library.find_duplicates().unwrap_or_default(),
+            library.find_duplicates_fuzzy().unwrap_or_default(),
+        )
+    };
+    if groups.is_empty() && fuzzy_groups.is_empty() {
+        toast(widgets, "No duplicates found");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(&format!(
+        "Duplicates ({})",
+        groups.len() + fuzzy_groups.len()
+    )));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(520, 520);
+    let view = adw::ToolbarView::new();
+    let bare_header = adw::HeaderBar::new();
+    bare_header.add_css_class("fond-chrome");
+    view.add_top_bar(&bare_header);
+
+    let list = gtk4::Box::new(Orientation::Vertical, 12);
+    list.set_margin_top(14);
+    list.set_margin_bottom(14);
+    list.set_margin_start(16);
+    list.set_margin_end(16);
+
+    append_duplicate_cards(&list, state, widgets, &groups);
+
+    if !fuzzy_groups.is_empty() {
+        let heading = gtk4::Label::new(Some("Possible duplicates"));
+        heading.add_css_class("heading");
+        heading.set_xalign(0.0);
+        heading.set_margin_top(8);
+        list.append(&heading);
+        let sub = gtk4::Label::new(Some(
+            "Titles are similar but didn't match exactly — check before merging.",
+        ));
+        sub.add_css_class("dim-label");
+        sub.add_css_class("caption");
+        sub.set_xalign(0.0);
+        sub.set_wrap(true);
+        list.append(&sub);
+        append_duplicate_cards(&list, state, widgets, &fuzzy_groups);
     }
 
     let scroll = gtk4::ScrolledWindow::new();
@@ -4247,6 +4498,7 @@ const CUSTOM_FIELD_TYPES: &[(&str, fond_bib::CustomFieldType)] = &[
     ("Text", fond_bib::CustomFieldType::Text),
     ("Number", fond_bib::CustomFieldType::Number),
     ("Tag", fond_bib::CustomFieldType::Tag),
+    ("Date", fond_bib::CustomFieldType::Date),
 ];
 
 /// Manage library-wide custom fields: define a new one (name + type), or remove one that's
@@ -4450,6 +4702,113 @@ fn show_custom_fields_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets
                 }
                 Some(Err(e)) => toast(&widgets, &e),
                 None => {}
+            }
+        });
+    }
+
+    dialog.present();
+}
+
+/// Show/hide the optional entries-spreadsheet columns: the built-in Tags/Status pair, plus
+/// one per current custom field. Toggling saves to config immediately (small, infrequent
+/// change — matches the theme toggle's `win.theme` handler) and flips the column's
+/// visibility live via `column_by_id`, without needing a reload.
+fn show_columns_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Columns"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(340, 420);
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    view.add_top_bar(&header);
+
+    let outer = gtk4::Box::new(Orientation::Vertical, 10);
+    outer.set_margin_top(14);
+    outer.set_margin_bottom(14);
+    outer.set_margin_start(16);
+    outer.set_margin_end(16);
+
+    let subtitle = gtk4::Label::new(Some(
+        "Key, Title, Author, Year, and Files always show. Turn on whichever of these you \
+         want alongside them.",
+    ));
+    subtitle.set_wrap(true);
+    subtitle.set_xalign(0.0);
+    subtitle.add_css_class("dim-label");
+    subtitle.add_css_class("caption");
+    outer.append(&subtitle);
+
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list.add_css_class("fond-list");
+    outer.append(&list);
+
+    view.set_content(Some(&outer));
+    dialog.set_content(Some(&view));
+
+    let defs = {
+        let s = state.borrow();
+        s.library
+            .as_ref()
+            .and_then(|lib| lib.load_custom_field_defs().ok())
+            .unwrap_or_default()
+    };
+
+    let mut toggles: Vec<(String, String)> = vec![
+        ("tags".to_string(), "Tags".to_string()),
+        ("status".to_string(), "Status".to_string()),
+    ];
+    for def in &defs.fields {
+        toggles.push((format!("custom:{}", def.name), def.name.clone()));
+    }
+    let last = toggles.len().saturating_sub(1);
+
+    for (i, (id, label)) in toggles.into_iter().enumerate() {
+        let row = gtk4::ListBoxRow::new();
+        row.set_activatable(false);
+        row.add_css_class("fond-card");
+        row.add_css_class("fond-row");
+        if i == 0 {
+            row.add_css_class("fond-card-first");
+        }
+        if i == last {
+            row.add_css_class("fond-card-last");
+        }
+        let hbox = gtk4::Box::new(Orientation::Horizontal, 8);
+        hbox.set_margin_start(4);
+        hbox.set_margin_end(4);
+        let check = gtk4::CheckButton::with_label(&label);
+        check.set_active(
+            widgets
+                .config
+                .borrow()
+                .column_visible
+                .get(&id)
+                .copied()
+                .unwrap_or(false),
+        );
+        hbox.append(&check);
+        row.set_child(Some(&hbox));
+        list.append(&row);
+
+        let widgets = widgets.clone();
+        check.connect_toggled(move |c| {
+            let active = c.is_active();
+            widgets
+                .config
+                .borrow_mut()
+                .column_visible
+                .insert(id.clone(), active);
+            widgets.config.borrow().save();
+            if let Some(col) = column_by_id(&widgets.column_view, &id) {
+                col.set_visible(active);
             }
         });
     }
@@ -5192,6 +5551,109 @@ fn graph_expand(lib: &Library, id: &str) -> GraphPatch {
     patch
 }
 
+/// Build a graph of the *whole* library's forward relations (skipping Kartoteka-maintained
+/// inverse edges — each is just the mirror of some other item's forward edge, so including
+/// both would draw every connection twice) — capped the same way `graph_expand`'s node cap
+/// works, just enforced here instead of relying on the JS-side `MAX_NODES` truncation, so the
+/// most-connected library-wide entry point can't ever pull in more nodes than a reasonable
+/// force layout still reads as a map rather than a hairball.
+const LIBRARY_GRAPH_NODE_CAP: usize = 150;
+
+fn build_library_graph(lib: &Library) -> GraphPatch {
+    let mut patch = GraphPatch::default();
+    let mut node_ids: HashSet<String> = HashSet::new();
+    let mut edge_pairs: HashSet<(String, String)> = HashSet::new();
+
+    let mut ids: Vec<String> = lib.keys_sorted().unwrap_or_default();
+    ids.extend(lib.node_slugs().unwrap_or_default());
+
+    'outer: for id in &ids {
+        for r in lib.relations(id).unwrap_or_default() {
+            if r.inverse {
+                continue;
+            }
+            if node_ids.len() >= LIBRARY_GRAPH_NODE_CAP
+                && !node_ids.contains(id)
+                && !node_ids.contains(&r.target)
+            {
+                continue;
+            }
+            if node_ids.insert(id.clone()) {
+                let (label, kind) = graph_node_kind(lib, id);
+                patch.nodes.push(GraphNode {
+                    id: id.clone(),
+                    label,
+                    kind,
+                });
+            }
+            if node_ids.insert(r.target.clone()) {
+                let (label, kind) = graph_node_kind(lib, &r.target);
+                patch.nodes.push(GraphNode {
+                    id: r.target.clone(),
+                    label,
+                    kind,
+                });
+            }
+            if edge_pairs.insert((id.clone(), r.target.clone())) {
+                patch.edges.push(GraphEdge {
+                    from: id.clone(),
+                    to: r.target.clone(),
+                    label: r.predicate.label(),
+                });
+            }
+            if node_ids.len() >= LIBRARY_GRAPH_NODE_CAP {
+                continue 'outer;
+            }
+        }
+    }
+    patch
+}
+
+/// (id, display label, count), sorted by count descending — the shape both analytics rankings
+/// below share.
+type GraphRanking = Vec<(String, String, usize)>;
+
+/// Top-`n` entries by how many relation edges touch them (`most_connected`) and, separately,
+/// by how many forward `Cites` edges name them as the cited work (`most_cited`) — the two
+/// library-wide analytics the relations map's sidebar shows alongside the graph itself.
+/// Both walk only forward (user-authored) relations, same as `build_library_graph`, so an
+/// edge isn't double-counted through its maintained inverse. Computed straight from each
+/// item's own relations rather than from `build_library_graph`'s (possibly capped) patch, so
+/// a library bigger than the graph's node cap still gets accurate rankings.
+fn library_graph_analytics(lib: &Library) -> (GraphRanking, GraphRanking) {
+    let mut ids: Vec<String> = lib.keys_sorted().unwrap_or_default();
+    ids.extend(lib.node_slugs().unwrap_or_default());
+
+    let mut degree: HashMap<String, usize> = HashMap::new();
+    let mut cited: HashMap<String, usize> = HashMap::new();
+    for id in &ids {
+        for r in lib.relations(id).unwrap_or_default() {
+            if r.inverse {
+                continue;
+            }
+            *degree.entry(id.clone()).or_insert(0) += 1;
+            *degree.entry(r.target.clone()).or_insert(0) += 1;
+            if r.predicate == fond_bib::Predicate::Cites {
+                *cited.entry(r.target.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let rank = |counts: HashMap<String, usize>| -> Vec<(String, String, usize)> {
+        let mut v: Vec<(String, String, usize)> = counts
+            .into_iter()
+            .map(|(id, n)| {
+                let (label, _) = graph_node_kind(lib, &id);
+                (id, label, n)
+            })
+            .collect();
+        v.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+        v.truncate(10);
+        v
+    };
+    (rank(degree), rank(cited))
+}
+
 /// **Prototype.** An entry-centered map of its relations: force-directed, pan/zoomable,
 /// click a node to pull *its* connections in too (expanding outward — the center never
 /// moves). Read-only for now — no editing relations from here, no navigating into an entry;
@@ -5310,6 +5772,159 @@ fn show_relations_graph(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, ke
     web_view.load_html(RELATIONS_GRAPH_HTML, None);
 
     view.set_content(Some(&web_view));
+    dialog.set_content(Some(&view));
+    dialog.present();
+}
+
+/// One "Most connected"/"Most cited" list in the whole-library map's sidebar — plain
+/// read-only rows (name, count); no click-to-navigate, unlike the graph itself.
+fn append_analytics_section(
+    container: &gtk4::Box,
+    heading: &str,
+    items: &[(String, String, usize)],
+) {
+    let head = gtk4::Label::new(Some(heading));
+    head.add_css_class("heading");
+    head.set_xalign(0.0);
+    head.set_margin_top(6);
+    container.append(&head);
+    if items.is_empty() {
+        let l = gtk4::Label::new(Some("None yet"));
+        l.add_css_class("dim-label");
+        l.set_xalign(0.0);
+        container.append(&l);
+        return;
+    }
+    for (_, label, n) in items {
+        let row = gtk4::Box::new(Orientation::Horizontal, 6);
+        let name = gtk4::Label::new(Some(label));
+        name.set_xalign(0.0);
+        name.set_hexpand(true);
+        name.set_wrap(true);
+        name.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        let count = gtk4::Label::new(Some(&n.to_string()));
+        count.add_css_class("dim-label");
+        count.add_css_class("fond-row-meta");
+        row.append(&name);
+        row.append(&count);
+        container.append(&row);
+    }
+}
+
+/// **Prototype**, same as `show_relations_graph` but seeded with the whole library's forward
+/// relations at once (`build_library_graph`) instead of one entry's neighbourhood — a bird's-
+/// eye view of everything connected to everything, plus a sidebar of the two library-wide
+/// analytics (`library_graph_analytics`): most-connected and most-cited. Node clicks still
+/// expand further (useful once the library exceeds `LIBRARY_GRAPH_NODE_CAP` and the map only
+/// shows a capped subset) and double-click still opens, via the identical message-handler
+/// wiring `show_relations_graph` uses — the JS side treats a whole-library seed exactly like
+/// any other patch, `center` just stays unset so no node is pinned.
+fn show_library_graph(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let (patch, most_connected, most_cited) = {
+        let s = state.borrow();
+        let Some(lib) = s.library.as_ref() else {
+            toast(widgets, "Open a library first");
+            return;
+        };
+        let (mc, mci) = library_graph_analytics(lib);
+        (build_library_graph(lib), mc, mci)
+    };
+    if patch.nodes.is_empty() {
+        toast(widgets, "No relations recorded yet");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Relations map — whole library"));
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(1050, 700);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    let hint = gtk4::Label::new(Some("Prototype — click to expand, double-click to open"));
+    hint.add_css_class("dim-label");
+    header.set_title_widget(Some(&hint));
+    view.add_top_bar(&header);
+
+    let sidebar = gtk4::Box::new(Orientation::Vertical, 10);
+    sidebar.set_margin_top(12);
+    sidebar.set_margin_bottom(12);
+    sidebar.set_margin_start(12);
+    sidebar.set_margin_end(12);
+    append_analytics_section(&sidebar, "Most connected", &most_connected);
+    append_analytics_section(&sidebar, "Most cited", &most_cited);
+    let sidebar_scroll = gtk4::ScrolledWindow::new();
+    sidebar_scroll.set_child(Some(&sidebar));
+    sidebar_scroll.set_width_request(220);
+    sidebar_scroll.add_css_class("fond-sidebar");
+
+    let web_view = webkit6::WebView::new();
+    web_view.set_vexpand(true);
+    web_view.set_hexpand(true);
+
+    if let Some(ucm) = webkit6::prelude::WebViewExt::user_content_manager(&web_view) {
+        ucm.register_script_message_handler("kartoteka", None);
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let view_for_reply = web_view.clone();
+        ucm.connect_script_message_received(Some("kartoteka"), move |_, js_value| {
+            let raw = js_value.to_str();
+            let Ok(msg) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                return;
+            };
+            if let Some(id) = msg.get("expand").and_then(|v| v.as_str()) {
+                let patch = {
+                    let s = state.borrow();
+                    match s.library.as_ref() {
+                        Some(lib) => graph_expand(lib, id),
+                        None => return,
+                    }
+                };
+                let json = serde_json::to_string(&patch).unwrap_or_else(|_| "{}".to_string());
+                view_for_reply.evaluate_javascript(
+                    &format!("mergeGraph({json})"),
+                    None,
+                    None,
+                    gio::Cancellable::NONE,
+                    |_| {},
+                );
+            } else if let Some(id) = msg.get("open").and_then(|v| v.as_str()) {
+                let is_entry = state.borrow().key_to_index.contains_key(id);
+                dialog.close();
+                if is_entry {
+                    select_key(&state, &widgets, id);
+                } else {
+                    show_node_editor(&state, &widgets, Some(id.to_string()), Rc::new(|| {}));
+                }
+            }
+        });
+    }
+
+    {
+        let initial_json = serde_json::to_string(&patch).unwrap_or_else(|_| "{}".to_string());
+        web_view.connect_load_changed(move |view, event| {
+            if event == webkit6::LoadEvent::Finished {
+                view.evaluate_javascript(
+                    &format!("initGraph({initial_json})"),
+                    None,
+                    None,
+                    gio::Cancellable::NONE,
+                    |_| {},
+                );
+            }
+        });
+    }
+    web_view.load_html(RELATIONS_GRAPH_HTML, None);
+
+    let paned = gtk4::Paned::new(Orientation::Horizontal);
+    paned.set_start_child(Some(&sidebar_scroll));
+    paned.set_end_child(Some(&web_view));
+    paned.set_resize_start_child(false);
+    paned.set_position(220);
+
+    view.set_content(Some(&paned));
     dialog.set_content(Some(&view));
     dialog.present();
 }
@@ -5983,7 +6598,7 @@ fn show_empty_list_hint(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 /// Layout for one `ColumnViewColumn`: header text, whether it should expand to fill leftover
 /// space, and a fixed width (ignored when `expand` is set).
 struct ColumnSpec {
-    title: &'static str,
+    title: String,
     expand: bool,
     width: i32,
 }
@@ -5992,7 +6607,22 @@ struct ColumnSpec {
 /// in the detail pane on the right now (see `show_detail`) — the spreadsheet is for
 /// scanning and sorting, not for typing into; a stray click that used to open an inline
 /// editor here now just selects the row like every other column already does.
-fn add_text_column(column_view: &gtk4::ColumnView, spec: ColumnSpec, get: fn(&EntryRow) -> String) {
+fn add_text_column(
+    column_view: &gtk4::ColumnView,
+    spec: ColumnSpec,
+    get: fn(&EntryRow) -> String,
+) -> gtk4::ColumnViewColumn {
+    add_text_column_with(column_view, spec, Rc::new(get))
+}
+
+/// Same as `add_text_column`, but takes a boxed closure rather than a bare fn pointer, so a
+/// column can close over data that doesn't exist until runtime — e.g. one custom field's
+/// name, for the per-field optional columns `sync_custom_field_columns` adds.
+fn add_text_column_with(
+    column_view: &gtk4::ColumnView,
+    spec: ColumnSpec,
+    get: Rc<dyn Fn(&EntryRow) -> String>,
+) -> gtk4::ColumnViewColumn {
     let factory = gtk4::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
@@ -6003,30 +6633,40 @@ fn add_text_column(column_view: &gtk4::ColumnView, spec: ColumnSpec, get: fn(&En
         label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         item.set_child(Some(&label));
     });
-    factory.connect_bind(move |_, item| {
-        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
-            return;
-        };
-        if let (Some(row), Some(label)) = (
-            item.item().and_downcast::<EntryRow>(),
-            item.child().and_downcast::<gtk4::Label>(),
-        ) {
-            label.set_text(&get(&row));
-        }
-    });
-    let column = gtk4::ColumnViewColumn::new(Some(spec.title), Some(factory));
+    {
+        let get = get.clone();
+        factory.connect_bind(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+                return;
+            };
+            if let (Some(row), Some(label)) = (
+                item.item().and_downcast::<EntryRow>(),
+                item.child().and_downcast::<gtk4::Label>(),
+            ) {
+                label.set_text(&get(&row));
+            }
+        });
+    }
+    let column = gtk4::ColumnViewColumn::new(Some(&spec.title), Some(factory));
     column.set_expand(spec.expand);
     if spec.width > 0 {
         column.set_fixed_width(spec.width);
     }
     column.set_resizable(true);
     let sorter = gtk4::CustomSorter::new(move |a, b| {
-        let a = a.downcast_ref::<EntryRow>().map(&get).unwrap_or_default();
-        let b = b.downcast_ref::<EntryRow>().map(&get).unwrap_or_default();
+        let a = a
+            .downcast_ref::<EntryRow>()
+            .map(|r| get(r))
+            .unwrap_or_default();
+        let b = b
+            .downcast_ref::<EntryRow>()
+            .map(|r| get(r))
+            .unwrap_or_default();
         a.to_lowercase().cmp(&b.to_lowercase()).into()
     });
     column.set_sorter(Some(&sorter));
     column_view.append_column(&column);
+    column
 }
 
 /// Build the entries spreadsheet: a `ColumnView` over a `SortListModel`/`SingleSelection`
@@ -6044,8 +6684,8 @@ fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::Singl
     column_view.add_css_class("fond-list");
     column_view.set_show_row_separators(true);
     // Drag a column header to reorder it — native GTK4 column-view behaviour, no extra
-    // wiring needed. Column order itself isn't persisted across sessions (same as widths,
-    // which GTK doesn't persist either); it resets to Key/Title/Author/Year/Files each launch.
+    // wiring needed. `build()` restores the saved order/visibility after this function
+    // returns and wires up persisting further changes (see `column_by_id`/`reorder_columns`).
     column_view.set_reorderable(true);
 
     // Citation key: monospace, read-only, and the drag source for adding an entry to a
@@ -6091,6 +6731,7 @@ fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::Singl
         }
     });
     let key_column = gtk4::ColumnViewColumn::new(Some("Key"), Some(key_factory));
+    key_column.set_id(Some("key"));
     key_column.set_fixed_width(150);
     key_column.set_resizable(true);
     let key_sorter = gtk4::CustomSorter::new(move |a, b| {
@@ -6110,30 +6751,59 @@ fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::Singl
     add_text_column(
         &column_view,
         ColumnSpec {
-            title: "Title",
+            title: "Title".into(),
             expand: true,
             width: 0,
         },
         EntryRow::title,
-    );
+    )
+    .set_id(Some("title"));
     add_text_column(
         &column_view,
         ColumnSpec {
-            title: "Author",
+            title: "Author".into(),
             expand: false,
             width: 180,
         },
         EntryRow::author,
-    );
+    )
+    .set_id(Some("author"));
     add_text_column(
         &column_view,
         ColumnSpec {
-            title: "Year",
+            title: "Year".into(),
             expand: false,
             width: 70,
         },
         EntryRow::year,
+    )
+    .set_id(Some("year"));
+    // Tags/status: like the built-in fields above but off by default (most libraries won't
+    // want every optional column cluttering the sheet at once) — toggled on via the Columns
+    // dialog (`win.columns`), same mechanism as per-library custom-field columns
+    // (`sync_custom_field_columns`).
+    let tags_column = add_text_column(
+        &column_view,
+        ColumnSpec {
+            title: "Tags".into(),
+            expand: false,
+            width: 160,
+        },
+        EntryRow::tags,
     );
+    tags_column.set_id(Some("tags"));
+    tags_column.set_visible(false);
+    let status_column = add_text_column(
+        &column_view,
+        ColumnSpec {
+            title: "Status".into(),
+            expand: false,
+            width: 90,
+        },
+        EntryRow::status,
+    );
+    status_column.set_id(Some("status"));
+    status_column.set_visible(false);
 
     // Formats: a compact, read-only PDF/EPUB availability indicator — the same "PDF"/"EPUB"
     // language the detail pane's own attachment rows and Read button use.
@@ -6178,6 +6848,7 @@ fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::Singl
         }
     });
     let formats_column = gtk4::ColumnViewColumn::new(Some("Files"), Some(formats_factory));
+    formats_column.set_id(Some("files"));
     formats_column.set_fixed_width(60);
     column_view.append_column(&formats_column);
 
@@ -6188,6 +6859,139 @@ fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::Singl
     column_view.set_model(Some(&selection));
 
     (column_view, store, selection)
+}
+
+fn column_by_id(column_view: &gtk4::ColumnView, id: &str) -> Option<gtk4::ColumnViewColumn> {
+    let columns = column_view.columns();
+    for i in 0..columns.n_items() {
+        let col = columns.item(i).and_downcast::<gtk4::ColumnViewColumn>()?;
+        if col.id().as_deref() == Some(id) {
+            return Some(col);
+        }
+    }
+    None
+}
+
+/// Restore a saved left-to-right column order: walk `order`'s ids in sequence and push each
+/// one (that still exists) to the end of the column view — after the whole list, the columns
+/// mentioned in `order` end up in that order, with anything not mentioned (e.g. a custom
+/// field added since the config was last saved) left in its original relative position,
+/// trailing after them.
+fn reorder_columns(column_view: &gtk4::ColumnView, order: &[String]) {
+    for id in order {
+        if let Some(col) = column_by_id(column_view, id) {
+            column_view.remove_column(&col);
+            column_view.append_column(&col);
+        }
+    }
+}
+
+/// Apply saved visibility to the two built-in optional columns (Tags/Status). Per-library
+/// custom-field columns get their visibility set at creation time instead, in
+/// `sync_custom_field_columns`.
+fn apply_column_visibility(column_view: &gtk4::ColumnView, config: &Config) {
+    for id in ["tags", "status"] {
+        if let Some(col) = column_by_id(column_view, id) {
+            col.set_visible(config.column_visible.get(id).copied().unwrap_or(false));
+        }
+    }
+}
+
+/// Rebuild the per-library custom-field spreadsheet columns to match `defs` — removing
+/// whatever the previous library (or previous custom-fields edit) had added, in
+/// `existing`, and appending a fresh column per current definition. Off by default, same as
+/// Tags/Status, unless the config says otherwise. Called on every library open and again
+/// after the Custom Fields dialog saves, so renames/additions/removals show up without
+/// requiring a reopen.
+fn sync_custom_field_columns(
+    column_view: &gtk4::ColumnView,
+    existing: &Rc<RefCell<Vec<gtk4::ColumnViewColumn>>>,
+    defs: &fond_bib::CustomFieldDefs,
+    config: &Config,
+) {
+    for col in existing.borrow_mut().drain(..) {
+        column_view.remove_column(&col);
+    }
+    for def in &defs.fields {
+        let id = format!("custom:{}", def.name);
+        let name = def.name.clone();
+        let column = add_text_column_with(
+            column_view,
+            ColumnSpec {
+                title: def.name.clone(),
+                expand: false,
+                width: 120,
+            },
+            Rc::new(move |row: &EntryRow| row.custom_field(&name)),
+        );
+        column.set_id(Some(&id));
+        column.set_visible(config.column_visible.get(&id).copied().unwrap_or(false));
+        existing.borrow_mut().push(column);
+    }
+    reorder_columns(column_view, &config.column_order);
+}
+
+/// Prepend a checkbox column for bulk-select mode (see the header's "Select multiple" toggle
+/// and the bulk-action bar). Hidden by default — the caller shows/hides it alongside the bar.
+///
+/// The checkbox's `toggled` handler is wired once per `ListItem` in `connect_setup`, not per
+/// bind: `ListItem`s are recycled as rows scroll in/out, so a handler wired in `connect_bind`
+/// would stack a new copy on the same long-lived `CheckButton` every recycle. Instead the
+/// setup-time handler reads `item.item()` (the *currently* bound row) at click time — same
+/// idiom the key column already uses for its drag source.
+fn add_bulk_select_column(
+    column_view: &gtk4::ColumnView,
+    state: &Rc<RefCell<AppState>>,
+    on_change: Rc<dyn Fn()>,
+) -> gtk4::ColumnViewColumn {
+    let factory = gtk4::SignalListItemFactory::new();
+    {
+        let state = state.clone();
+        factory.connect_setup(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+                return;
+            };
+            let check = gtk4::CheckButton::new();
+            {
+                let item = item.clone();
+                let state = state.clone();
+                let on_change = on_change.clone();
+                check.connect_toggled(move |c| {
+                    let Some(row) = item.item().and_downcast::<EntryRow>() else {
+                        return;
+                    };
+                    let key = row.key();
+                    if c.is_active() {
+                        state.borrow_mut().bulk_selected.insert(key);
+                    } else {
+                        state.borrow_mut().bulk_selected.remove(&key);
+                    }
+                    on_change();
+                });
+            }
+            item.set_child(Some(&check));
+        });
+    }
+    {
+        let state = state.clone();
+        factory.connect_bind(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+                return;
+            };
+            if let (Some(row), Some(check)) = (
+                item.item().and_downcast::<EntryRow>(),
+                item.child().and_downcast::<gtk4::CheckButton>(),
+            ) {
+                check.set_active(state.borrow().bulk_selected.contains(&row.key()));
+            }
+        });
+    }
+    let column = gtk4::ColumnViewColumn::new(None, Some(factory));
+    column.set_id(Some("select"));
+    column.set_fixed_width(32);
+    column.set_resizable(false);
+    column_view.insert_column(0, &column);
+    column
 }
 
 fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: usize) {
@@ -6836,15 +7640,21 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         .as_ref()
         .map(|n| n.frontmatter.custom_fields.clone())
         .unwrap_or_default();
-    let custom_entries: Vec<(String, gtk4::Entry)> = custom_defs
+    let custom_entries: Vec<(String, gtk4::Entry, fond_bib::CustomFieldType)> = custom_defs
         .iter()
         .map(|def| {
             let value = current_custom.get(&def.name).cloned().unwrap_or_default();
             let entry = gtk4::Entry::builder().text(&value).build();
-            if def.field_type == fond_bib::CustomFieldType::Tag {
-                entry.set_placeholder_text(Some("comma, separated, values"));
+            match def.field_type {
+                fond_bib::CustomFieldType::Tag => {
+                    entry.set_placeholder_text(Some("comma, separated, values"));
+                }
+                fond_bib::CustomFieldType::Date => {
+                    entry.set_placeholder_text(Some("YYYY-MM-DD"));
+                }
+                fond_bib::CustomFieldType::Text | fond_bib::CustomFieldType::Number => {}
             }
-            (def.name.clone(), entry)
+            (def.name.clone(), entry, def.field_type)
         })
         .collect();
 
@@ -6882,7 +7692,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             };
             let new_custom: HashMap<String, String> = custom_entries
                 .iter()
-                .filter_map(|(name, entry)| {
+                .filter_map(|(name, entry, _)| {
                     let v = entry.text().trim().to_string();
                     (!v.is_empty()).then_some((name.clone(), v))
                 })
@@ -6932,7 +7742,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         let save = save_note_fields.clone();
         rating_drop.connect_selected_notify(move |_| save());
     }
-    for (_, entry) in &custom_entries {
+    for (_, entry, _) in &custom_entries {
         let save = save_note_fields.clone();
         entry.connect_activate(move |_| save());
         let save = save_note_fields.clone();
@@ -6943,8 +7753,36 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     fields.append(&labeled("Tags", &tags_entry));
     fields.append(&labeled("Status", &status_drop));
     fields.append(&labeled("Rating", &rating_drop));
-    for (name, entry) in &custom_entries {
-        fields.append(&labeled(name, entry));
+    for (name, entry, field_type) in &custom_entries {
+        if *field_type == fond_bib::CustomFieldType::Date {
+            let row = gtk4::Box::new(Orientation::Horizontal, 4);
+            row.append(entry);
+            entry.set_hexpand(true);
+            let pick = gtk4::MenuButton::builder()
+                .icon_name("x-office-calendar-symbolic")
+                .tooltip_text("Pick a date")
+                .build();
+            let calendar = gtk4::Calendar::new();
+            let calendar_popover = gtk4::Popover::new();
+            calendar_popover.set_child(Some(&calendar));
+            pick.set_popover(Some(&calendar_popover));
+            {
+                let entry = entry.clone();
+                let save = save_note_fields.clone();
+                let popover = calendar_popover.clone();
+                calendar.connect_day_selected(move |cal| {
+                    if let Ok(text) = cal.date().format("%Y-%m-%d") {
+                        entry.set_text(&text);
+                    }
+                    popover.popdown();
+                    save();
+                });
+            }
+            row.append(&pick);
+            fields.append(&labeled(name, &row));
+        } else {
+            fields.append(&labeled(name, entry));
+        }
     }
 
     let mut note_body = String::new();
@@ -7266,14 +8104,14 @@ impl ReaderAttachmentKind {
     }
 }
 
-/// Whether `key` has a readable (present-on-disk) PDF and/or EPUB attachment — same
-/// detection `show_detail` uses for its own Read button, factored out so the entry list's
-/// row icon (`EntrySummary::has_pdf`/`has_epub`) can reuse it without duplicating the
-/// hash-strip-and-check-on-disk logic.
-fn attachment_presence(library: &Library, key: &str) -> (bool, bool) {
-    let note = library.load_note(key).ok().flatten();
+/// Whether a (possibly absent) note has a readable (present-on-disk) PDF and/or EPUB
+/// attachment — same detection `show_detail` uses for its own Read button, factored out so
+/// the entry list's row icon (`EntrySummary::has_pdf`/`has_epub`) can reuse it. Takes an
+/// already-loaded note rather than a key, so the entries-loading loop in `open_library` (which
+/// needs the note anyway, for tags/status/custom fields) doesn't read each note file twice.
+fn attachment_presence(library: &Library, note: Option<&fond_bib::Note>) -> (bool, bool) {
     let has = |wanted: ReaderAttachmentKind| {
-        note.as_ref().is_some_and(|n| {
+        note.is_some_and(|n| {
             n.frontmatter.attachments.iter().any(|att| {
                 ReaderAttachmentKind::from_filename(&att.filename) == Some(wanted) && {
                     let hex = att
@@ -10271,6 +11109,33 @@ struct EpubReaderState {
     spine: Vec<String>,
     index: usize,
     annotations: fond_bib::AnnotationSidecar,
+    /// Snapshot-based undo/redo, same idiom as the PDF reader's `ReaderState` (see
+    /// `push_undo_snapshot`/`UNDO_HISTORY_LIMIT`) — a full clone of `annotations` taken
+    /// immediately before each mutation (add/edit/delete a mark).
+    undo_stack: Vec<fond_bib::AnnotationSidecar>,
+    redo_stack: Vec<fond_bib::AnnotationSidecar>,
+}
+
+/// Snapshot `reader`'s current annotations onto the undo stack and clear the redo stack —
+/// same convention as the PDF reader's `push_undo_snapshot`, just typed to `EpubReaderState`.
+fn push_epub_undo_snapshot(reader: &Rc<RefCell<EpubReaderState>>) {
+    let mut r = reader.borrow_mut();
+    let snapshot = r.annotations.clone();
+    r.undo_stack.push(snapshot);
+    if r.undo_stack.len() > UNDO_HISTORY_LIMIT {
+        r.undo_stack.remove(0);
+    }
+    r.redo_stack.clear();
+}
+
+fn sync_epub_undo_redo_buttons(
+    reader: &Rc<RefCell<EpubReaderState>>,
+    undo_button: &gtk4::Button,
+    redo_button: &gtk4::Button,
+) {
+    let r = reader.borrow();
+    undo_button.set_sensitive(!r.undo_stack.is_empty());
+    redo_button.set_sensitive(!r.redo_stack.is_empty());
 }
 
 /// One annotation as sent to the reader's highlight-apply JS: just enough to find it in the
@@ -10556,6 +11421,8 @@ fn show_epub_reader(
         spine: book.spine,
         index: start_index,
         annotations,
+        undo_stack: Vec::new(),
+        redo_stack: Vec::new(),
     }));
 
     let dialog = adw::Window::new();
@@ -10594,8 +11461,39 @@ fn show_epub_reader(
     hint.set_margin_top(4);
     hint.set_margin_bottom(4);
 
+    // In-chapter search: WebKit's own `FindController` — highlights and cycles matches in
+    // the currently loaded chapter, same as Ctrl+F in a browser. Chapter-scoped rather than
+    // whole-book (per EPUB-READER-PLAN.md's recommendation: cheap, matches "one chapter
+    // loaded at a time" reality; whole-book would need pre-extracting every chapter's text).
+    let search_toggle = gtk4::ToggleButton::new();
+    search_toggle.set_icon_name("edit-find-symbolic");
+    search_toggle.set_tooltip_text(Some("Search this chapter (Ctrl+F)"));
+    let search_bar_entry = gtk4::SearchEntry::new();
+    search_bar_entry.set_placeholder_text(Some("Search this chapter"));
+    search_bar_entry.set_hexpand(true);
+    let search_prev = gtk4::Button::from_icon_name("go-up-symbolic");
+    search_prev.set_tooltip_text(Some("Previous match"));
+    let search_next = gtk4::Button::from_icon_name("go-down-symbolic");
+    search_next.set_tooltip_text(Some("Next match"));
+    let search_count = gtk4::Label::new(None);
+    search_count.add_css_class("dim-label");
+    search_count.add_css_class("caption");
+    let search_row = gtk4::Box::new(Orientation::Horizontal, 6);
+    search_row.set_margin_top(6);
+    search_row.set_margin_bottom(6);
+    search_row.set_margin_start(8);
+    search_row.set_margin_end(8);
+    search_row.append(&search_bar_entry);
+    search_row.append(&search_count);
+    search_row.append(&search_prev);
+    search_row.append(&search_next);
+    let search_revealer = gtk4::Revealer::new();
+    search_revealer.set_reveal_child(false);
+    search_revealer.set_child(Some(&search_row));
+
     let content = gtk4::Box::new(Orientation::Vertical, 0);
     content.append(&hint);
+    content.append(&search_revealer);
     content.append(&web_view);
 
     // Sidebar toggles (Contents, if the EPUB has a TOC; Notes always) — persistent Paned
@@ -10612,6 +11510,15 @@ fn show_epub_reader(
     let notes_toggle = gtk4::ToggleButton::new();
     notes_toggle.set_icon_name("view-list-symbolic");
     notes_toggle.set_tooltip_text(Some("Show notes and highlights"));
+
+    // Undo/redo: same snapshot-based idiom as the PDF reader (see `EpubReaderState`'s
+    // `undo_stack`/`redo_stack` and `push_epub_undo_snapshot`).
+    let undo_button = gtk4::Button::from_icon_name("edit-undo-symbolic");
+    undo_button.set_tooltip_text(Some("Undo (Ctrl+Z)"));
+    undo_button.set_sensitive(false);
+    let redo_button = gtk4::Button::from_icon_name("edit-redo-symbolic");
+    redo_button.set_tooltip_text(Some("Redo (Ctrl+Shift+Z)"));
+    redo_button.set_sensitive(false);
 
     let mode_labels: Vec<&str> = EPUB_MARK_KIND_OPTIONS.iter().map(|(l, _)| *l).collect();
     let mode_drop = gtk4::DropDown::from_strings(&mode_labels);
@@ -10654,7 +11561,8 @@ fn show_epub_reader(
 
     // pack_end order is the reverse of visual order (same gotcha CLAUDE.md notes for the
     // hamburger menu) — Apply packed first so it ends up rightmost: Mode, Colour, Apply,
-    // Font size. Sidebar toggles go at the header's start, per house style.
+    // Font size. Sidebar toggles, search, and undo/redo go at the header's start, per house
+    // style (undo/redo in the same relative position as the PDF reader's own pair).
     header.pack_end(&apply_button);
     header.pack_end(&color_drop);
     header.pack_end(&mode_drop);
@@ -10664,6 +11572,9 @@ fn show_epub_reader(
         header.pack_start(sidebar_toggle);
     }
     header.pack_start(&notes_toggle);
+    header.pack_start(&search_toggle);
+    header.pack_start(&undo_button);
+    header.pack_start(&redo_button);
     view.add_top_bar(&header);
 
     // Contents sidebar (only built if the EPUB has a TOC).
@@ -10846,6 +11757,7 @@ fn show_epub_reader(
                         if current_note.as_deref().unwrap_or("") == text {
                             return;
                         }
+                        push_epub_undo_snapshot(&reader);
                         {
                             let mut r = reader.borrow_mut();
                             if let Some(a) =
@@ -10889,6 +11801,7 @@ fn show_epub_reader(
                     let id = annotation.id.clone();
                     let rebuild_notes_cell = rebuild_notes_cell_inner.clone();
                     delete_button.connect_clicked(move |_| {
+                        push_epub_undo_snapshot(&reader);
                         reader
                             .borrow_mut()
                             .annotations
@@ -10950,6 +11863,198 @@ fn show_epub_reader(
     paned.set_position(220);
     view.set_content(Some(&paned));
     dialog.set_content(Some(&view));
+
+    // Undo/redo: pop a snapshot and refresh the current chapter's highlights plus the notes
+    // sidebar — cheap, since there's no per-page render state to rebuild the way PDF's
+    // continuous mode has.
+    let epub_undo = {
+        let reader = reader.clone();
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let view = web_view.clone();
+        let rebuild_notes = rebuild_notes.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
+        Rc::new(move || {
+            let popped = {
+                let mut r = reader.borrow_mut();
+                match r.undo_stack.pop() {
+                    Some(prev) => {
+                        let current = r.annotations.clone();
+                        r.redo_stack.push(current);
+                        r.annotations = prev;
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if !popped {
+                toast(&widgets, "Nothing to undo");
+                return;
+            }
+            let write_result = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+            };
+            match write_result {
+                Some(Ok(_)) => {
+                    epub_apply_highlights(&view, &reader, None);
+                    rebuild_notes();
+                    toast(&widgets, "Undid last annotation change");
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not undo: {e}")),
+                None => toast(&widgets, "No open library"),
+            }
+            sync_epub_undo_redo_buttons(&reader, &undo_button, &redo_button);
+        })
+    };
+    let epub_redo = {
+        let reader = reader.clone();
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let view = web_view.clone();
+        let rebuild_notes = rebuild_notes.clone();
+        let undo_button = undo_button.clone();
+        let redo_button = redo_button.clone();
+        Rc::new(move || {
+            let popped = {
+                let mut r = reader.borrow_mut();
+                match r.redo_stack.pop() {
+                    Some(next) => {
+                        let current = r.annotations.clone();
+                        r.undo_stack.push(current);
+                        r.annotations = next;
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if !popped {
+                toast(&widgets, "Nothing to redo");
+                return;
+            }
+            let write_result = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+            };
+            match write_result {
+                Some(Ok(_)) => {
+                    epub_apply_highlights(&view, &reader, None);
+                    rebuild_notes();
+                    toast(&widgets, "Redid annotation change");
+                }
+                Some(Err(e)) => toast(&widgets, &format!("Could not redo: {e}")),
+                None => toast(&widgets, "No open library"),
+            }
+            sync_epub_undo_redo_buttons(&reader, &undo_button, &redo_button);
+        })
+    };
+    {
+        let epub_undo = epub_undo.clone();
+        undo_button.connect_clicked(move |_| epub_undo());
+    }
+    {
+        let epub_redo = epub_redo.clone();
+        redo_button.connect_clicked(move |_| epub_redo());
+    }
+
+    // In-chapter search wiring: toggling `search_toggle` reveals the bar and focuses the
+    // entry; turning it off clears the query and WebKit's highlight state
+    // (`search_finish`) rather than leaving stale highlights visible.
+    {
+        let search_revealer = search_revealer.clone();
+        let search_bar_entry = search_bar_entry.clone();
+        let search_count = search_count.clone();
+        let view = web_view.clone();
+        search_toggle.connect_toggled(move |btn| {
+            let on = btn.is_active();
+            search_revealer.set_reveal_child(on);
+            if on {
+                search_bar_entry.grab_focus();
+            } else {
+                search_bar_entry.set_text("");
+                search_count.set_text("");
+                if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) {
+                    fc.search_finish();
+                }
+            }
+        });
+    }
+    {
+        let view = web_view.clone();
+        let search_count = search_count.clone();
+        search_bar_entry.connect_search_changed(move |entry| {
+            let text = entry.text();
+            let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) else {
+                return;
+            };
+            if text.is_empty() {
+                fc.search_finish();
+                search_count.set_text("");
+                return;
+            }
+            let options =
+                (webkit6::FindOptions::CASE_INSENSITIVE | webkit6::FindOptions::WRAP_AROUND).bits();
+            fc.search(&text, options, 1000);
+        });
+    }
+    {
+        let view = web_view.clone();
+        search_prev.connect_clicked(move |_| {
+            if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) {
+                fc.search_previous();
+            }
+        });
+    }
+    {
+        let view = web_view.clone();
+        search_next.connect_clicked(move |_| {
+            if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) {
+                fc.search_next();
+            }
+        });
+    }
+    if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&web_view) {
+        let count_label = search_count.clone();
+        fc.connect_found_text(move |_, count| {
+            count_label.set_text(&format!("{count} found"));
+        });
+        let count_label = search_count.clone();
+        fc.connect_failed_to_find_text(move |_| {
+            count_label.set_text("No matches");
+        });
+    }
+
+    {
+        let key_controller = gtk4::EventControllerKey::new();
+        let epub_undo = epub_undo.clone();
+        let epub_redo = epub_redo.clone();
+        let search_toggle = search_toggle.clone();
+        key_controller.connect_key_pressed(move |_, keyval, _keycode, modifiers| {
+            if keyval == gdk::Key::z && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+                if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+                    epub_redo();
+                } else {
+                    epub_undo();
+                }
+                return glib::Propagation::Stop;
+            }
+            if keyval == gdk::Key::f && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+                search_toggle.set_active(!search_toggle.is_active());
+                return glib::Propagation::Stop;
+            }
+            if keyval == gdk::Key::Escape && search_toggle.is_active() {
+                search_toggle.set_active(false);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        dialog.add_controller(key_controller);
+    }
 
     if let Some(sidebar_toggle) = &sidebar_toggle {
         let paned = paned.clone();
@@ -11124,6 +12229,7 @@ fn show_epub_reader(
                         annotation.color = color.clone();
                     }
                     let id = annotation.id.clone();
+                    push_epub_undo_snapshot(&reader);
                     reader.borrow_mut().annotations.upsert(annotation);
 
                     let write_result = {
@@ -11575,6 +12681,268 @@ fn confirm_delete_entry(
                 &widgets,
                 &format!("Couldn't delete \"{key}\": {}", friendly::bib_error(&e)),
             ),
+        }
+    });
+    dialog.present();
+}
+
+/// Every key currently checked in bulk-select mode, order unspecified — the bulk actions
+/// below don't care about order, only membership.
+fn bulk_selected_keys(state: &Rc<RefCell<AppState>>) -> Vec<String> {
+    state.borrow().bulk_selected.iter().cloned().collect()
+}
+
+/// Small popover (anchored to the button that opened it) with a single tag entry, applied to
+/// every checked entry on submit — added to each note's existing tags rather than replacing
+/// them, same as typing a new tag into one entry's own Tags field would.
+fn show_bulk_tag_popover(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    anchor: &gtk4::Widget,
+    on_bulk_change: &Rc<dyn Fn()>,
+) {
+    let keys = bulk_selected_keys(state);
+    if keys.is_empty() {
+        toast(widgets, "No entries selected");
+        return;
+    }
+
+    let popover = gtk4::Popover::new();
+    popover.set_parent(anchor);
+    let row = gtk4::Box::new(Orientation::Horizontal, 6);
+    row.set_margin_top(8);
+    row.set_margin_bottom(8);
+    row.set_margin_start(8);
+    row.set_margin_end(8);
+    let entry = gtk4::Entry::builder()
+        .placeholder_text("tag, another-tag")
+        .build();
+    let add = gtk4::Button::with_label("Add");
+    add.add_css_class("suggested-action");
+    row.append(&entry);
+    row.append(&add);
+    popover.set_child(Some(&row));
+
+    let apply: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let popover = popover.clone();
+        let entry = entry.clone();
+        let keys = keys.clone();
+        let on_bulk_change = on_bulk_change.clone();
+        Rc::new(move || {
+            let new_tags: Vec<String> = entry
+                .text()
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            if new_tags.is_empty() {
+                return;
+            }
+            let mut failed = 0usize;
+            {
+                let s = state.borrow();
+                if let Some(lib) = s.library.as_ref() {
+                    for key in &keys {
+                        let mut note = lib.load_note(key).ok().flatten().unwrap_or_default();
+                        for t in &new_tags {
+                            if !note.frontmatter.tags.contains(t) {
+                                note.frontmatter.tags.push(t.clone());
+                            }
+                        }
+                        if lib.write_note(key, &note).is_err() {
+                            failed += 1;
+                        }
+                    }
+                }
+            }
+            popover.popdown();
+            state.borrow_mut().bulk_selected.clear();
+            on_bulk_change();
+            rebuild_index_silent(&state);
+            reload_current(&state, &widgets);
+            if failed > 0 {
+                toast(
+                    &widgets,
+                    &format!("Tagged {} entries, {failed} failed", keys.len() - failed),
+                );
+            } else {
+                toast(&widgets, &format!("Tagged {} entries", keys.len()));
+            }
+        })
+    };
+    {
+        let apply = apply.clone();
+        add.connect_clicked(move |_| apply());
+    }
+    entry.connect_activate(move |_| apply());
+
+    popover.popup();
+}
+
+/// Small popover listing every collection as a row to add all checked entries to — no "new
+/// collection" option here; create one first via the sidebar's + button, same as adding a
+/// single entry to a collection already requires.
+fn show_bulk_collection_popover(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    anchor: &gtk4::Widget,
+    on_bulk_change: &Rc<dyn Fn()>,
+) {
+    let keys = bulk_selected_keys(state);
+    if keys.is_empty() {
+        toast(widgets, "No entries selected");
+        return;
+    }
+
+    let collections: Vec<(String, String)> = {
+        let s = state.borrow();
+        let Some(lib) = s.library.as_ref() else {
+            return;
+        };
+        s.collections
+            .iter()
+            .map(|slug| {
+                let name = lib
+                    .load_collection(slug)
+                    .map(|c| c.name)
+                    .unwrap_or_else(|_| slug.clone());
+                (slug.clone(), name)
+            })
+            .collect()
+    };
+    if collections.is_empty() {
+        toast(widgets, "No collections yet — create one first");
+        return;
+    }
+
+    let popover = gtk4::Popover::new();
+    popover.set_parent(anchor);
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list.set_size_request(200, -1);
+    for (slug, name) in &collections {
+        let row = gtk4::ListBoxRow::new();
+        let label = gtk4::Label::new(Some(name));
+        label.set_xalign(0.0);
+        label.set_margin_top(6);
+        label.set_margin_bottom(6);
+        label.set_margin_start(10);
+        label.set_margin_end(10);
+        row.set_child(Some(&label));
+        unsafe { row.set_data("collection-slug", slug.clone()) };
+        list.append(&row);
+    }
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_max_content_height(240);
+    scroll.set_propagate_natural_height(true);
+    scroll.set_child(Some(&list));
+    popover.set_child(Some(&scroll));
+
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let popover = popover.clone();
+        let keys = keys.clone();
+        let on_bulk_change = on_bulk_change.clone();
+        list.connect_row_activated(move |_, row| {
+            let Some(slug) = (unsafe { row.data::<String>("collection-slug") }) else {
+                return;
+            };
+            let slug = unsafe { slug.as_ref().clone() };
+            let mut failed = 0usize;
+            {
+                let s = state.borrow();
+                if let Some(lib) = s.library.as_ref() {
+                    for key in &keys {
+                        if lib.add_to_collection(&slug, key).is_err() {
+                            failed += 1;
+                        }
+                    }
+                }
+            }
+            popover.popdown();
+            state.borrow_mut().bulk_selected.clear();
+            on_bulk_change();
+            refresh_collections(&state, &widgets);
+            reload_current(&state, &widgets);
+            if failed > 0 {
+                toast(
+                    &widgets,
+                    &format!("Added {} entries, {failed} failed", keys.len() - failed),
+                );
+            } else {
+                toast(
+                    &widgets,
+                    &format!("Added {} entries to collection", keys.len()),
+                );
+            }
+        });
+    }
+
+    popover.popup();
+}
+
+/// Confirm, then permanently delete every checked entry — same per-entry consequences as
+/// `confirm_delete_entry`, just for a batch.
+fn confirm_bulk_delete(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    on_bulk_change: &Rc<dyn Fn()>,
+) {
+    let keys = bulk_selected_keys(state);
+    if keys.is_empty() {
+        toast(widgets, "No entries selected");
+        return;
+    }
+
+    let dialog = adw::MessageDialog::new(
+        Some(&widgets.window),
+        Some(&format!("Delete {} entries?", keys.len())),
+        Some(
+            "Each entry's note, relations, collection membership, and any attachments unique \
+             to it will be permanently removed. The underlying files are deleted from the \
+             library (use git to recover if needed).",
+        ),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("delete", "Delete");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let on_bulk_change = on_bulk_change.clone();
+    dialog.connect_response(None, move |dlg, response| {
+        dlg.close();
+        if response != "delete" {
+            return;
+        }
+        let mut failed = 0usize;
+        {
+            let s = state.borrow();
+            if let Some(lib) = s.library.as_ref() {
+                for key in &keys {
+                    if lib.delete_entry(key).is_err() {
+                        failed += 1;
+                    }
+                }
+            }
+        }
+        state.borrow_mut().bulk_selected.clear();
+        on_bulk_change();
+        rebuild_index_silent(&state);
+        reload_current(&state, &widgets);
+        clear_box(&widgets.detail);
+        if failed > 0 {
+            toast(
+                &widgets,
+                &format!("Deleted {} entries, {failed} failed", keys.len() - failed),
+            );
+        } else {
+            toast(&widgets, &format!("Deleted {} entries", keys.len()));
         }
     });
     dialog.present();

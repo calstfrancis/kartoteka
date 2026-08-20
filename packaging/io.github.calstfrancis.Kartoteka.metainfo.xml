@@ -46,6 +46,28 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.6.0" date="2026-08-20">
+      <description>
+        <p>0.6.0 "Deep Stacks" — optional spreadsheet columns, bulk actions, smarter
+        duplicate detection, and a whole-library relations map.</p>
+        <ul>
+          <li>The entries spreadsheet can now show optional columns for Tags, Status, and
+          any custom field you've defined, via a new "Columns…" dialog — off by default.
+          Column order and which optional columns are visible are both remembered across
+          sessions.</li>
+          <li>A "Select multiple" toggle adds a checkbox column and a bulk-action bar for
+          tagging, adding to a collection, or deleting several entries at once.</li>
+          <li>Custom fields gained a fourth type, Date, with a calendar picker.</li>
+          <li>"Find duplicates…" now also lists "possible duplicates" caught by title
+          similarity alone, alongside the existing exact DOI/ISBN/title+year matches.</li>
+          <li>A new whole-library relations map (menu → "Relations map (whole
+          library)…") shows everything connected to everything at once, with a sidebar
+          ranking the most-connected and most-cited entries.</li>
+          <li>The EPUB reader gained in-chapter search (Ctrl+F) and undo/redo
+          (Ctrl+Z/Ctrl+Shift+Z), matching the PDF reader.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-08-19">
       <description>
         <p>0.5.1 "Sound Index" — fixes a rare, intermittent search-index rebuild failure, and

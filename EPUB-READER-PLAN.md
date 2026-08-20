@@ -1,7 +1,11 @@
 # EPUB reader/annotator — plan to reach PDF-reader parity
 
-Status: **Phase 1 and 2 done** (2026-08-20, "go forward with the epub plan"). Phase 3
-onward (zoom, in-book search, undo/redo, reading position) not started — see below.
+Status: **Phases 1, 2, 3, and 5 done** (2026-08-20). Zoom (text-only font-size
+controls), in-chapter search (WebKit `FindController`, chapter-scoped per the
+recommendation below), and undo/redo (same snapshot idiom as the PDF reader) are all
+shipped. Phase 4 (reading position / progress tracking) and phase 6 (whole-book search,
+continuous-across-chapters) are not started — see below; both still depend on the
+product decisions in "Open questions" below.
 
 ## Done: Phase 1 + 2
 
@@ -109,11 +113,13 @@ Each item: what PDF has, what it'd take for EPUB, rough size.
 
 1. ✅ **Notes sidebar + jump/delete for existing highlights.** Done 2026-08-20.
 2. ✅ **More annotation kinds + colour picker.** Done 2026-08-20.
-3. **Zoom + in-chapter search.** Both fairly self-contained, native WebKit features;
-   good next slice once the sidebar exists to show search context in.
+3. ✅ **Zoom + in-chapter search.** Done 2026-08-20. Zoom is text-only font-size
+   controls (A-/A+); search is WebKit's own `FindController`, scoped to the current
+   chapter per the recommendation below.
 4. **Reading position / progress tracking**, once the chapter+anchor shape is decided.
-5. **Undo/redo.** Do this after (2), once there's more than one kind of edit worth
-   undoing — undoing "add highlight" alone is low value.
+5. ✅ **Undo/redo.** Done 2026-08-20 — same snapshot-based idiom as the PDF reader's
+   `ReaderState` (`push_epub_undo_snapshot`/`EpubReaderState.undo_stack`), covering
+   add/edit/delete of a mark.
 6. **Whole-book search + continuous-across-chapters scroll** (if wanted at all) — last,
    since both are the most speculative/highest-effort items and depend on product
    decisions below.

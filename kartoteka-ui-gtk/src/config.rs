@@ -1,6 +1,7 @@
 //! Persisted GUI configuration (the last-opened library path). Stored per Fond convention
 //! under `~/.config/kartoteka/`.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -41,6 +42,18 @@ pub struct Config {
     /// Entries-spreadsheet/detail-pane split (the inner `Paned`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail_pane_position: Option<i32>,
+    /// Optional-column visibility in the entries spreadsheet, keyed by column id
+    /// ("tags", "status", or "custom:<field name>"). Absent means the built-in default —
+    /// off for every optional column, so a freshly-defined custom field doesn't clutter the
+    /// sheet until asked for. The always-on columns (key/title/author/year/files) aren't
+    /// stored here; they can't be hidden.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub column_visible: HashMap<String, bool>,
+    /// Entries-spreadsheet column display order, by id, left-to-right. Restored on next
+    /// launch — GTK4's native drag-to-reorder (`ColumnView::set_reorderable`) doesn't persist
+    /// on its own. Missing/unknown ids are appended in their built-in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_order: Vec<String>,
 }
 
 fn default_auto_backup_interval() -> u32 {

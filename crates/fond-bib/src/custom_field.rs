@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{BibError, Result};
 
 /// What kind of editor a custom field's value gets, and loosely what shape the value is.
-/// All three are stored as plain strings in `NoteFrontmatter::custom_fields` regardless —
-/// this only selects the widget and (for `Number`) whether the stored string is validated
-/// as numeric.
+/// All four are stored as plain strings in `NoteFrontmatter::custom_fields` regardless —
+/// this only selects the widget and (for `Number`/`Date`) how the stored string is
+/// validated/parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CustomFieldType {
@@ -27,6 +27,9 @@ pub enum CustomFieldType {
     /// Comma-separated values, chip-style — the same interaction as the built-in Tags
     /// field, just under a name of the user's choosing (e.g. "Methodology").
     Tag,
+    /// A calendar date, stored as `YYYY-MM-DD` — for things like "date read" or "date
+    /// acquired" that want a picker, not a text box a typo can silently break sorting on.
+    Date,
 }
 
 /// One user-defined field, applying to every entry in the library.

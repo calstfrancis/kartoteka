@@ -1068,6 +1068,61 @@ impl Library {
         Ok(dups)
     }
 
+    /// Fuzzy duplicate candidates: entries `find_duplicates` didn't already group by exact
+    /// DOI/ISBN/title+year, but whose titles are still highly similar (Dice bigram
+    /// coefficient ≥ 0.82) with compatible years (equal, or either missing) — catches a typo
+    /// or a differently-punctuated subtitle the exact bucketing above would miss. Returned
+    /// separately, not merged into `find_duplicates`'s result, since these are guesses rather
+    /// than certainties — the caller should present them as "possible" duplicates a user can
+    /// dismiss, not merge automatically.
+    pub fn find_duplicates_fuzzy(&self) -> Result<Vec<Vec<String>>> {
+        let exact: HashSet<String> = self.find_duplicates()?.into_iter().flatten().collect();
+
+        let mut items: Vec<(String, String, Option<i32>)> = Vec::new();
+        for key in self.keys_sorted()? {
+            if exact.contains(&key) {
+                continue;
+            }
+            let parsed = self.load_entry(&key)?;
+            let Some(title) = entry::title_string(&parsed.entry) else {
+                continue;
+            };
+            let folded = crate::key::ascii_fold(&title);
+            if folded.trim().is_empty() {
+                continue;
+            }
+            items.push((key, folded, entry::year(&parsed.entry)));
+        }
+
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        let mut used = vec![false; items.len()];
+        for i in 0..items.len() {
+            if used[i] {
+                continue;
+            }
+            let mut group = vec![items[i].0.clone()];
+            for (j, item) in items.iter().enumerate().skip(i + 1) {
+                if used[j] {
+                    continue;
+                }
+                let years_compatible = match (items[i].2, item.2) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                };
+                if years_compatible && title_dice_similarity(&items[i].1, &item.1) >= 0.82 {
+                    group.push(item.0.clone());
+                    used[j] = true;
+                }
+            }
+            if group.len() > 1 {
+                used[i] = true;
+                groups.push(group);
+            }
+        }
+        groups.sort();
+        Ok(groups)
+    }
+
     /// Merge a duplicate group into `into`: fold the others' tags, attachments,
     /// annotations, and note prose into the target; delete the others' files; and replace
     /// them in every collection. `into` must be one of `keys`. Regenerates `library.yml`.
@@ -1609,5 +1664,49 @@ impl FsckReport {
             + self.relations.orphaned.len()
             + self.relations.dangling_targets.len()
             + self.dangling_project_docs.len()
+    }
+}
+
+/// Dice's coefficient over character bigrams — a cheap, dependency-free string-similarity
+/// measure good at catching typos and minor punctuation/subtitle differences between two
+/// already-folded titles. 1.0 for identical strings, 0.0 for no shared bigrams; falls back to
+/// exact-equality for strings too short to have any bigrams (single characters).
+fn title_dice_similarity(a: &str, b: &str) -> f64 {
+    let bigrams = |s: &str| -> HashSet<(char, char)> {
+        let chars: Vec<char> = s.chars().collect();
+        chars.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let ba = bigrams(a);
+    let bb = bigrams(b);
+    if ba.is_empty() || bb.is_empty() {
+        return if a == b { 1.0 } else { 0.0 };
+    }
+    let common = ba.intersection(&bb).count();
+    (2.0 * common as f64) / (ba.len() + bb.len()) as f64
+}
+
+#[cfg(test)]
+mod fuzzy_duplicate_tests {
+    use super::title_dice_similarity;
+
+    #[test]
+    fn identical_titles_score_one() {
+        assert_eq!(
+            title_dice_similarity("the abolition of man", "the abolition of man"),
+            1.0
+        );
+    }
+
+    #[test]
+    fn minor_typo_scores_high() {
+        // "abolision" vs "abolition" — a single transposed/misspelled letter.
+        let sim = title_dice_similarity("the abolision of man", "the abolition of man");
+        assert!(sim >= 0.82, "expected >= 0.82, got {sim}");
+    }
+
+    #[test]
+    fn unrelated_titles_score_low() {
+        let sim = title_dice_similarity("the abolition of man", "war and peace");
+        assert!(sim < 0.5, "expected < 0.5, got {sim}");
     }
 }
