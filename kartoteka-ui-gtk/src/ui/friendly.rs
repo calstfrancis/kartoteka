@@ -33,8 +33,7 @@ pub fn bib_error(e: &BibError) -> String {
             file_label(path)
         ),
         BibError::UnkeyableEntry => {
-            "This reference needs at least an author or a title before it can be saved."
-                .to_string()
+            "This reference needs at least an author or a title before it can be saved.".to_string()
         }
         BibError::Import { message } => format!("Import failed: {message}"),
         BibError::Zotero { .. } => {

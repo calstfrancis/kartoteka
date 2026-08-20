@@ -1004,7 +1004,10 @@ fn import_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBu
                             Ok(_) => toast(&widgets, &format!("Added {key} with its PDF")),
                             Err(e) => toast(
                                 &widgets,
-                                &format!("Added {key}, but couldn't attach the PDF: {}", friendly::bib_error(&e)),
+                                &format!(
+                                    "Added {key}, but couldn't attach the PDF: {}",
+                                    friendly::bib_error(&e)
+                                ),
                             ),
                         }
                         reload_current(&state, &widgets);
@@ -1122,7 +1125,10 @@ fn import_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathB
                             Ok(_) => toast(&widgets, &format!("Added {key} with its EPUB")),
                             Err(e) => toast(
                                 &widgets,
-                                &format!("Added {key}, but couldn't attach the EPUB: {}", friendly::bib_error(&e)),
+                                &format!(
+                                    "Added {key}, but couldn't attach the EPUB: {}",
+                                    friendly::bib_error(&e)
+                                ),
                             ),
                         }
                         rebuild_index_silent(&state);
@@ -1501,7 +1507,10 @@ fn add_from_url(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, url: Strin
                     Err(e) => toast(&widgets, &friendly::bib_error(&e)),
                 }
             }
-            Err(e) => toast(&widgets, &format!("Couldn't get a reference from that page ({e}).")),
+            Err(e) => toast(
+                &widgets,
+                &format!("Couldn't get a reference from that page ({e})."),
+            ),
         }
         glib::ControlFlow::Break
     });
@@ -2722,19 +2731,20 @@ fn run_auto_backup(
             }
             let identity = fond_vault::Identity::from_git_config().map_err(|e| e.to_string())?;
             vault.stage_all().map_err(|e| e.to_string())?;
-            vault.commit(&message, &identity).map_err(|e| e.to_string())?;
+            vault
+                .commit(&message, &identity)
+                .map_err(|e| e.to_string())?;
 
             if let Some(token) = github_token {
                 if vault.remote_url("origin").is_some() {
-                    vault.push_github("origin", &token).map_err(|e| {
-                        format!("committed locally, but GitHub push failed: {e}")
-                    })?;
+                    vault
+                        .push_github("origin", &token)
+                        .map_err(|e| format!("committed locally, but GitHub push failed: {e}"))?;
                 }
             }
             if let Some((url, user, pass)) = webdav_creds {
-                webdav::upload_library(&url, &user, &pass, &root).map_err(|e| {
-                    format!("committed locally, but WebDAV backup failed: {e}")
-                })?;
+                webdav::upload_library(&url, &user, &pass, &root)
+                    .map_err(|e| format!("committed locally, but WebDAV backup failed: {e}"))?;
             }
             Ok(())
         })();
@@ -3196,7 +3206,11 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
 
 /// Pick an existing folder and open it as a library — the shared behaviour behind both the
 /// header's folder icon and the "Open existing library…" button on the first-run page.
-fn open_library_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, config: &Rc<RefCell<Config>>) {
+fn open_library_picker(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+) {
     let dialog = gtk4::FileDialog::builder().title("Open library").build();
     let state = state.clone();
     let widgets = widgets.clone();
@@ -3216,7 +3230,11 @@ fn open_library_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, con
 /// Create a brand-new library: a name and a location (a folder to create it in), so a
 /// first-time user doesn't have to go create an empty folder themselves before Kartoteka
 /// will let them start. Defaults the location to `~/Documents` when available.
-fn show_new_library_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, config: &Rc<RefCell<Config>>) {
+fn show_new_library_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+) {
     let dialog = adw::Window::new();
     dialog.set_title(Some("New library"));
     dialog.set_modal(true);
@@ -3256,8 +3274,8 @@ fn show_new_library_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>,
         .build();
     content.append(&labeled("Name", &name_entry));
 
-    let default_location = glib::user_special_dir(glib::UserDirectory::Documents)
-        .unwrap_or_else(glib::home_dir);
+    let default_location =
+        glib::user_special_dir(glib::UserDirectory::Documents).unwrap_or_else(glib::home_dir);
     let location: Rc<RefCell<PathBuf>> = Rc::new(RefCell::new(default_location.clone()));
     let location_row = gtk4::Box::new(Orientation::Horizontal, 8);
     let location_label = gtk4::Label::new(Some(&default_location.display().to_string()));
@@ -3275,7 +3293,9 @@ fn show_new_library_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>,
         let location_label = location_label.clone();
         let window = widgets.window.clone();
         choose_location.connect_clicked(move |_| {
-            let dialog = gtk4::FileDialog::builder().title("Choose a location").build();
+            let dialog = gtk4::FileDialog::builder()
+                .title("Choose a location")
+                .build();
             let location = location.clone();
             let location_label = location_label.clone();
             dialog.select_folder(Some(&window), gio::Cancellable::NONE, move |result| {
@@ -3311,7 +3331,10 @@ fn show_new_library_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>,
             if root.exists() {
                 toast(
                     &widgets,
-                    &format!("\"{}\" already exists — pick a different name or location", name),
+                    &format!(
+                        "\"{}\" already exists — pick a different name or location",
+                        name
+                    ),
                 );
                 return;
             }
@@ -4636,7 +4659,9 @@ fn show_empty_list_hint(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     } else {
         page.set_icon_name(Some("edit-find-symbolic"));
         page.set_title("No matches");
-        page.set_description(Some("Nothing here matches your search or the selected collection."));
+        page.set_description(Some(
+            "Nothing here matches your search or the selected collection.",
+        ));
     }
 
     widgets.detail.append(&page);
@@ -4870,8 +4895,14 @@ fn build_entries_column_view(
     key_column.set_fixed_width(150);
     key_column.set_resizable(true);
     let key_sorter = gtk4::CustomSorter::new(move |a, b| {
-        let a = a.downcast_ref::<EntryRow>().map(EntryRow::key).unwrap_or_default();
-        let b = b.downcast_ref::<EntryRow>().map(EntryRow::key).unwrap_or_default();
+        let a = a
+            .downcast_ref::<EntryRow>()
+            .map(EntryRow::key)
+            .unwrap_or_default();
+        let b = b
+            .downcast_ref::<EntryRow>()
+            .map(EntryRow::key)
+            .unwrap_or_default();
         a.cmp(&b).into()
     });
     key_column.set_sorter(Some(&key_sorter));
@@ -9837,7 +9868,10 @@ fn confirm_delete_entry(
                 clear_box(&widgets.detail);
                 toast(&widgets, &format!("Deleted {key}"));
             }
-            Err(e) => toast(&widgets, &format!("Couldn't delete \"{key}\": {}", friendly::bib_error(&e))),
+            Err(e) => toast(
+                &widgets,
+                &format!("Couldn't delete \"{key}\": {}", friendly::bib_error(&e)),
+            ),
         }
     });
     dialog.present();
@@ -9891,7 +9925,10 @@ fn confirm_delete_node(
                 toast(&widgets, &format!("Deleted {slug}"));
                 editor.close();
             }
-            Err(e) => toast(&widgets, &format!("Couldn't delete \"{slug}\": {}", friendly::bib_error(&e))),
+            Err(e) => toast(
+                &widgets,
+                &format!("Couldn't delete \"{slug}\": {}", friendly::bib_error(&e)),
+            ),
         }
     });
     dialog.present();
