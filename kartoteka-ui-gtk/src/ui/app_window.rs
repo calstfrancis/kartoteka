@@ -7073,6 +7073,15 @@ const DRAW_KIND_OPTIONS: [(&str, Option<fond_bib::AnnotationKind>); 4] = [
     ("Strikeout", Some(fond_bib::AnnotationKind::Strikeout)),
 ];
 
+/// The EPUB reader's mode `DropDown` options — unlike `DRAW_KIND_OPTIONS`, no "Select
+/// text" entry (the browser's native selection is always available regardless of this
+/// mode) and no bare `Option` wrapper (every entry applies a real, always-selected kind).
+const EPUB_MARK_KIND_OPTIONS: [(&str, fond_bib::AnnotationKind); 3] = [
+    ("Highlight", fond_bib::AnnotationKind::Highlight),
+    ("Underline", fond_bib::AnnotationKind::Underline),
+    ("Strikeout", fond_bib::AnnotationKind::Strikeout),
+];
+
 const READER_BASE_WIDTH: f64 = 820.0;
 /// Amber at ~55% opacity — a highlight tint, not a solid block.
 const HIGHLIGHT_RGBA: [u8; 4] = [246, 195, 68, 140];
@@ -9504,6 +9513,14 @@ struct EpubHighlightPayload<'a> {
     prefix: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     suffix: Option<&'a str>,
+    /// Serializes lowercase (`"highlight"`/`"underline"`/`"strikeout"`) via
+    /// `AnnotationKind`'s own `Serialize` impl — `EPUB_APPLY_HIGHLIGHTS_FN` switches on
+    /// this to decide which CSS treatment to apply.
+    kind: fond_bib::AnnotationKind,
+    /// Highlight colour (hex, e.g. `#f6c344`) — meaningless for underline/strikeout,
+    /// which always use the current text colour so they read correctly in dark mode too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: Option<&'a str>,
 }
 
 /// What the reader's selection-capture JS reports back: either nothing was meaningfully
@@ -9583,7 +9600,22 @@ const EPUB_APPLY_HIGHLIGHTS_FN: &str = r#"(function(annotations, scrollToId) {
     var mark = document.createElement('mark');
     mark.className = 'kartoteka-hl';
     mark.dataset.annotationId = a.id;
-    mark.style.backgroundColor = 'rgba(246, 195, 68, 0.35)';
+    mark.dataset.kind = a.kind;
+    // No background/foreground colour is hardcoded beyond the highlight tint itself
+    // (which is the whole point of a highlight) — underline/strikeout use `currentColor`
+    // so they read correctly against the page's own text colour in light or dark mode.
+    if (a.kind === 'underline') {
+      mark.style.background = 'transparent';
+      mark.style.textDecoration = 'underline';
+      mark.style.textDecorationColor = a.color || 'currentColor';
+      mark.style.textDecorationThickness = '2px';
+    } else if (a.kind === 'strikeout') {
+      mark.style.background = 'transparent';
+      mark.style.textDecoration = 'line-through';
+      mark.style.textDecorationColor = a.color || 'currentColor';
+    } else {
+      mark.style.backgroundColor = a.color ? (a.color + '59') : 'rgba(246, 195, 68, 0.35)';
+    }
     try {
       range.surroundContents(mark);
     } catch (e) {
@@ -9641,6 +9673,8 @@ fn epub_highlight_payload_json(sidecar: &fond_bib::AnnotationSidecar, chapter: &
                 snippet: s,
                 prefix: a.snippet_prefix.as_deref(),
                 suffix: a.snippet_suffix.as_deref(),
+                kind: a.kind,
+                color: a.color.as_deref(),
             })
         })
         .collect();
@@ -9755,7 +9789,7 @@ fn show_epub_reader(
     let dialog = adw::Window::new();
     dialog.set_title(Some(title));
     dialog.set_transient_for(Some(window));
-    dialog.set_default_size(900, 820);
+    dialog.set_default_size(1000, 820);
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -9777,7 +9811,7 @@ fn show_epub_reader(
     web_view.set_vexpand(true);
     web_view.set_hexpand(true);
 
-    let hint = gtk4::Label::new(Some("Select text, then click Highlight"));
+    let hint = gtk4::Label::new(Some("Select text, choose a kind, then click Apply"));
     hint.add_css_class("dim-label");
     hint.add_css_class("caption");
     hint.set_margin_top(4);
@@ -9787,20 +9821,56 @@ fn show_epub_reader(
     content.append(&hint);
     content.append(&web_view);
 
-    // pack_end order is the reverse of visual order — Highlight is packed first so it ends
-    // up rightmost, Contents to its left (same gotcha CLAUDE.md notes for the hamburger menu).
-    let highlight_button = gtk4::Button::with_label("Highlight");
-    highlight_button.set_tooltip_text(Some("Highlight the selected text"));
-    header.pack_end(&highlight_button);
+    // Sidebar toggles (Contents, if the EPUB has a TOC; Notes always) — persistent Paned
+    // sidebar, not popovers, matching the PDF reader's own house sidebar style (see
+    // `show_pdf_reader`'s `sidebar_toggle`/`notes_toggle` pair, and CLAUDE.md's UI
+    // standard). `Apply`/mode/colour stay at the end of the header, same relative position
+    // "Highlight" used to occupy.
+    let sidebar_toggle = (!book.toc.is_empty()).then(|| {
+        let button = gtk4::ToggleButton::new();
+        button.set_icon_name("sidebar-show-symbolic");
+        button.set_tooltip_text(Some("Show the table of contents"));
+        button
+    });
+    let notes_toggle = gtk4::ToggleButton::new();
+    notes_toggle.set_icon_name("view-list-symbolic");
+    notes_toggle.set_tooltip_text(Some("Show notes and highlights"));
 
-    if !book.toc.is_empty() {
-        let contents_button = gtk4::MenuButton::builder().label("Contents").build();
-        let (popover, rows) = popover_menu(260);
+    let mode_labels: Vec<&str> = EPUB_MARK_KIND_OPTIONS.iter().map(|(l, _)| *l).collect();
+    let mode_drop = gtk4::DropDown::from_strings(&mode_labels);
+    mode_drop.set_tooltip_text(Some("What kind of mark to apply to the selection"));
+    let color_labels: Vec<&str> = COLOR_PRESETS.iter().map(|(l, _)| *l).collect();
+    let color_drop = gtk4::DropDown::from_strings(&color_labels);
+    color_drop.set_tooltip_text(Some("Highlight colour"));
+    let apply_button = gtk4::Button::with_label("Apply");
+    apply_button.set_tooltip_text(Some("Mark the selected text"));
+
+    // pack_end order is the reverse of visual order (same gotcha CLAUDE.md notes for the
+    // hamburger menu) — Apply packed first so it ends up rightmost: Mode, Colour, Apply,
+    // left to right. Sidebar toggles go at the header's start, per house style.
+    header.pack_end(&apply_button);
+    header.pack_end(&color_drop);
+    header.pack_end(&mode_drop);
+    if let Some(sidebar_toggle) = &sidebar_toggle {
+        header.pack_start(sidebar_toggle);
+    }
+    header.pack_start(&notes_toggle);
+    view.add_top_bar(&header);
+
+    // Contents sidebar (only built if the EPUB has a TOC).
+    let contents_scroll = sidebar_toggle.as_ref().map(|_| {
+        let rows = gtk4::Box::new(Orientation::Vertical, 2);
+        rows.set_margin_top(6);
+        rows.set_margin_bottom(6);
+        rows.set_margin_start(6);
+        rows.set_margin_end(6);
         let last = book.toc.len().saturating_sub(1);
         for (i, entry) in book.toc.iter().enumerate() {
             let row = popover_button(&entry.label, false);
+            if let Some(lbl) = row.child().and_then(|w| w.downcast::<gtk4::Label>().ok()) {
+                lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            }
             {
-                let popover = popover.clone();
                 let reader = reader.clone();
                 let view = web_view.clone();
                 let prev = prev.clone();
@@ -9808,7 +9878,6 @@ fn show_epub_reader(
                 let chapter_label = chapter_label.clone();
                 let target = entry.target.clone();
                 row.connect_clicked(move |_| {
-                    popover.popdown();
                     epub_go_to(&reader, &view, &prev, &next, &chapter_label, &target);
                 });
             }
@@ -9817,29 +9886,316 @@ fn show_epub_reader(
                 rows.append(&popover_separator());
             }
         }
-        contents_button.set_popover(Some(&popover));
-        header.pack_end(&contents_button);
+        let scroll = gtk4::ScrolledWindow::new();
+        scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        scroll.set_child(Some(&rows));
+        scroll
+    });
+
+    // Notes/highlights sidebar: every annotation on this EPUB, in reading order, readable
+    // prose rather than just an in-text mark — same pattern as the PDF reader's own notes
+    // sidebar (`show_pdf_reader`), rebuilt via the same self-referential-cell idiom so a
+    // row's own delete button can trigger a fresh rebuild of the list it lives in.
+    let notes_rows = gtk4::Box::new(Orientation::Vertical, 2);
+    notes_rows.set_margin_top(6);
+    notes_rows.set_margin_bottom(6);
+    notes_rows.set_margin_start(6);
+    notes_rows.set_margin_end(6);
+    let notes_scroll = gtk4::ScrolledWindow::new();
+    notes_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+    notes_scroll.set_child(Some(&notes_rows));
+
+    // Pending scroll target for the *next* chapter load — set right before calling
+    // `epub_go_to` by anything that wants the freshly-loaded chapter to scroll to a
+    // specific annotation (the initial `start_annotation_id`, or a notes-sidebar jump);
+    // left `None` for plain prev/next/TOC navigation, which just lands at the top.
+    let pending_scroll: Rc<RefCell<Option<String>>> =
+        Rc::new(RefCell::new(start_annotation_id.map(|s| s.to_string())));
+
+    let rebuild_notes_cell: RebuildCell = Rc::new(RefCell::new(None));
+    {
+        let notes_rows = notes_rows.clone();
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let reader = reader.clone();
+        let view = web_view.clone();
+        let prev = prev.clone();
+        let next = next.clone();
+        let chapter_label = chapter_label.clone();
+        let pending_scroll = pending_scroll.clone();
+        let rebuild_notes_cell_inner = rebuild_notes_cell.clone();
+        let builder = move || {
+            while let Some(child) = notes_rows.first_child() {
+                notes_rows.remove(&child);
+            }
+            let mut all: Vec<fond_bib::Annotation> = reader
+                .borrow()
+                .annotations
+                .annotations
+                .iter()
+                .filter(|a| a.chapter.is_some())
+                .cloned()
+                .collect();
+            all.sort_by_key(|a| {
+                let r = reader.borrow();
+                let spine_pos = a
+                    .chapter
+                    .as_deref()
+                    .and_then(|c| r.spine.iter().position(|p| p == c))
+                    .unwrap_or(usize::MAX);
+                (spine_pos, a.created.clone())
+            });
+            if all.is_empty() {
+                let label = gtk4::Label::new(Some("No notes or highlights yet"));
+                label.add_css_class("dim-label");
+                label.set_margin_top(6);
+                label.set_margin_bottom(6);
+                notes_rows.append(&label);
+                return;
+            }
+            let last = all.len().saturating_sub(1);
+            for (i, annotation) in all.into_iter().enumerate() {
+                let Some(chapter) = annotation.chapter.clone() else {
+                    continue;
+                };
+                let chapter_num = reader
+                    .borrow()
+                    .spine
+                    .iter()
+                    .position(|p| p == &chapter)
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                let kind_label = match annotation.kind {
+                    fond_bib::AnnotationKind::Highlight => "Highlight",
+                    fond_bib::AnnotationKind::Underline => "Underline",
+                    fond_bib::AnnotationKind::Strikeout => "Strikeout",
+                    fond_bib::AnnotationKind::Note => "Note",
+                };
+                let outer = gtk4::Box::new(Orientation::Vertical, 2);
+
+                let header_box = gtk4::Box::new(Orientation::Horizontal, 6);
+                let header_label =
+                    gtk4::Label::new(Some(&format!("Ch. {chapter_num} — {kind_label}")));
+                header_label.set_xalign(0.0);
+                header_label.set_hexpand(true);
+                header_label.add_css_class("dim-label");
+                header_label.add_css_class("caption-heading");
+                header_box.append(&header_label);
+                let delete_button = gtk4::Button::from_icon_name("user-trash-symbolic");
+                delete_button.add_css_class("flat");
+                delete_button.set_tooltip_text(Some("Delete this annotation"));
+                header_box.append(&delete_button);
+                outer.append(&header_box);
+
+                {
+                    let jump = gtk4::GestureClick::new();
+                    let reader = reader.clone();
+                    let view = view.clone();
+                    let prev = prev.clone();
+                    let next = next.clone();
+                    let chapter_label = chapter_label.clone();
+                    let pending_scroll = pending_scroll.clone();
+                    let id = annotation.id.clone();
+                    let chapter = chapter.clone();
+                    jump.connect_released(move |_gesture, _n, _x, _y| {
+                        *pending_scroll.borrow_mut() = Some(id.clone());
+                        epub_go_to(&reader, &view, &prev, &next, &chapter_label, &chapter);
+                    });
+                    header_label.add_controller(jump);
+                }
+
+                if let Some(snippet) = &annotation.snippet {
+                    let snippet_label = gtk4::Label::new(Some(snippet));
+                    snippet_label.set_xalign(0.0);
+                    snippet_label.set_wrap(true);
+                    snippet_label.add_css_class("dim-label");
+                    snippet_label.add_css_class("caption");
+                    outer.append(&snippet_label);
+                }
+
+                let note_entry = gtk4::Entry::new();
+                note_entry.set_placeholder_text(Some("No note"));
+                if let Some(note) = &annotation.note {
+                    note_entry.set_text(note);
+                }
+                outer.append(&note_entry);
+
+                let save_note = {
+                    let state = state.clone();
+                    let widgets = widgets.clone();
+                    let reader = reader.clone();
+                    let id = annotation.id.clone();
+                    move |text: &str| {
+                        let text = text.trim();
+                        let current_note = reader
+                            .borrow()
+                            .annotations
+                            .annotations
+                            .iter()
+                            .find(|a| a.id == id)
+                            .and_then(|a| a.note.clone());
+                        if current_note.as_deref().unwrap_or("") == text {
+                            return;
+                        }
+                        {
+                            let mut r = reader.borrow_mut();
+                            if let Some(a) =
+                                r.annotations.annotations.iter_mut().find(|a| a.id == id)
+                            {
+                                a.note = (!text.is_empty()).then(|| text.to_string());
+                            }
+                        }
+                        let write_result = {
+                            let s = state.borrow();
+                            s.library
+                                .as_ref()
+                                .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+                        };
+                        if let Some(Err(e)) = write_result {
+                            toast(&widgets, &friendly::bib_error(&e));
+                        }
+                    }
+                };
+                {
+                    let save_note = save_note.clone();
+                    note_entry.connect_activate(move |e| save_note(&e.text()));
+                }
+                {
+                    let focus = gtk4::EventControllerFocus::new();
+                    let save_note = save_note.clone();
+                    let note_entry_weak = note_entry.downgrade();
+                    focus.connect_leave(move |_| {
+                        if let Some(e) = note_entry_weak.upgrade() {
+                            save_note(&e.text());
+                        }
+                    });
+                    note_entry.add_controller(focus);
+                }
+
+                {
+                    let state = state.clone();
+                    let widgets = widgets.clone();
+                    let reader = reader.clone();
+                    let view = view.clone();
+                    let id = annotation.id.clone();
+                    let rebuild_notes_cell = rebuild_notes_cell_inner.clone();
+                    delete_button.connect_clicked(move |_| {
+                        reader
+                            .borrow_mut()
+                            .annotations
+                            .annotations
+                            .retain(|a| a.id != id);
+                        let write_result = {
+                            let s = state.borrow();
+                            s.library
+                                .as_ref()
+                                .map(|lib| lib.write_annotations(&reader.borrow().annotations))
+                        };
+                        match write_result {
+                            Some(Ok(_)) => {
+                                epub_apply_highlights(&view, &reader, None);
+                                toast(&widgets, "Annotation deleted");
+                                if let Some(f) = rebuild_notes_cell.borrow().as_ref() {
+                                    f();
+                                }
+                            }
+                            Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
+                            None => toast(&widgets, "No open library"),
+                        }
+                    });
+                }
+
+                notes_rows.append(&outer);
+                if i != last {
+                    notes_rows.append(&popover_separator());
+                }
+            }
+        };
+        *rebuild_notes_cell.borrow_mut() = Some(Rc::new(builder));
     }
-    view.add_top_bar(&header);
-    view.set_content(Some(&content));
+    let rebuild_notes: Rc<dyn Fn()> = {
+        let cell = rebuild_notes_cell.clone();
+        Rc::new(move || {
+            let f = cell.borrow().clone();
+            if let Some(f) = f {
+                f();
+            }
+        })
+    };
+
+    let sidebar_stack = gtk4::Stack::new();
+    if let Some(contents_scroll) = &contents_scroll {
+        sidebar_stack.add_named(contents_scroll, Some("contents"));
+    }
+    sidebar_stack.add_named(&notes_scroll, Some("notes"));
+    sidebar_stack.set_size_request(60, -1);
+    sidebar_stack.set_vexpand(true);
+
+    let paned = gtk4::Paned::new(Orientation::Horizontal);
+    paned.set_start_child(gtk4::Widget::NONE);
+    paned.set_resize_start_child(false);
+    paned.set_shrink_start_child(true);
+    paned.set_end_child(Some(&content));
+    paned.set_vexpand(true);
+    paned.set_hexpand(true);
+    paned.set_position(220);
+    view.set_content(Some(&paned));
     dialog.set_content(Some(&view));
 
-    // Re-apply saved highlights after every chapter load (initial load, TOC jump, prev/next
-    // — all funnel through `epub_go_to`'s `load_uri`, so one handler here covers all of
-    // them), scrolling to `start_annotation_id`'s highlight the first time only.
+    if let Some(sidebar_toggle) = &sidebar_toggle {
+        let paned = paned.clone();
+        let sidebar_stack = sidebar_stack.clone();
+        let notes_toggle = notes_toggle.clone();
+        sidebar_toggle.connect_toggled(move |btn| {
+            if btn.is_active() {
+                notes_toggle.set_active(false);
+                sidebar_stack.set_visible_child_name("contents");
+                paned.set_start_child(Some(&sidebar_stack));
+            } else if !notes_toggle.is_active() {
+                paned.set_start_child(gtk4::Widget::NONE);
+            }
+        });
+    }
+    {
+        let paned = paned.clone();
+        let sidebar_stack = sidebar_stack.clone();
+        let sidebar_toggle = sidebar_toggle.clone();
+        let rebuild_notes = rebuild_notes.clone();
+        notes_toggle.connect_toggled(move |btn| {
+            if btn.is_active() {
+                if let Some(st) = &sidebar_toggle {
+                    st.set_active(false);
+                }
+                rebuild_notes();
+                sidebar_stack.set_visible_child_name("notes");
+                paned.set_start_child(Some(&sidebar_stack));
+            } else if sidebar_toggle
+                .as_ref()
+                .map(|b| !b.is_active())
+                .unwrap_or(true)
+            {
+                paned.set_start_child(gtk4::Widget::NONE);
+            }
+        });
+    }
+
+    // Re-apply saved highlights after every chapter load (initial load, TOC jump,
+    // prev/next, a notes-sidebar jump — all funnel through `epub_go_to`'s `load_uri`, so
+    // one handler here covers all of them), consuming `pending_scroll` if the navigation
+    // that triggered this load set one.
     {
         let reader = reader.clone();
-        let scroll_once = Rc::new(RefCell::new(start_annotation_id.map(|s| s.to_string())));
+        let pending_scroll = pending_scroll.clone();
         web_view.connect_load_changed(move |view, event| {
             if event == webkit6::LoadEvent::Finished {
-                let scroll_to = scroll_once.borrow_mut().take();
+                let scroll_to = pending_scroll.borrow_mut().take();
                 epub_apply_highlights(view, &reader, scroll_to.as_deref());
             }
         });
     }
 
-    // Load the first chapter up front (the TOC/prev/next handlers all reuse this same
-    // navigation path for consistency, but chapter 0 has to start somewhere).
+    // Load the first chapter up front (the TOC/prev/next/notes-jump handlers all reuse
+    // this same navigation path for consistency, but chapter 0 has to start somewhere).
     let first_chapter = reader.borrow().spine.get(start_index).cloned();
     if let Some(first) = first_chapter {
         epub_go_to(&reader, &web_view, &prev, &next, &chapter_label, &first);
@@ -9897,11 +10253,22 @@ fn show_epub_reader(
         let view = web_view.clone();
         let state = state.clone();
         let widgets = widgets.clone();
-        highlight_button.connect_clicked(move |_| {
+        let mode_drop = mode_drop.clone();
+        let color_drop = color_drop.clone();
+        let rebuild_notes = rebuild_notes.clone();
+        apply_button.connect_clicked(move |_| {
             let reader = reader.clone();
             let view_for_apply = view.clone();
             let state = state.clone();
             let widgets = widgets.clone();
+            let kind = EPUB_MARK_KIND_OPTIONS
+                .get(mode_drop.selected() as usize)
+                .map(|(_, k)| *k)
+                .unwrap_or(fond_bib::AnnotationKind::Highlight);
+            let color = COLOR_PRESETS
+                .get(color_drop.selected() as usize)
+                .map(|(_, hex)| hex.to_string());
+            let rebuild_notes = rebuild_notes.clone();
             view.evaluate_javascript(
                 EPUB_CAPTURE_SELECTION_JS,
                 None,
@@ -9936,14 +10303,17 @@ fn show_epub_reader(
                         return;
                     };
 
-                    let annotation = fond_bib::Annotation::drawn_epub(
-                        fond_bib::AnnotationKind::Highlight,
+                    let mut annotation = fond_bib::Annotation::drawn_epub(
+                        kind,
                         chapter,
                         snippet,
                         capture.prefix,
                         capture.suffix,
                         None,
                     );
+                    if kind == fond_bib::AnnotationKind::Highlight {
+                        annotation.color = color.clone();
+                    }
                     let id = annotation.id.clone();
                     reader.borrow_mut().annotations.upsert(annotation);
 
@@ -9956,10 +10326,11 @@ fn show_epub_reader(
                     match write_result {
                         Some(Ok(_)) => {
                             epub_apply_highlights(&view_for_apply, &reader, Some(&id));
-                            toast(&widgets, "Highlight added");
+                            toast(&widgets, "Added");
+                            rebuild_notes();
                         }
                         Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                        None => toast(&widgets, "No open library — highlight not saved"),
+                        None => toast(&widgets, "No open library — not saved"),
                     }
                 },
             );

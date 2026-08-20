@@ -4,6 +4,14 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [dev]
 
+**EPUB reader: notes sidebar, more mark kinds.** The EPUB reader gets a persistent
+Notes/highlights sidebar — every annotation in reading order, click to jump to it,
+edit its comment inline, delete it — matching the PDF reader's own sidebar (Contents
+moved into the same sidebar-toggle pattern alongside it). Marking text is no longer
+highlight-only: a mode picker adds Underline and Strikeout, plus a colour picker for
+highlights. See `EPUB-READER-PLAN.md` for the full parity plan and what's still ahead
+(zoom, in-book search, undo/redo, reading position tracking).
+
 **Spreadsheet: read-only cells, zebra striping, more room by default.** Cells in the
 entries spreadsheet are no longer editable in place — editing lives entirely in the
 detail pane on the right now, matching how attachments/tags/notes already work. Rows

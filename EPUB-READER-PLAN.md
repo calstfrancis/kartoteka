@@ -1,9 +1,40 @@
 # EPUB reader/annotator — plan to reach PDF-reader parity
 
-Status: **plan only, not started.** Written 2026-08-20 at Cal's request ("plan out an
-epub reader/annotater that works like the pdf one"). No code in this document has been
-written; `show_pdf_reader`/`show_epub_reader` in `kartoteka-ui-gtk/src/ui/app_window.rs`
-are unchanged.
+Status: **Phase 1 and 2 done** (2026-08-20, "go forward with the epub plan"). Phase 3
+onward (zoom, in-book search, undo/redo, reading position) not started — see below.
+
+## Done: Phase 1 + 2
+
+- **Notes/highlights sidebar**, same pattern as the PDF reader's: every annotation in
+  reading order, click to jump (loads the chapter if needed, scrolls the mark into
+  view), inline note-comment editing, delete. Built via the same self-referential
+  rebuild-cell idiom (`RebuildCell`) `show_pdf_reader` uses.
+- **Contents sidebar** converted from a popover menu to the same persistent
+  toggle-in-header / Paned-sidebar pattern as PDF's, mutually exclusive with Notes —
+  matches CLAUDE.md's house sidebar style exactly now.
+- **Three mark kinds** (Highlight/Underline/Strikeout) via a mode `DropDown` + a
+  colour `DropDown` (reusing `COLOR_PRESETS`) + one "Apply" button, replacing the old
+  single hardcoded "Highlight" button. Underline/strikeout use `currentColor` (no
+  hardcoded palette, reads correctly in light and dark).
+- Freestanding (unanchored) "Note" kind — deliberately **not** included; `drawn_epub`
+  requires a text snippet to anchor on, and EPUB has no page-level note concept the way
+  PDF does. Still an open question (see below), not a bug.
+
+**Verified live** (headless Xvfb): chapter rendering, Contents-sidebar TOC navigation
+(chapter label/prev-next update correctly), Notes-sidebar open/close and its empty
+state, text selection. **Not independently verified live**: the actual
+selection→annotation→disk round trip (`Apply` → `evaluate_javascript` →
+`write_annotations`). In this sandboxed test environment, WebKit's
+`evaluate_javascript` callback never fires at all — confirmed with a trivial `1+1`
+probe outside any of this feature's own code — so no JS round trip could be observed
+end-to-end here, including the pre-existing single-highlight flow this replaced.
+Chapter loading and prev/next/TOC navigation (which don't depend on that callback) all
+worked correctly live, and the JS itself is a small, direct extension of the
+already-shipped `EPUB_CAPTURE_SELECTION_JS`/`EPUB_APPLY_HIGHLIGHTS_FN` (only the
+per-kind styling and payload fields are new) — but this is worth Cal double-checking
+in a real session before relying on it.
+
+## Original plan (for context)
 
 ## Where things actually stand today
 
@@ -76,13 +107,8 @@ Each item: what PDF has, what it'd take for EPUB, rough size.
 
 ## Suggested phases
 
-1. **Notes sidebar + jump/delete for existing highlights.** Highest value for least
-   risk — it's UI wrapping data that already round-trips correctly, no new JS anchoring
-   work. Brings the EPUB reader from "add-only" to "actually manage your annotations,"
-   which is the single biggest usability gap today.
-2. **More annotation kinds + colour picker.** Extends the existing JS payload/apply
-   functions; same `fond_bib::AnnotationKind` enum PDF already uses, so no backend
-   changes — just more CSS treatments and the mode-picker UI.
+1. ✅ **Notes sidebar + jump/delete for existing highlights.** Done 2026-08-20.
+2. ✅ **More annotation kinds + colour picker.** Done 2026-08-20.
 3. **Zoom + in-chapter search.** Both fairly self-contained, native WebKit features;
    good next slice once the sidebar exists to show search context in.
 4. **Reading position / progress tracking**, once the chapter+anchor shape is decided.
