@@ -4,6 +4,27 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [dev]
 
+**Friendlier for first-time and non-technical users.** A round of accessibility/onboarding
+work:
+- **First-run welcome page** instead of a blank window: "New library…" and "Open existing
+  library…" front and centre, with a plain-language explanation of what a library is.
+- **New library…** creates the folder and its layout for you (name + location), so you no
+  longer need to go create an empty folder yourself before Kartoteka will let you in.
+- **Empty-library and no-results states**: an empty library now shows quick "Acquire…" /
+  "New item…" buttons instead of a blank pane; a search or collection with no matches says
+  so instead of just going blank.
+- **Save a copy…** (Menu) — a one-click, no-git-required backup: copies the whole library to
+  a folder you choose. "Back up (git commit)…" is still there for versioned history and
+  GitHub push, for anyone who wants it.
+- **Plain-language error messages** in place of raw internal errors for the most common
+  actions — opening a library, adding a reference (Acquire/New item/PDF/EPUB/URL), editing
+  fields, saving notes/tags/collections/nodes — including a specific, actionable message
+  when a first backup fails because git has no name/email configured yet.
+- **Jargon explained in place**: hover text on the DOI/arXiv/ISBN picker, the citation-key
+  column, and the search bar's `author:`/`title:`/`tag:`/`type:`/`year:` syntax; the Nodes
+  feature now says up front that it's for tracking people, places, and other things
+  connected to your references.
+
 **Entries as a spreadsheet.** The entry list is now a sortable, Zotero-style spreadsheet
 (`Key` / `Title` / `Author` / `Year` / a compact PDF/EPUB availability column) instead of a
 card list — click a column header to sort by it, and double-click (or Enter on a focused

@@ -18,6 +18,7 @@ use webkit6::prelude::*;
 use fond_bib::{entry as bibentry, Library};
 
 use crate::config::Config;
+use crate::ui::friendly;
 use crate::{github, secret_store, webdav};
 
 /// Which kind of identifier the acquire dialog is looking up.
@@ -71,6 +72,9 @@ struct Widgets {
     detail: gtk4::Box,
     collections_listbox: gtk4::ListBox,
     search: gtk4::SearchEntry,
+    /// Switches between the first-run "no library open" status page and the actual
+    /// three-pane library view — see `open_library`.
+    content_stack: gtk4::Stack,
 }
 
 /// A `glib::Object` wrapper around one `EntrySummary`, for use as a `gio::ListStore` row in
@@ -228,7 +232,11 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     sidebar.add_css_class("fond-ground");
     let search = gtk4::SearchEntry::new();
     search.add_css_class("fond-search");
-    search.set_placeholder_text(Some("Search — author: title: tag: type: year:"));
+    search.set_placeholder_text(Some("Search your library"));
+    search.set_tooltip_text(Some(
+        "Searches titles, authors, and keys by default. Narrow it down with author:, title:, \
+         tag:, type:, or year: — e.g. author:berdyaev year:1937",
+    ));
     search.set_margin_top(6);
     search.set_margin_bottom(6);
     search.set_margin_start(6);
@@ -271,7 +279,15 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     paned.set_resize_start_child(false);
     paned.set_position(190);
 
-    toolbar_view.set_content(Some(&paned));
+    // First-run / no-library state: a friendly status page instead of a blank three-pane
+    // window, shown until a library is open — `content_stack` switches to "library" the
+    // first time `open_library` succeeds (including on a restored last-opened path).
+    let empty_status = build_no_library_status_page(&state, &config, &widgets_slot);
+    let content_stack = gtk4::Stack::new();
+    content_stack.add_named(&empty_status, Some("empty"));
+    content_stack.add_named(&paned, Some("library"));
+    content_stack.set_visible_child_name("empty");
+    toolbar_view.set_content(Some(&content_stack));
 
     // Status bar (house style): a status message on the left, a version → changelog
     // button on the right.
@@ -314,6 +330,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         detail,
         collections_listbox: collections_listbox.clone(),
         search: search.clone(),
+        content_stack: content_stack.clone(),
     });
     *widgets_slot.borrow_mut() = Some(widgets.clone());
 
@@ -408,20 +425,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         let widgets = widgets.clone();
         let config = config.clone();
         open_button.connect_clicked(move |_| {
-            let dialog = gtk4::FileDialog::builder().title("Open library").build();
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let config = config.clone();
-            let parent = widgets.window.clone();
-            dialog.select_folder(Some(&parent), gio::Cancellable::NONE, move |result| {
-                if let Ok(folder) = result {
-                    if let Some(path) = folder.path() {
-                        config.borrow_mut().library_path = Some(path.clone());
-                        config.borrow().save();
-                        open_library(&state, &widgets, path);
-                    }
-                }
-            });
+            open_library_picker(&state, &widgets, &config);
         });
     }
 
@@ -514,6 +518,60 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     window
 }
 
+/// The first-run / no-library-open page: a plain-language welcome instead of a blank
+/// three-pane window, with the two ways to get started front and centre. Its buttons need
+/// `Widgets` (for toasts), which doesn't exist yet when this is built — same `widgets_slot`
+/// deferred-lookup pattern as `build_entries_column_view`.
+fn build_no_library_status_page(
+    state: &Rc<RefCell<AppState>>,
+    config: &Rc<RefCell<Config>>,
+    widgets_slot: &Rc<RefCell<Option<Rc<Widgets>>>>,
+) -> adw::StatusPage {
+    let page = adw::StatusPage::new();
+    page.set_icon_name(Some("folder-symbolic"));
+    page.set_title("Welcome to Kartoteka");
+    page.set_description(Some(
+        "A library is just a folder that holds your references, notes, and PDFs together. \
+         Create a new one to get started, or open one you already have.",
+    ));
+
+    let buttons = gtk4::Box::new(Orientation::Horizontal, 8);
+    buttons.set_halign(gtk4::Align::Center);
+    let new_lib = gtk4::Button::with_label("New library…");
+    new_lib.add_css_class("suggested-action");
+    new_lib.add_css_class("pill");
+    let open_lib = gtk4::Button::with_label("Open existing library…");
+    open_lib.add_css_class("pill");
+    buttons.append(&new_lib);
+    buttons.append(&open_lib);
+    page.set_child(Some(&buttons));
+
+    {
+        let state = state.clone();
+        let widgets_slot = widgets_slot.clone();
+        let config = config.clone();
+        new_lib.connect_clicked(move |_| {
+            let Some(widgets) = widgets_slot.borrow().clone() else {
+                return;
+            };
+            show_new_library_dialog(&state, &widgets, &config);
+        });
+    }
+    {
+        let state = state.clone();
+        let widgets_slot = widgets_slot.clone();
+        let config = config.clone();
+        open_lib.connect_clicked(move |_| {
+            let Some(widgets) = widgets_slot.borrow().clone() else {
+                return;
+            };
+            open_library_picker(&state, &widgets, &config);
+        });
+    }
+
+    page
+}
+
 /// The main hamburger menu: a hand-built popover (house style — see `popover_button`)
 /// rather than a `gio::Menu` model. With well over a dozen actions, a flat menu model read
 /// as one undifferentiated wall of text; grouped rows with visible section breaks scan far
@@ -535,8 +593,12 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
             let _ = b.activate_action(&action, None);
         });
         rows.append(&row);
+        row
     };
 
+    activate_row(&rows, &popover, "New library…", "win.new-library");
+    activate_row(&rows, &popover, "Open library…", "win.open-library");
+    rows.append(&popover_separator());
     activate_row(&rows, &popover, "New item…", "win.new-item");
     activate_row(&rows, &popover, "Acquire…", "win.acquire");
     activate_row(&rows, &popover, "Add PDF…", "win.add-pdf");
@@ -546,7 +608,9 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
     activate_row(&rows, &popover, "Import…", "win.import");
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Manage tags…", "win.tags");
-    activate_row(&rows, &popover, "Nodes…", "win.nodes");
+    activate_row(&rows, &popover, "Nodes…", "win.nodes").set_tooltip_text(Some(
+        "People, places, and other things you can connect your references to",
+    ));
     activate_row(&rows, &popover, "Tasks…", "win.tasks");
     activate_row(&rows, &popover, "Find duplicates…", "win.duplicates");
     rows.append(&popover_separator());
@@ -554,7 +618,12 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
     activate_row(&rows, &popover, "Export bibliography…", "win.export-bib");
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Save current search…", "win.save-search");
-    activate_row(&rows, &popover, "Back up (git commit)…", "win.backup");
+    activate_row(&rows, &popover, "Save a copy…", "win.save-copy").set_tooltip_text(Some(
+        "Copy your whole library to a folder you choose — no setup required",
+    ));
+    activate_row(&rows, &popover, "Back up (git commit)…", "win.backup").set_tooltip_text(Some(
+        "Versioned backups with git — more powerful, but needs a one-time git setup",
+    ));
     activate_row(&rows, &popover, "Sign in to GitHub…", "win.github-signin");
     activate_row(&rows, &popover, "Back up to WebDAV…", "win.webdav-backup");
     activate_row(
@@ -610,6 +679,22 @@ fn add_window_actions(
     config: &Rc<RefCell<Config>>,
     auto_backup_timer: &Rc<RefCell<Option<glib::SourceId>>>,
 ) {
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let action = gio::SimpleAction::new("new-library", None);
+        action.connect_activate(move |_, _| show_new_library_dialog(&state, &widgets, &config));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let action = gio::SimpleAction::new("open-library", None);
+        action.connect_activate(move |_, _| open_library_picker(&state, &widgets, &config));
+        window.add_action(&action);
+    }
     {
         let state = state.clone();
         let widgets = widgets.clone();
@@ -709,6 +794,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("save-search", None);
         action.connect_activate(move |_, _| save_search_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("save-copy", None);
+        action.connect_activate(move |_, _| show_save_copy_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -910,17 +1002,18 @@ fn import_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBu
                         };
                         match attached {
                             Ok(_) => toast(&widgets, &format!("Added {key} with its PDF")),
-                            Err(e) => {
-                                toast(&widgets, &format!("Added {key}, but attach failed: {e}"))
-                            }
+                            Err(e) => toast(
+                                &widgets,
+                                &format!("Added {key}, but couldn't attach the PDF: {}", friendly::bib_error(&e)),
+                            ),
                         }
                         reload_current(&state, &widgets);
                     }
                     Ok(_) => toast(&widgets, "The record produced no entry"),
-                    Err(e) => toast(&widgets, &format!("Could not add entry: {e}")),
+                    Err(e) => toast(&widgets, &friendly::bib_error(&e)),
                 }
             }
-            Err(e) => toast(&widgets, &format!("PDF import failed: {e}")),
+            Err(e) => toast(&widgets, &format!("Couldn't read that PDF: {e}")),
         }
         glib::ControlFlow::Break
     });
@@ -1027,18 +1120,19 @@ fn import_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathB
                         };
                         match attached {
                             Ok(_) => toast(&widgets, &format!("Added {key} with its EPUB")),
-                            Err(e) => {
-                                toast(&widgets, &format!("Added {key}, but attach failed: {e}"))
-                            }
+                            Err(e) => toast(
+                                &widgets,
+                                &format!("Added {key}, but couldn't attach the EPUB: {}", friendly::bib_error(&e)),
+                            ),
                         }
                         rebuild_index_silent(&state);
                         reload_current(&state, &widgets);
                     }
                     Ok(_) => toast(&widgets, "The record produced no entry"),
-                    Err(e) => toast(&widgets, &format!("Could not add entry: {e}")),
+                    Err(e) => toast(&widgets, &friendly::bib_error(&e)),
                 }
             }
-            Err(e) => toast(&widgets, &format!("EPUB import failed: {e}")),
+            Err(e) => toast(&widgets, &format!("Couldn't read that EPUB: {e}")),
         }
         glib::ControlFlow::Break
     });
@@ -1404,10 +1498,10 @@ fn add_from_url(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, url: Strin
                         reload_current(&state, &widgets);
                     }
                     Ok(_) => toast(&widgets, "The page produced no entry"),
-                    Err(e) => toast(&widgets, &format!("Could not add entry: {e}")),
+                    Err(e) => toast(&widgets, &friendly::bib_error(&e)),
                 }
             }
-            Err(e) => toast(&widgets, &format!("Add from URL failed: {e}")),
+            Err(e) => toast(&widgets, &format!("Couldn't get a reference from that page ({e}).")),
         }
         glib::ControlFlow::Break
     });
@@ -1778,7 +1872,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     content.append(&labeled("Title", &title));
     content.append(&labeled("Author(s)", &authors));
     content.append(&labeled("Year", &year));
-    content.append(&labeled("Container", &container));
+    content.append(&labeled("Journal / book", &container));
     content.append(&labeled("Publisher", &publisher));
     content.append(&labeled("DOI", &doi));
     content.append(&labeled("ISBN", &isbn));
@@ -1831,7 +1925,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                     dialog.close();
                 }
                 Ok(_) => toast(&widgets, "No entry was created"),
-                Err(e) => toast(&widgets, &format!("Could not create entry: {e}")),
+                Err(e) => toast(&widgets, &friendly::bib_error(&e)),
             }
         });
     }
@@ -2051,6 +2145,97 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
 /// Commit the library to git (a local snapshot backup). Initialises the repo if needed.
 /// Attachments and `.kartoteka/` are gitignored, so only the plain records are committed.
+/// The plain, no-git-required backup option: pick a destination folder and copy the whole
+/// library into a timestamped subfolder there. "Back up (git commit)…" below is more
+/// powerful (versioned history, optional GitHub push) but needs git set up first — this is
+/// the one-click fallback for anyone who just wants a safety copy without learning git.
+fn show_save_copy_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let root = state
+        .borrow()
+        .library
+        .as_ref()
+        .map(|l| l.root().to_path_buf());
+    let Some(root) = root else {
+        toast(widgets, "Open a library first");
+        return;
+    };
+
+    let dialog = gtk4::FileDialog::builder()
+        .title("Choose where to save a copy")
+        .build();
+    let widgets = widgets.clone();
+    let parent = widgets.window.clone();
+    dialog.select_folder(Some(&parent), gio::Cancellable::NONE, move |result| {
+        if let Ok(folder) = result {
+            if let Some(dest_parent) = folder.path() {
+                save_library_copy(&widgets, root.clone(), dest_parent);
+            }
+        }
+    });
+}
+
+/// Copy `root` into a new `<name>-backup-<timestamp>` folder under `dest_parent`, off the UI
+/// thread (a library's PDFs can make this slow). Skips `.git` and `.kartoteka` — version
+/// control internals and the disposable search/metadata cache, neither of which belong in a
+/// plain copy.
+#[allow(deprecated)]
+fn save_library_copy(widgets: &Rc<Widgets>, root: PathBuf, dest_parent: PathBuf) {
+    let lib_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "library".to_string());
+    let stamp = glib::DateTime::now_local()
+        .ok()
+        .and_then(|d| d.format("%Y-%m-%d-%H%M").ok())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let dest = dest_parent.join(format!("{lib_name}-backup-{stamp}"));
+
+    toast(widgets, "Saving a copy…");
+    let (sender, receiver) =
+        glib::MainContext::channel::<Result<PathBuf, String>>(glib::Priority::DEFAULT);
+    let worker_dest = dest.clone();
+    std::thread::spawn(move || {
+        let result = copy_library_dir(&root, &worker_dest)
+            .map(|_| worker_dest)
+            .map_err(|e| e.to_string());
+        let _ = sender.send(result);
+    });
+
+    let widgets = widgets.clone();
+    receiver.attach(None, move |result| {
+        match result {
+            Ok(dest) => toast(&widgets, &format!("Saved a copy to {}", dest.display())),
+            Err(e) => toast(&widgets, &format!("Couldn't save a copy: {e}")),
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+/// Recursively copy `src` into `dest`, skipping `.git` and `.kartoteka`.
+fn copy_library_dir(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    for entry in walkdir::WalkDir::new(src)
+        .into_iter()
+        .filter_entry(|e| !matches!(e.file_name().to_str(), Some(".git" | ".kartoteka")))
+    {
+        let entry = entry.map_err(std::io::Error::other)?;
+        let rel = entry
+            .path()
+            .strip_prefix(src)
+            .expect("walkdir yields paths under src");
+        let target = dest.join(rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target)?;
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let root = state
         .borrow()
@@ -2138,7 +2323,7 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                         push_to_github(&widgets, root.clone());
                     }
                 }
-                Err(e) => toast(&widgets, &format!("Backup failed: {e}")),
+                Err(e) => toast(&widgets, &friendly::vault_error(&e)),
             }
             dialog.close();
         });
@@ -2770,15 +2955,58 @@ fn show_acquire_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let kinds = gtk4::StringList::new(&["DOI", "arXiv", "ISBN"]);
     let dropdown = gtk4::DropDown::builder().model(&kinds).build();
     let entry = gtk4::Entry::builder()
-        .placeholder_text("identifier, e.g. 10.1000/xyz")
+        .placeholder_text("e.g. 10.1000/xyz")
         .activates_default(true)
         .hexpand(true)
         .build();
+    // Plain-language hint for whichever identifier kind is selected — "DOI"/"arXiv"/"ISBN"
+    // mean nothing to most people on sight, and the dropdown alone doesn't explain them.
+    let hint = gtk4::Label::new(None);
+    hint.set_wrap(true);
+    hint.set_xalign(0.0);
+    hint.add_css_class("dim-label");
+    hint.add_css_class("caption");
+    let update_hint: Rc<dyn Fn(AcquireKind)> = Rc::new({
+        let hint = hint.clone();
+        let entry = entry.clone();
+        move |kind: AcquireKind| {
+            let (text, placeholder) = match kind {
+                AcquireKind::Doi => (
+                    "A DOI is a permanent ID most journal articles have — often printed near \
+                     the abstract or in the URL, like 10.1000/xyz.",
+                    "e.g. 10.1000/xyz",
+                ),
+                AcquireKind::Arxiv => (
+                    "For preprints from arxiv.org — the ID in the paper's URL, like 2101.00001.",
+                    "e.g. 2101.00001",
+                ),
+                AcquireKind::Isbn => (
+                    "The number under the barcode on the back of a book (10 or 13 digits).",
+                    "e.g. 9780140449136",
+                ),
+            };
+            hint.set_text(text);
+            entry.set_placeholder_text(Some(placeholder));
+        }
+    });
+    update_hint(AcquireKind::Doi);
+    {
+        let update_hint = update_hint.clone();
+        dropdown.connect_selected_notify(move |d| {
+            update_hint(match d.selected() {
+                0 => AcquireKind::Doi,
+                1 => AcquireKind::Arxiv,
+                _ => AcquireKind::Isbn,
+            });
+        });
+    }
+
     let spinner = gtk4::Spinner::new();
     spinner.set_halign(gtk4::Align::End);
 
     content.append(&dropdown);
     content.append(&entry);
+    content.append(&hint);
     content.append(&spinner);
     view.set_content(Some(&content));
     dialog.set_content(Some(&view));
@@ -2857,14 +3085,17 @@ fn show_acquire_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                                 reload_current(&state, &widgets);
                             }
                             Err(e) => {
-                                toast(&widgets, &format!("Could not parse record: {e}"));
+                                toast(&widgets, &friendly::bib_error(&e));
                                 add.set_sensitive(true);
                                 entry.set_sensitive(true);
                             }
                         }
                     }
                     Err(e) => {
-                        toast(&widgets, &format!("Lookup failed: {e}"));
+                        toast(
+                            &widgets,
+                            &format!("Couldn't find that reference online — double-check the identifier and try again ({e})."),
+                        );
                         add.set_sensitive(true);
                         entry.set_sensitive(true);
                     }
@@ -2881,7 +3112,7 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
     let library = match Library::open(&path) {
         Ok(lib) => lib,
         Err(e) => {
-            toast(widgets, &format!("Could not open library: {e}"));
+            toast(widgets, &friendly::bib_error(&e));
             return;
         }
     };
@@ -2906,7 +3137,7 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
             }
         }
         Err(e) => {
-            toast(widgets, &format!("Could not read entries: {e}"));
+            toast(widgets, &friendly::bib_error(&e));
             return;
         }
     }
@@ -2958,8 +3189,145 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
             .unwrap_or("library")
     ));
     widgets.status_label.set_text(&path.display().to_string());
+    widgets.content_stack.set_visible_child_name("library");
     refresh_collections(state, widgets);
     refresh_list(state, widgets);
+}
+
+/// Pick an existing folder and open it as a library — the shared behaviour behind both the
+/// header's folder icon and the "Open existing library…" button on the first-run page.
+fn open_library_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, config: &Rc<RefCell<Config>>) {
+    let dialog = gtk4::FileDialog::builder().title("Open library").build();
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let config = config.clone();
+    let parent = widgets.window.clone();
+    dialog.select_folder(Some(&parent), gio::Cancellable::NONE, move |result| {
+        if let Ok(folder) = result {
+            if let Some(path) = folder.path() {
+                config.borrow_mut().library_path = Some(path.clone());
+                config.borrow().save();
+                open_library(&state, &widgets, path);
+            }
+        }
+    });
+}
+
+/// Create a brand-new library: a name and a location (a folder to create it in), so a
+/// first-time user doesn't have to go create an empty folder themselves before Kartoteka
+/// will let them start. Defaults the location to `~/Documents` when available.
+fn show_new_library_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, config: &Rc<RefCell<Config>>) {
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("New library"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(440, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let create = gtk4::Button::with_label("Create");
+    create.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&create);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let intro = gtk4::Label::new(Some(
+        "This creates a new folder to hold your library — its references, notes, and PDFs \
+         all live together inside it.",
+    ));
+    intro.set_wrap(true);
+    intro.set_xalign(0.0);
+    intro.add_css_class("dim-label");
+    content.append(&intro);
+
+    let name_entry = gtk4::Entry::builder()
+        .text("My Library")
+        .activates_default(true)
+        .build();
+    content.append(&labeled("Name", &name_entry));
+
+    let default_location = glib::user_special_dir(glib::UserDirectory::Documents)
+        .unwrap_or_else(glib::home_dir);
+    let location: Rc<RefCell<PathBuf>> = Rc::new(RefCell::new(default_location.clone()));
+    let location_row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let location_label = gtk4::Label::new(Some(&default_location.display().to_string()));
+    location_label.set_hexpand(true);
+    location_label.set_xalign(0.0);
+    location_label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+    location_label.add_css_class("dim-label");
+    let choose_location = gtk4::Button::with_label("Choose…");
+    location_row.append(&location_label);
+    location_row.append(&choose_location);
+    content.append(&labeled("Location", &location_row));
+
+    {
+        let location = location.clone();
+        let location_label = location_label.clone();
+        let window = widgets.window.clone();
+        choose_location.connect_clicked(move |_| {
+            let dialog = gtk4::FileDialog::builder().title("Choose a location").build();
+            let location = location.clone();
+            let location_label = location_label.clone();
+            dialog.select_folder(Some(&window), gio::Cancellable::NONE, move |result| {
+                if let Ok(folder) = result {
+                    if let Some(path) = folder.path() {
+                        location_label.set_text(&path.display().to_string());
+                        *location.borrow_mut() = path;
+                    }
+                }
+            });
+        });
+    }
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let dialog = dialog.clone();
+        create.connect_clicked(move |_| {
+            let name = name_entry.text().trim().to_string();
+            if name.is_empty() {
+                toast(&widgets, "Give the library a name");
+                return;
+            }
+            let root = location.borrow().join(&name);
+            if root.exists() {
+                toast(
+                    &widgets,
+                    &format!("\"{}\" already exists — pick a different name or location", name),
+                );
+                return;
+            }
+            match fond_bib::Library::init(&root) {
+                Ok(_) => {
+                    config.borrow_mut().library_path = Some(root.clone());
+                    config.borrow().save();
+                    open_library(&state, &widgets, root);
+                    dialog.close();
+                }
+                Err(e) => toast(&widgets, &friendly::bib_error(&e)),
+            }
+        });
+    }
+
+    dialog.present();
 }
 
 /// Saved searches are stored per library under `.kartoteka/saved-searches.json`.
@@ -3092,7 +3460,7 @@ fn refresh_collections(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                         true
                     }
                     Some(Err(e)) => {
-                        toast(&widgets, &format!("Could not add to collection: {e}"));
+                        toast(&widgets, &friendly::bib_error(&e));
                         false
                     }
                     None => false,
@@ -3467,7 +3835,7 @@ fn show_global_tasks_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>
                     })
                 };
                 if let Some(Err(e)) = result {
-                    toast(&widgets, &format!("Could not save: {e}"));
+                    toast(&widgets, &friendly::bib_error(&e));
                 }
             });
         }
@@ -3596,7 +3964,7 @@ fn show_promote_keywords_dialog(
                     dialog.close();
                     refresh_detail(&state, &widgets);
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not save tags: {e}")),
+                Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                 None => {}
             }
         });
@@ -3963,7 +4331,7 @@ fn relations_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
                     dialog.close();
                     reload_current(&state, &widgets);
                 }
-                Err(e) => toast(&widgets, &format!("Could not update: {e}")),
+                Err(e) => toast(&widgets, &friendly::bib_error(&e)),
             }
         });
     }
@@ -4138,7 +4506,7 @@ fn new_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                     dialog.close();
                     refresh_collections(&state, &widgets);
                 }
-                Err(e) => toast(&widgets, &format!("Could not create: {e}")),
+                Err(e) => toast(&widgets, &friendly::bib_error(&e)),
             }
         });
     }
@@ -4225,7 +4593,53 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         }
     } else {
         clear_box(&widgets.detail);
+        show_empty_list_hint(state, widgets);
     }
+}
+
+/// A friendly stand-in for the (otherwise blank) detail pane when the spreadsheet has no
+/// rows to select — distinguishing "this library has nothing in it yet" (a first-time
+/// user's likely next question is "how do I add something?") from "nothing matches the
+/// current search or collection" (a different, much smaller problem).
+fn show_empty_list_hint(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let library_is_empty = state.borrow().entries.is_empty();
+
+    let page = adw::StatusPage::new();
+    page.set_vexpand(true);
+    if library_is_empty {
+        page.set_icon_name(Some("list-add-symbolic"));
+        page.set_title("This library is empty");
+        page.set_description(Some(
+            "Add a reference by DOI/ISBN, drop a PDF onto the window, or fill in the details \
+             yourself.",
+        ));
+        let buttons = gtk4::Box::new(Orientation::Horizontal, 8);
+        buttons.set_halign(gtk4::Align::Center);
+        let acquire = gtk4::Button::with_label("Acquire…");
+        acquire.add_css_class("suggested-action");
+        acquire.add_css_class("pill");
+        let new_item = gtk4::Button::with_label("New item…");
+        new_item.add_css_class("pill");
+        buttons.append(&acquire);
+        buttons.append(&new_item);
+        page.set_child(Some(&buttons));
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            acquire.connect_clicked(move |_| show_acquire_dialog(&state, &widgets));
+        }
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            new_item.connect_clicked(move |_| show_new_item_dialog(&state, &widgets));
+        }
+    } else {
+        page.set_icon_name(Some("edit-find-symbolic"));
+        page.set_title("No matches");
+        page.set_description(Some("Nothing here matches your search or the selected collection."));
+    }
+
+    widgets.detail.append(&page);
 }
 
 /// Which citation field a spreadsheet cell edit applies to.
@@ -4305,7 +4719,7 @@ fn commit_cell_edit(
             reload_current(state, &widgets);
             select_key(state, &widgets, &key);
         }
-        Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
+        Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
         None => {}
     }
 }
@@ -4446,6 +4860,10 @@ fn build_entries_column_view(
             item.child().and_downcast::<gtk4::Label>(),
         ) {
             label.set_text(&row.key());
+            label.set_tooltip_text(Some(
+                "Citation key — a short ID for this reference, used to cite it in Typst \
+                 documents. Also its file name on disk.",
+            ));
         }
     });
     let key_column = gtk4::ColumnViewColumn::new(Some("Key"), Some(key_factory));
@@ -4688,7 +5106,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                     reload_current(&state, &widgets);
                     select_key(&state, &widgets, &key);
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
+                Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                 None => {}
             }
         })
@@ -5179,7 +5597,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                     reload_current(&state, &widgets);
                     select_key(&state, &widgets, &key);
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not save: {e}")),
+                Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                 None => {}
             }
         })
@@ -5794,7 +6212,7 @@ fn show_annotations_dialog(
                 a.note = (!text.is_empty()).then(|| text.to_string());
                 if let Err(e) = library.write_annotations(&sidecar) {
                     drop(s);
-                    toast(&widgets, &format!("Could not save note: {e}"));
+                    toast(&widgets, &friendly::bib_error(&e));
                 }
             }
         };
@@ -5835,7 +6253,7 @@ fn show_annotations_dialog(
                         list.remove(&row);
                         toast(&widgets, "Annotation deleted");
                     }
-                    Some(Err(e)) => toast(&widgets, &format!("Could not delete: {e}")),
+                    Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                     None => toast(&widgets, "No open library"),
                 }
             });
@@ -6368,7 +6786,7 @@ fn save_drag_annotation(
             true
         }
         Some(Err(e)) => {
-            toast(widgets, &format!("Could not save: {e}"));
+            toast(widgets, &friendly::bib_error(&e));
             false
         }
         None => {
@@ -6552,7 +6970,7 @@ fn show_pdf_context_menu(
                             sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                             rebuild_notes();
                         }
-                        Some(Err(e)) => toast(&widgets, &format!("Could not save note: {e}")),
+                        Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                         None => toast(&widgets, "No open library"),
                     }
                 }
@@ -6605,7 +7023,7 @@ fn show_pdf_context_menu(
                             rebuild_notes();
                             toast(&widgets, "Annotation deleted");
                         }
-                        Some(Err(e)) => toast(&widgets, &format!("Could not delete: {e}")),
+                        Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                         None => toast(&widgets, "No open library"),
                     }
                     popover.popdown();
@@ -7637,7 +8055,7 @@ fn show_pdf_reader(
                             Some(Ok(_)) => {
                                 sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                             }
-                            Some(Err(e)) => toast(&widgets, &format!("Could not save note: {e}")),
+                            Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                             None => toast(&widgets, "No open library"),
                         }
                     }
@@ -7693,7 +8111,7 @@ fn show_pdf_reader(
                                     f();
                                 }
                             }
-                            Some(Err(e)) => toast(&widgets, &format!("Could not delete: {e}")),
+                            Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                             None => toast(&widgets, "No open library"),
                         }
                     });
@@ -8497,7 +8915,7 @@ fn show_pdf_note_dialog(
                     toast(&widgets, "Note added");
                     dialog.close();
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not save note: {e}")),
+                Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                 None => toast(&widgets, "No open library — note not saved"),
             }
         });
@@ -8987,7 +9405,7 @@ fn show_epub_reader(
                             epub_apply_highlights(&view_for_apply, &reader, Some(&id));
                             toast(&widgets, "Highlight added");
                         }
-                        Some(Err(e)) => toast(&widgets, &format!("Could not save highlight: {e}")),
+                        Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                         None => toast(&widgets, "No open library — highlight not saved"),
                     }
                 },
@@ -9298,7 +9716,7 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
                     dialog.close();
                     refresh_detail(&state, &widgets);
                 }
-                Err(e) => toast(&widgets, &format!("Could not save note: {e}")),
+                Err(e) => toast(&widgets, &friendly::bib_error(&e)),
             }
         });
     }
@@ -9419,7 +9837,7 @@ fn confirm_delete_entry(
                 clear_box(&widgets.detail);
                 toast(&widgets, &format!("Deleted {key}"));
             }
-            Err(e) => toast(&widgets, &format!("Could not delete {key}: {e}")),
+            Err(e) => toast(&widgets, &format!("Couldn't delete \"{key}\": {}", friendly::bib_error(&e))),
         }
     });
     dialog.present();
@@ -9473,7 +9891,7 @@ fn confirm_delete_node(
                 toast(&widgets, &format!("Deleted {slug}"));
                 editor.close();
             }
-            Err(e) => toast(&widgets, &format!("Could not delete {slug}: {e}")),
+            Err(e) => toast(&widgets, &format!("Couldn't delete \"{slug}\": {}", friendly::bib_error(&e))),
         }
     });
     dialog.present();
@@ -9516,6 +9934,16 @@ fn show_nodes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     view.add_top_bar(&header);
 
     let outer = gtk4::Box::new(Orientation::Vertical, 0);
+    let subtitle = gtk4::Label::new(Some(
+        "People, places, and other things you can connect your references to.",
+    ));
+    subtitle.set_wrap(true);
+    subtitle.set_xalign(0.0);
+    subtitle.add_css_class("dim-label");
+    subtitle.add_css_class("caption");
+    subtitle.set_margin_top(6);
+    subtitle.set_margin_start(8);
+    subtitle.set_margin_end(8);
     let search = gtk4::SearchEntry::new();
     search.set_placeholder_text(Some("Filter nodes"));
     search.set_margin_top(6);
@@ -9529,6 +9957,7 @@ fn show_nodes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     scroll.add_css_class("fond-ground");
     scroll.set_child(Some(&listbox));
     scroll.set_vexpand(true);
+    outer.append(&subtitle);
     outer.append(&search);
     outer.append(&scroll);
     view.set_content(Some(&outer));
@@ -9904,7 +10333,7 @@ fn show_node_editor(
                     dialog.close();
                     on_saved();
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not save node: {e}")),
+                Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                 None => {}
             }
         });
