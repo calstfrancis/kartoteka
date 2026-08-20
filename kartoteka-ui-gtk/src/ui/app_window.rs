@@ -5230,9 +5230,12 @@ fn show_relations_graph(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, ke
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.add_css_class("fond-chrome");
-    let hint = gtk4::Label::new(Some("Prototype — click a node to expand it"));
+    let hint = gtk4::Label::new(Some("Prototype — click to expand, double-click to open"));
     hint.add_css_class("dim-label");
     header.set_title_widget(Some(&hint));
+    let reset_button = gtk4::Button::from_icon_name("view-refresh-symbolic");
+    reset_button.set_tooltip_text(Some("Reset to just this entry's direct connections"));
+    header.pack_start(&reset_button);
     view.add_top_bar(&header);
 
     let web_view = webkit6::WebView::new();
@@ -5242,30 +5245,39 @@ fn show_relations_graph(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, ke
     if let Some(ucm) = webkit6::prelude::WebViewExt::user_content_manager(&web_view) {
         ucm.register_script_message_handler("kartoteka", None);
         let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
         let view_for_reply = web_view.clone();
         ucm.connect_script_message_received(Some("kartoteka"), move |_, js_value| {
             let raw = js_value.to_str();
             let Ok(msg) = serde_json::from_str::<serde_json::Value>(&raw) else {
                 return;
             };
-            let Some(id) = msg.get("expand").and_then(|v| v.as_str()) else {
-                return;
-            };
-            let patch = {
-                let s = state.borrow();
-                match s.library.as_ref() {
-                    Some(lib) => graph_expand(lib, id),
-                    None => return,
+            if let Some(id) = msg.get("expand").and_then(|v| v.as_str()) {
+                let patch = {
+                    let s = state.borrow();
+                    match s.library.as_ref() {
+                        Some(lib) => graph_expand(lib, id),
+                        None => return,
+                    }
+                };
+                let json = serde_json::to_string(&patch).unwrap_or_else(|_| "{}".to_string());
+                view_for_reply.evaluate_javascript(
+                    &format!("mergeGraph({json})"),
+                    None,
+                    None,
+                    gio::Cancellable::NONE,
+                    |_| {},
+                );
+            } else if let Some(id) = msg.get("open").and_then(|v| v.as_str()) {
+                let is_entry = state.borrow().key_to_index.contains_key(id);
+                dialog.close();
+                if is_entry {
+                    select_key(&state, &widgets, id);
+                } else {
+                    show_node_editor(&state, &widgets, Some(id.to_string()), Rc::new(|| {}));
                 }
-            };
-            let json = serde_json::to_string(&patch).unwrap_or_else(|_| "{}".to_string());
-            view_for_reply.evaluate_javascript(
-                &format!("mergeGraph({json})"),
-                None,
-                None,
-                gio::Cancellable::NONE,
-                |_| {},
-            );
+            }
         });
     }
 
@@ -5283,6 +5295,18 @@ fn show_relations_graph(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, ke
             }
         });
     }
+    {
+        let view_for_reset = web_view.clone();
+        reset_button.connect_clicked(move |_| {
+            view_for_reset.evaluate_javascript(
+                "resetGraph()",
+                None,
+                None,
+                gio::Cancellable::NONE,
+                |_| {},
+            );
+        });
+    }
     web_view.load_html(RELATIONS_GRAPH_HTML, None);
 
     view.set_content(Some(&web_view));
@@ -5293,21 +5317,60 @@ fn show_relations_graph(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, ke
 /// Self-contained HTML/JS for the relations-map prototype: no external resources (offline,
 /// same as everything else in Kartoteka), a small hand-written force simulation (no need to
 /// vendor d3-force for the node counts a one-entry-deep, click-to-expand map produces),
-/// Canvas 2D rendering, and pan (drag empty space) / zoom (scroll). `initGraph`/`mergeGraph`
-/// are called from Rust; a node click posts `{"expand": "<id>"}` back via
-/// `window.webkit.messageHandlers.kartoteka`.
+/// Canvas 2D rendering, and pan (drag empty space) / zoom (scroll). `initGraph`/`mergeGraph`/
+/// `resetGraph` are called from Rust; a node click posts `{"expand": "<id>"}` back via
+/// `window.webkit.messageHandlers.kartoteka`, a double-click posts `{"open": "<id>"}`.
+/// Colours are CSS custom properties (one definition per light/dark, read into JS via
+/// `getComputedStyle` rather than a parallel `dark ? … : …` table) so the canvas and the
+/// legend can never drift out of sync with each other.
 const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-  html, body { margin: 0; padding: 0; overflow: hidden; background: #fafafa; }
-  @media (prefers-color-scheme: dark) { html, body { background: #1e1e1e; } }
+  :root {
+    --bg: #fafafa; --panel: rgba(255,255,255,0.88); --fg: #2e2e2e; --dim: #8a8a8a;
+    --edge: rgba(0,0,0,0.25);
+    --c-work: #3d78c2; --c-person: #4a9e4a; --c-school: #c4922a;
+    --c-concept: #a35bc2; --c-event: #c26a48; --c-place: #3a9d9d; --c-other: #777777;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e1e; --panel: rgba(35,35,35,0.88); --fg: #e3e3e3; --dim: #9a9a9a;
+      --edge: rgba(255,255,255,0.3);
+      --c-work: #5aa0e6; --c-person: #7fc97f; --c-school: #e0b04a;
+      --c-concept: #c98adb; --c-event: #e08a6a; --c-place: #6ac9c9; --c-other: #999999;
+    }
+  }
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); }
   canvas { display: block; cursor: grab; }
+  .panel {
+    position: fixed; background: var(--panel); color: var(--fg);
+    border: 1px solid var(--edge); border-radius: 8px; font: 11px sans-serif;
+  }
+  .legend { left: 10px; bottom: 10px; padding: 8px 10px; }
+  .legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  .legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+  .legend .hint { margin-top: 6px; color: var(--dim); max-width: 160px; }
+  .banner {
+    top: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px;
+    opacity: 0; transition: opacity 0.25s; pointer-events: none;
+  }
+  .banner.show { opacity: 1; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<div class="panel legend">
+  <div class="row"><span class="dot" style="background:var(--c-work)"></span>Work</div>
+  <div class="row"><span class="dot" style="background:var(--c-person)"></span>Person</div>
+  <div class="row"><span class="dot" style="background:var(--c-school)"></span>School</div>
+  <div class="row"><span class="dot" style="background:var(--c-concept)"></span>Concept</div>
+  <div class="row"><span class="dot" style="background:var(--c-event)"></span>Event</div>
+  <div class="row"><span class="dot" style="background:var(--c-place)"></span>Place</div>
+  <div class="hint">Click: expand · double-click: open · right-click: remove</div>
+</div>
+<div class="panel banner" id="banner"></div>
 <script>
 (function() {
   var canvas = document.getElementById('c');
@@ -5316,27 +5379,41 @@ const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
   window.addEventListener('resize', resize);
   resize();
 
-  var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  var fg = dark ? '#e3e3e3' : '#2e2e2e';
-  var dim = dark ? '#8a8a8a' : '#8a8a8a';
-  var edgeColor = dark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)';
+  var style = getComputedStyle(document.documentElement);
+  function cssVar(name) { return style.getPropertyValue(name).trim(); }
+  var fg = cssVar('--fg'), dim = cssVar('--dim'), edgeColor = cssVar('--edge');
   var kindColor = {
-    work: dark ? '#5aa0e6' : '#3d78c2',
-    person: dark ? '#7fc97f' : '#4a9e4a',
-    school: dark ? '#e0b04a' : '#c4922a',
-    concept: dark ? '#c98adb' : '#a35bc2',
-    event: dark ? '#e08a6a' : '#c26a48',
-    place: dark ? '#6ac9c9' : '#3a9d9d',
-    other: dark ? '#999999' : '#777777'
+    work: cssVar('--c-work'), person: cssVar('--c-person'), school: cssVar('--c-school'),
+    concept: cssVar('--c-concept'), event: cssVar('--c-event'), place: cssVar('--c-place'),
+    other: cssVar('--c-other')
   };
+
+  var MAX_NODES = 80;
 
   var nodes = new Map(); // id -> {id,label,kind,x,y,vx,vy,pinned,loading}
   var edges = []; // {from,to,label}
   var centerId = null;
+  var initialData = null;
   var offsetX = 0, offsetY = 0, scale = 1;
 
+  function postMsg(obj) {
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.kartoteka) {
+      window.webkit.messageHandlers.kartoteka.postMessage(JSON.stringify(obj));
+    }
+  }
+
+  var bannerTimer = null;
+  function showBanner(text) {
+    var b = document.getElementById('banner');
+    b.textContent = text;
+    b.classList.add('show');
+    if (bannerTimer) clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(function() { b.classList.remove('show'); }, 2500);
+  }
+
   function addNode(n) {
-    if (nodes.has(n.id)) return;
+    if (nodes.has(n.id)) return true;
+    if (nodes.size >= MAX_NODES) return false;
     var angle = Math.random() * Math.PI * 2;
     var r = 120 + Math.random() * 60;
     var cx = centerId && nodes.has(centerId) ? nodes.get(centerId).x : canvas.width / 2;
@@ -5346,9 +5423,11 @@ const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
       x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r,
       vx: 0, vy: 0, pinned: false, loading: false
     });
+    return true;
   }
 
   window.initGraph = function(data) {
+    initialData = data;
     nodes.clear();
     edges = [];
     centerId = data.center || null;
@@ -5365,9 +5444,17 @@ const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
     (data.edges || []).forEach(function(e) { edges.push(e); });
   };
 
+  window.resetGraph = function() {
+    if (initialData) window.initGraph(initialData);
+  };
+
   window.mergeGraph = function(data) {
-    (data.nodes || []).forEach(addNode);
+    var capped = false;
+    (data.nodes || []).forEach(function(n) {
+      if (!addNode(n)) capped = true;
+    });
     (data.edges || []).forEach(function(e) {
+      if (!nodes.has(e.from) || !nodes.has(e.to)) return;
       var exists = edges.some(function(x) {
         return (x.from === e.from && x.to === e.to) || (x.from === e.to && x.to === e.from);
       });
@@ -5376,6 +5463,9 @@ const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
     // Only one expand request is ever in flight at a time in this prototype, so clearing
     // every "loading" spinner on any merge is enough — no need to track which node it was.
     nodes.forEach(function(nd) { nd.loading = false; });
+    if (capped) {
+      showBanner('Map capped at ' + MAX_NODES + ' nodes — right-click a node to remove it');
+    }
   };
 
   // ---- physics: simple repulsion + spring edges + weak centering ----
@@ -5414,27 +5504,55 @@ const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
     });
   }
 
+  function nodeRadius(n) { return n.id === centerId ? 22 : 14; }
+
+  // Draws the edge line short of `b`'s own circle, plus a small filled arrowhead touching
+  // it — direction is meaningful here (the predicate label is phrased from `a`'s side, e.g.
+  // "Cites"/"Critiqued by"), so an undirected line was losing information the label alone
+  // didn't fully make up for.
+  function drawEdge(a, b, label) {
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    var ux = dx / d, uy = dy / d;
+    var rTo = nodeRadius(b) + 3;
+    var tipX = b.x - ux * rTo, tipY = b.y - uy * rTo;
+
+    ctx.strokeStyle = edgeColor;
+    ctx.beginPath();
+    ctx.moveTo(a.x + ux * (nodeRadius(a) + 1), a.y + uy * (nodeRadius(a) + 1));
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+
+    var size = 6;
+    var baseX = tipX - ux * size, baseY = tipY - uy * size;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(baseX - uy * size * 0.5, baseY + ux * size * 0.5);
+    ctx.lineTo(baseX + uy * size * 0.5, baseY - ux * size * 0.5);
+    ctx.closePath();
+    ctx.fillStyle = edgeColor;
+    ctx.fill();
+
+    ctx.fillStyle = dim;
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, (a.x + b.x) / 2, (a.y + b.y) / 2 - 4);
+  }
+
   function draw() {
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.translate(offsetX, offsetY);
     ctx.scale(scale, scale);
 
-    ctx.strokeStyle = edgeColor;
-    ctx.fillStyle = dim;
-    ctx.font = '11px sans-serif';
     edges.forEach(function(e) {
       var a = nodes.get(e.from), b = nodes.get(e.to);
       if (!a || !b) return;
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-      ctx.fillText(e.label, (a.x + b.x) / 2 + 4, (a.y + b.y) / 2 - 4);
+      drawEdge(a, b, e.label);
     });
 
     nodes.forEach(function(n) {
-      var r = n.id === centerId ? 22 : 14;
+      var r = nodeRadius(n);
       ctx.beginPath();
       ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
       ctx.fillStyle = kindColor[n.kind] || kindColor.other;
@@ -5466,7 +5584,11 @@ const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
   }
   requestAnimationFrame(tick);
 
-  // ---- interaction: click a node to expand, drag empty space to pan, scroll to zoom ----
+  // ---- interaction ----
+  // click: expand · double-click (self-timed, not the native `dblclick` event, so its
+  // window lines up exactly with the expand delay below rather than trusting the browser's
+  // own threshold to agree with ours): open · right-click: remove (not the center) · drag
+  // empty space: pan · drag a node: reposition (and pin) it · scroll: zoom.
   function toWorld(px, py) {
     return { x: (px - offsetX) / scale, y: (py - offsetY) / scale };
   }
@@ -5474,16 +5596,17 @@ const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
     var w = toWorld(px, py);
     var hit = null;
     nodes.forEach(function(n) {
-      var r = (n.id === centerId ? 22 : 14) + 4;
+      var r = nodeRadius(n) + 4;
       var dx = w.x - n.x, dy = w.y - n.y;
       if (dx * dx + dy * dy <= r * r) hit = n;
     });
     return hit;
   }
 
-  var dragging = false, dragStart = null, draggedNode = null;
+  var dragging = false, dragStart = null, draggedNode = null, dragMoved = false;
   canvas.addEventListener('mousedown', function(ev) {
     var n = hitNode(ev.offsetX, ev.offsetY);
+    dragMoved = false;
     if (n && n.id !== centerId) {
       draggedNode = n;
       n.pinned = true;
@@ -5494,29 +5617,54 @@ const RELATIONS_GRAPH_HTML: &str = r##"<!doctype html>
   });
   canvas.addEventListener('mousemove', function(ev) {
     if (draggedNode) {
+      dragMoved = true;
       var w = toWorld(ev.offsetX, ev.offsetY);
       draggedNode.x = w.x; draggedNode.y = w.y;
     } else if (dragging) {
+      dragMoved = true;
       offsetX = ev.offsetX - dragStart.x;
       offsetY = ev.offsetY - dragStart.y;
     }
   });
-  window.addEventListener('mouseup', function(ev) {
+  window.addEventListener('mouseup', function() {
     if (draggedNode) {
-      // A plain click (no real drag) on a node expands it instead of leaving it pinned.
-      draggedNode.pinned = false;
+      // A plain click (no real drag) on a node unpins it again — only a drag the user
+      // actually performed leaves it pinned where they put it.
+      if (!dragMoved) draggedNode.pinned = false;
       draggedNode = null;
     }
     dragging = false;
   });
+
+  var pendingClick = null; // {node, timer}
+  var CLICK_DELAY = 300;
   canvas.addEventListener('click', function(ev) {
-    if (dragging) return;
+    if (dragMoved) return;
     var n = hitNode(ev.offsetX, ev.offsetY);
-    if (!n || n.loading) return;
-    n.loading = true;
-    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.kartoteka) {
-      window.webkit.messageHandlers.kartoteka.postMessage(JSON.stringify({ expand: n.id }));
+    if (!n) return;
+    if (pendingClick && pendingClick.node === n) {
+      clearTimeout(pendingClick.timer);
+      pendingClick = null;
+      postMsg({ open: n.id });
+      return;
     }
+    if (pendingClick) clearTimeout(pendingClick.timer);
+    pendingClick = {
+      node: n,
+      timer: setTimeout(function() {
+        pendingClick = null;
+        if (n.loading) return;
+        n.loading = true;
+        postMsg({ expand: n.id });
+      }, CLICK_DELAY)
+    };
+  });
+  canvas.addEventListener('contextmenu', function(ev) {
+    ev.preventDefault();
+    var n = hitNode(ev.offsetX, ev.offsetY);
+    if (!n || n.id === centerId) return;
+    nodes.delete(n.id);
+    edges = edges.filter(function(e) { return e.from !== n.id && e.to !== n.id; });
   });
   canvas.addEventListener('wheel', function(ev) {
     ev.preventDefault();

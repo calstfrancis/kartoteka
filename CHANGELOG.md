@@ -4,18 +4,28 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [dev]
 
-**Relations map (prototype).** An entry's "More" menu has a new "Relations map…" —
-an entry-centered, force-directed visualization of its typed relations (cites,
+**Relations map (prototype), fleshed out.** An entry's "More" menu has "Relations
+map…" — an entry-centered, force-directed visualization of its typed relations (cites,
 influenced by, authored by, …), including the automatically-maintained inverse edges
-(so it doubles as a backlinks view: who cites *this*, not just what this cites). Click
-a node to pull its own connections in too, expanding outward from the entry you
-started on; drag nodes, pan empty space, scroll to zoom. Read-only for now — no
-editing relations or navigating into an entry from the map, just exploring the shape
-of what's connected. Rendered in a `WebView` (Canvas 2D, a small hand-written force
+(so it doubles as a backlinks view: who cites *this*, not just what this cites).
+- Click a node to pull its own connections in too, expanding outward from the entry
+  you started on.
+- **Double-click a node to open it** — closes the map and selects that entry (or opens
+  the node editor, for a person/school/concept/event/place).
+- **Right-click a node to remove it** from the map (client-side only; doesn't touch
+  your data) — for decluttering after expanding a few hops.
+- **Reset button** in the header returns to just the starting entry's direct connections.
+- **Edges are now directional** (arrowheads, matching the predicate label's own
+  phrasing) and there's a **legend** for the node-kind colours.
+- A soft cap (80 nodes) with an on-canvas notice, so an entry with a lot of connections
+  can't turn the map into an unreadable, unresponsive tangle.
+
+Still read-only otherwise — no editing relations or dragging a line to create one from
+the map itself. Rendered in a `WebView` (Canvas 2D, a small hand-written force
 simulation, no external resources) rather than hand-built in Cairo — the same
-`WebView`-embedding pattern the EPUB reader uses, extended with a JS→Rust message
-channel (`UserContentManager`) for node clicks, new to the app. Marked "(prototype)"
-in the UI; not yet a finished feature.
+`WebView`-embedding pattern the EPUB reader uses, extended with a JS↔Rust message
+channel (`UserContentManager`) for node clicks. Marked "(prototype)" in the UI; not
+yet a finished feature.
 
 **Re-arrangeable columns, remembered window sizing, more keyboard access.**
 - The entries spreadsheet's columns can now be dragged by their headers to reorder them
