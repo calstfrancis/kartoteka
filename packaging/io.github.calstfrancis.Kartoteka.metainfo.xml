@@ -46,6 +46,16 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.6.1" date="2026-08-21">
+      <description>
+        <p>0.6.1 "Quiet Stack" — fixes a startup crash on opening a library.</p>
+        <ul>
+          <li>Fixed a <code>RefCell already borrowed</code> panic that could abort the app
+          on startup when opening a library with a saved column order or a custom field
+          defined.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-08-20">
       <description>
         <p>0.6.0 "Deep Stacks" — optional spreadsheet columns, bulk actions, smarter

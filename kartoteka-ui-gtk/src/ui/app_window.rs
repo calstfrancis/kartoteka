@@ -3840,11 +3840,12 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
     };
 
     let defs = library.load_custom_field_defs().unwrap_or_default();
+    let config = widgets.config.borrow().clone();
     sync_custom_field_columns(
         &widgets.column_view,
         &widgets.custom_columns,
         &defs,
-        &widgets.config.borrow(),
+        &config,
     );
 
     let mut entries = Vec::new();

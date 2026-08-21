@@ -2,14 +2,24 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [dev]
+## [0.6.1] "Quiet Stack" — 2026-08-21 — Startup crash fix
+
+**Fixed: Kartoteka could fail to start (`RefCell already borrowed` panic → abort) when
+opening a library.** Opening a library re-syncs the optional custom-field spreadsheet
+columns, which briefly held the app config borrowed while also removing/re-adding
+columns on the entries view — and column changes synchronously fire GTK's
+`items-changed` signal, whose handler tries to borrow the same config to save the
+column order. The double borrow panicked inside a GTK signal callback, which can't
+unwind, so the whole process aborted. Any library with a saved column order or a
+custom field defined hit this on every launch. Fixed by dropping the config borrow
+before touching the columns.
 
 **Internal: releases now build and publish via GitHub Actions, not locally.**
 `publish-flatpak.sh` now just pushes the commit and tag; `.github/workflows/release-flatpak.yml`
 does the flatpak build, GPG-signing, and publish to the OSTree repo, matching Zerkalo's
 setup (and refusing to publish unless CI passed for that commit). The old fully-local flow
 still exists at `publish-flatpak-local.sh` as a fallback. No user-facing change; takes effect
-starting with the next release — 0.6.0 itself was already published via the old manual flow
+starting with this release — 0.6.0 itself was already published via the old manual flow
 before this landed. See `RELEASE-CI-SETUP.md` for the one-time secrets setup this needs.
 
 ## [0.6.0] "Deep Stacks" — 2026-08-20 — Optional columns, bulk actions, smarter duplicates, and a whole-library relations map
