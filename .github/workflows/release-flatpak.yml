@@ -99,7 +99,7 @@ jobs:
           sudo apt-get install -y $APT_OPTS flatpak flatpak-builder
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
-      - name: Install runtime, SDK, and rust-stable extension
+      - name: Determine runtime/extension versions
         # org.freedesktop.Sdk.Extension.rust-stable is versioned against the Freedesktop SDK
         # release GNOME's runtime pairs with, not the GNOME runtime number itself. GNOME
         # Platform/Sdk 50 pairs with Freedesktop SDK 25.08 (same mapping Zerkalo's identical
@@ -108,11 +108,42 @@ jobs:
         # never states it, so it'll need updating by hand if runtime-version ever moves.
         run: |
           RUNTIME_VERSION=$(grep '^runtime-version' packaging/io.github.calstfrancis.Kartoteka.yml | sed "s/runtime-version: *'\(.*\)'/\1/")
-          RUST_EXTENSION_BRANCH="25.08"
-          flatpak install --user -y flathub \
-            "org.gnome.Platform//$RUNTIME_VERSION" \
-            "org.gnome.Sdk//$RUNTIME_VERSION" \
+          echo "RUNTIME_VERSION=$RUNTIME_VERSION" >> "$GITHUB_ENV"
+          echo "RUST_EXTENSION_BRANCH=25.08" >> "$GITHUB_ENV"
+
+      # Flathub's CDN has repeatedly 404'd on the same static-delta object partway through
+      # this pull, specifically from GitHub-hosted runners (reproduces every time from here,
+      # while the same ref pulls fine locally) — not a one-off blip, a systemic network-path
+      # issue (same failure independently confirmed in Zerkalo's identical step — see
+      # zerkalo/.github/workflows/release-flatpak.yml). Caching the installed --user flatpak
+      # dir sidesteps it entirely after the first successful install: once the cache is warm,
+      # the `flatpak install` below finds everything already present and never touches the
+      # network. Keyed on the runtime/extension versions so a bump invalidates it automatically.
+      - name: Cache flatpak user installation
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/flatpak
+          key: flatpak-gnome${{ env.RUNTIME_VERSION }}-rust${{ env.RUST_EXTENSION_BRANCH }}-v1
+
+      - name: Install runtime, SDK, and rust-stable extension
+        run: |
+          REFS=(
+            "org.gnome.Platform//$RUNTIME_VERSION"
+            "org.gnome.Sdk//$RUNTIME_VERSION"
             "org.freedesktop.Sdk.Extension.rust-stable//$RUST_EXTENSION_BRANCH"
+          )
+          # Cache hit: everything's already installed, this is a fast no-op with no network
+          # traffic. Cache miss: falls through to the retry/no-static-deltas fallback for the
+          # same CDN flakiness described above.
+          for attempt in 1 2 3; do
+            if flatpak install --user -y flathub "${REFS[@]}"; then
+              exit 0
+            fi
+            echo "flatpak install attempt $attempt failed, retrying in 15s…"
+            sleep 15
+          done
+          echo "Retrying once more with --no-static-deltas…"
+          flatpak install --user -y --no-static-deltas flathub "${REFS[@]}"
 
       - name: Import GPG signing key
         run: |
