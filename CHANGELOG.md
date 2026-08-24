@@ -2,6 +2,21 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [dev] — EPUB reader: whole-book search and reading-position resume
+
+**Whole-book search in the EPUB reader.** The search bar's new "Whole book" toggle
+switches from the existing chapter-scoped `Ctrl+F` search (which only ever sees the one
+chapter currently loaded) to a search across every chapter at once, listing each match
+as a chapter + excerpt you can click to jump straight to — the match itself gets
+highlighted on arrival, the same as an ordinary in-chapter search would. Chapter text is
+indexed lazily from the already-extracted chapter files the first time it's used.
+
+**EPUB reading position now resumes.** The EPUB reader saves its scroll position (chapter
++ percent scrolled through that chapter) when you close it, and the "Read" button on an
+entry with an EPUB attachment resumes there next time — the same resume-on-reopen the PDF
+reader already had. `fond_bib::Progress` gained an optional `chapter_percent` field for
+this; PDF entries are unaffected (it stays unset).
+
 ## [0.6.1] "Quiet Stack" — 2026-08-21 — Startup crash fix
 
 **Fixed: Kartoteka could fail to start (`RefCell already borrowed` panic → abort) when

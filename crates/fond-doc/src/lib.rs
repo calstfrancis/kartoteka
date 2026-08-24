@@ -11,7 +11,8 @@ pub mod pdf;
 
 pub use epub::{
     extract_all as extract_epub, extract_metadata as extract_epub_metadata,
-    extract_text as extract_epub_text, open_book, EpubBook, EpubMetadata, TocEntry,
+    extract_text as extract_epub_text, open_book, strip_tags as strip_epub_tags, EpubBook,
+    EpubMetadata, TocEntry,
 };
 
 pub use annotation::{

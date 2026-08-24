@@ -1,11 +1,28 @@
 # EPUB reader/annotator — plan to reach PDF-reader parity
 
-Status: **Phases 1, 2, 3, and 5 done** (2026-08-20). Zoom (text-only font-size
-controls), in-chapter search (WebKit `FindController`, chapter-scoped per the
-recommendation below), and undo/redo (same snapshot idiom as the PDF reader) are all
-shipped. Phase 4 (reading position / progress tracking) and phase 6 (whole-book search,
-continuous-across-chapters) are not started — see below; both still depend on the
-product decisions in "Open questions" below.
+Status: **Phases 1, 2, 3, 4, and 5 done, phase 6 (search half) done** (2026-08-24).
+Zoom (text-only font-size controls), in-chapter search (WebKit `FindController`,
+chapter-scoped), undo/redo (same snapshot idiom as the PDF reader), reading-position
+resume, and whole-book search are all shipped. Continuous-across-chapters scroll (the
+other half of phase 6) is not started, per Cal's own call to skip it (see open question 2)
+— not blocked on anything, just not wanted.
+
+**2026-08-24 — Phase 4 + phase 6 (search) done.** Reading position: `fond_bib::Progress`
+gained an optional `chapter_percent` (0-100), so EPUB entries store `page`/`of` as
+1-based chapter index/count (reusing the PDF shape) plus the scroll fraction within that
+chapter — matches the plan's own recommendation exactly. Saved on reader close
+(`document.documentElement.scrollTop`/`scrollHeight`/`clientHeight` read via
+`evaluate_javascript`), restored via `window.scrollTo` after the first chapter load when
+opened from "Read" (an explicit annotation jump still wins, same precedence the PDF
+reader gives a specific page). Whole-book search: **overriding the plan's own
+chapter-scoped recommendation at Cal's explicit request** — a "Whole book" toggle next to
+the search bar switches from `FindController` to a lazily-built per-chapter plain-text
+index (`fond_doc::strip_epub_tags` over each already-extracted chapter file), searched
+case-insensitively and capped at 200 hits; each result is chapter + excerpt, click to
+jump (which hands the query to `FindController` once that chapter loads, so the match
+still gets WebKit's native highlight/scroll). See `kartoteka-ui-gtk/src/ui/app_window.rs`
+(`epub_search_whole_book`, `epub_chapter_texts`, `show_epub_reader`'s
+`start_progress`/`pending_scroll_percent`/`pending_search`).
 
 ## Done: Phase 1 + 2
 
@@ -116,32 +133,33 @@ Each item: what PDF has, what it'd take for EPUB, rough size.
 3. ✅ **Zoom + in-chapter search.** Done 2026-08-20. Zoom is text-only font-size
    controls (A-/A+); search is WebKit's own `FindController`, scoped to the current
    chapter per the recommendation below.
-4. **Reading position / progress tracking**, once the chapter+anchor shape is decided.
+4. ✅ **Reading position / progress tracking.** Done 2026-08-24 — percent + chapter
+   index, per the recommendation below.
 5. ✅ **Undo/redo.** Done 2026-08-20 — same snapshot-based idiom as the PDF reader's
    `ReaderState` (`push_epub_undo_snapshot`/`EpubReaderState.undo_stack`), covering
    add/edit/delete of a mark.
-6. **Whole-book search + continuous-across-chapters scroll** (if wanted at all) — last,
-   since both are the most speculative/highest-effort items and depend on product
-   decisions below.
+6. ✅ **Whole-book search.** Done 2026-08-24 — Cal explicitly asked for whole-book
+   over the chapter-scoped recommendation below; see the phase-6 note above.
+   **Continuous-across-chapters scroll** — the other half of this phase — stays not
+   started, per open question 2's recommendation to skip it.
 
 Each phase is independently shippable; nothing here blocks a dev build in between.
 
 ## Open questions for Cal (product decisions, not engineering ones)
 
-1. **Reading position precision.** Percent-scrolled-through-current-chapter (simple,
-   robust, slightly coarse) vs. a DOM-anchor/CFI-style position (precise, but more
-   fragile if a chapter's HTML changes — e.g. re-extracting a re-downloaded EPUB).
-   Recommendation: start with percent + chapter index; it's what most e-readers show
-   anyway ("12% through Chapter 4").
+1. ✅ **Reading position precision — decided 2026-08-24.** Percent + chapter index,
+   per the recommendation, implemented as `fond_bib::Progress.chapter_percent`.
 2. **Does "continuous" mean anything for EPUB**, or is chapter-by-chapter (as today)
    the right mental model, with just a nicer TOC sidebar? Recommendation: skip it
    (phase 6, low priority) unless it turns out to bother you in daily use — chapter
    navigation is already a completely normal e-reader pattern, unlike PDF where
-   page-by-page really is the awkward default.
-3. **Search scope**: current chapter only (cheap, matches "one chapter loaded at a
-   time" reality) vs. whole book (needs pre-extracting every chapter's text up front,
-   more like the PDF searcher). Recommendation: start chapter-scoped, revisit if it
-   feels wrong in use.
+   page-by-page really is the awkward default. **Still open** — not revisited.
+3. ✅ **Search scope — decided 2026-08-24, against the recommendation below.** Cal
+   asked for whole-book search explicitly rather than chapter-scoped-only; implemented
+   as a "Whole book" toggle alongside the existing chapter-scoped `FindController`
+   search, backed by a lazily-built per-chapter plain-text index. (Original
+   recommendation, kept for context: start chapter-scoped, revisit if it feels wrong in
+   use — superseded by Cal's direct request rather than by that trigger.)
 4. **Note-kind rendering**: PDF's "note" annotation kind is a small margin/inline
    marker tied to a typed comment. What should that look like injected into arbitrary
    EPUB HTML without breaking the source layout? Worth a quick visual sketch before

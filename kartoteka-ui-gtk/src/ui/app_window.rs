@@ -7247,13 +7247,29 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         }
         (None, Some((path, _filename, hash))) => {
             let read_button = gtk4::Button::with_label("Read");
-            read_button.set_tooltip_text(Some("Open the built-in EPUB reader"));
+            // Resumes at the saved reading position, if any — same Tier 2a resume the PDF
+            // "Read" button above already gives.
+            let start_progress = note.as_ref().and_then(|n| n.frontmatter.progress);
+            read_button.set_tooltip_text(Some(if start_progress.is_some() {
+                "Open the built-in EPUB reader, resuming where you left off"
+            } else {
+                "Open the built-in EPUB reader"
+            }));
             let state = state.clone();
             let widgets = widgets.clone();
             let key = key.clone();
             let title = title_text.to_string();
             read_button.connect_clicked(move |_| {
-                show_epub_reader(&state, &widgets, &key, &hash, &path, &title, None);
+                show_epub_reader(
+                    &state,
+                    &widgets,
+                    &key,
+                    &hash,
+                    &path,
+                    &title,
+                    None,
+                    start_progress,
+                );
             });
             actions.append(&read_button);
         }
@@ -7266,11 +7282,8 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 "Both a PDF and an EPUB are attached — choose which to open",
             ));
             let (popover, rows) = popover_menu(220);
-            let start_page = note
-                .as_ref()
-                .and_then(|n| n.frontmatter.progress)
-                .map(|p| p.page)
-                .unwrap_or(1);
+            let start_progress = note.as_ref().and_then(|n| n.frontmatter.progress);
+            let start_page = start_progress.map(|p| p.page).unwrap_or(1);
 
             let row = popover_button(&format!("PDF — {pdf_filename}"), false);
             {
@@ -7297,7 +7310,16 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 let title = title_text.to_string();
                 row.connect_clicked(move |_| {
                     popover.popdown();
-                    show_epub_reader(&state, &widgets, &key, &epub_hash, &epub_path, &title, None);
+                    show_epub_reader(
+                        &state,
+                        &widgets,
+                        &key,
+                        &epub_hash,
+                        &epub_path,
+                        &title,
+                        None,
+                        start_progress,
+                    );
                 });
             }
             rows.append(&row);
@@ -8324,6 +8346,7 @@ fn show_annotations_dialog(
                             &blob,
                             &title,
                             Some(&annotation_id),
+                            None,
                         )
                     }
                 });
@@ -10962,7 +10985,11 @@ fn show_pdf_reader(
             let s = state.borrow();
             if let Some(library) = s.library.as_ref() {
                 if let Ok(Some(mut note)) = library.load_note(&key) {
-                    note.frontmatter.progress = Some(fond_bib::Progress { page, of: count });
+                    note.frontmatter.progress = Some(fond_bib::Progress {
+                        page,
+                        of: count,
+                        chapter_percent: None,
+                    });
                     let _ = library.write_note(&key, &note);
                 }
             }
@@ -11115,6 +11142,96 @@ struct EpubReaderState {
     /// immediately before each mutation (add/edit/delete a mark).
     undo_stack: Vec<fond_bib::AnnotationSidecar>,
     redo_stack: Vec<fond_bib::AnnotationSidecar>,
+    /// Whole-book plain-text search index, one entry per `spine` chapter — built lazily
+    /// (see `epub_chapter_texts`) the first time whole-book search is used, from the
+    /// chapters already sitting in `cache_dir` (no re-opening the EPUB zip needed). `None`
+    /// until then; cheap to keep in memory afterward for the life of this reader window.
+    chapter_texts: Option<Vec<String>>,
+}
+
+/// Return this reader's per-chapter plain-text search index, building and caching it on
+/// first use by reading each `spine` chapter straight from `cache_dir` (already extracted
+/// when the reader opened) and stripping tags via `fond_doc::strip_epub_tags` — the same
+/// tag-stripping `fond_doc::extract_epub_text` uses for the library-wide search index, just
+/// kept per-chapter here instead of joined into one string, so a match can be attributed to
+/// a chapter to jump to.
+fn epub_chapter_texts(state: &Rc<RefCell<EpubReaderState>>) -> Vec<String> {
+    if let Some(texts) = &state.borrow().chapter_texts {
+        return texts.clone();
+    }
+    let (cache_dir, spine) = {
+        let r = state.borrow();
+        (r.cache_dir.clone(), r.spine.clone())
+    };
+    let texts: Vec<String> = spine
+        .iter()
+        .map(|chapter| {
+            std::fs::read_to_string(cache_dir.join(chapter))
+                .map(|xml| fond_doc::strip_epub_tags(&xml))
+                .unwrap_or_default()
+        })
+        .collect();
+    state.borrow_mut().chapter_texts = Some(texts.clone());
+    texts
+}
+
+/// One whole-book search hit: which chapter (`spine` index) it's in, and a short excerpt of
+/// surrounding context with the match itself in the returned range (`match_start`/`match_end`,
+/// byte offsets into `snippet`) so the results list can bold it.
+struct EpubWholeBookMatch {
+    chapter: usize,
+    snippet: String,
+    match_start: usize,
+    match_end: usize,
+}
+
+/// Search every chapter's plain-text index for `query` (case-insensitive substring), capped
+/// at `EPUB_WHOLE_BOOK_MATCH_LIMIT` total hits so a common word in a long book doesn't build
+/// an unbounded results list. Each hit carries ~50 characters of context on each side of the
+/// match, trimmed to whitespace boundaries where possible so excerpts don't start/end mid-word.
+const EPUB_WHOLE_BOOK_MATCH_LIMIT: usize = 200;
+
+fn epub_search_whole_book(
+    state: &Rc<RefCell<EpubReaderState>>,
+    query: &str,
+) -> Vec<EpubWholeBookMatch> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let texts = epub_chapter_texts(state);
+    let needle = query.to_lowercase();
+    let mut results = Vec::new();
+    'chapters: for (chapter, text) in texts.iter().enumerate() {
+        let haystack = text.to_lowercase();
+        let mut search_from = 0;
+        while let Some(rel_idx) = haystack[search_from..].find(&needle) {
+            let idx = search_from + rel_idx;
+            let end = idx + needle.len();
+            let ctx_start = text[..idx]
+                .char_indices()
+                .rev()
+                .take(50)
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let ctx_end = text[end..]
+                .char_indices()
+                .nth(50)
+                .map(|(i, _)| end + i)
+                .unwrap_or(text.len());
+            results.push(EpubWholeBookMatch {
+                chapter,
+                snippet: text[ctx_start..ctx_end].to_string(),
+                match_start: idx - ctx_start,
+                match_end: end - ctx_start,
+            });
+            if results.len() >= EPUB_WHOLE_BOOK_MATCH_LIMIT {
+                break 'chapters;
+            }
+            search_from = end;
+        }
+    }
+    results
 }
 
 /// Snapshot `reader`'s current annotations onto the undo stack and clear the redo stack —
@@ -11362,6 +11479,12 @@ fn epub_apply_highlights(
 ///
 /// `start_annotation_id`, if given, opens on that annotation's chapter and scrolls it into
 /// view once highlights are applied — the EPUB equivalent of the PDF reader's `start_page`.
+/// `start_progress`, if given (and `start_annotation_id` isn't — a specific annotation jump
+/// always wins), resumes at the entry's saved reading position: `progress.page - 1` as the
+/// starting chapter index, then `progress.chapter_percent` (if set) as a scroll-fraction
+/// restore once that chapter finishes loading. The EPUB equivalent of the PDF reader's own
+/// `start_page` resume, using the chapter+percent shape `fond_bib::Progress` gained for it.
+#[allow(clippy::too_many_arguments)]
 fn show_epub_reader(
     state: &Rc<RefCell<AppState>>,
     widgets: &Rc<Widgets>,
@@ -11370,6 +11493,7 @@ fn show_epub_reader(
     blob: &std::path::Path,
     title: &str,
     start_annotation_id: Option<&str>,
+    start_progress: Option<fond_bib::Progress>,
 ) {
     let window = &widgets.window;
 
@@ -11415,7 +11539,21 @@ fn show_epub_reader(
         .and_then(|id| annotations.annotations.iter().find(|a| a.id == id))
         .and_then(|a| a.chapter.as_deref())
         .and_then(|chapter| book.spine.iter().position(|p| p == chapter))
+        .or_else(|| {
+            start_progress.and_then(|p| {
+                let idx = (p.page as usize).saturating_sub(1);
+                (idx < book.spine.len()).then_some(idx)
+            })
+        })
         .unwrap_or(0);
+    // Only restore the scroll-within-chapter fraction when it's actually this chapter we're
+    // opening on — a stale percent from a since-shrunk book, or a jump that landed on a
+    // different chapter than `start_progress` recorded, would scroll to the wrong spot.
+    let start_percent = start_annotation_id
+        .is_none()
+        .then(|| start_progress.filter(|p| (p.page as usize).saturating_sub(1) == start_index))
+        .flatten()
+        .and_then(|p| p.chapter_percent);
 
     let reader = Rc::new(RefCell::new(EpubReaderState {
         cache_dir,
@@ -11424,6 +11562,7 @@ fn show_epub_reader(
         annotations,
         undo_stack: Vec::new(),
         redo_stack: Vec::new(),
+        chapter_texts: None,
     }));
 
     let dialog = adw::Window::new();
@@ -11462,13 +11601,14 @@ fn show_epub_reader(
     hint.set_margin_top(4);
     hint.set_margin_bottom(4);
 
-    // In-chapter search: WebKit's own `FindController` — highlights and cycles matches in
-    // the currently loaded chapter, same as Ctrl+F in a browser. Chapter-scoped rather than
-    // whole-book (per EPUB-READER-PLAN.md's recommendation: cheap, matches "one chapter
-    // loaded at a time" reality; whole-book would need pre-extracting every chapter's text).
+    // Search: WebKit's own `FindController` for in-chapter search (highlights/cycles matches
+    // in the currently loaded chapter, same as Ctrl+F in a browser) — plus a whole-book mode
+    // (`whole_book_toggle`) that searches every chapter's plain-text index
+    // (`epub_search_whole_book`) and lists results to jump to, since `FindController` itself
+    // only ever sees the one chapter that's actually loaded.
     let search_toggle = gtk4::ToggleButton::new();
     search_toggle.set_icon_name("edit-find-symbolic");
-    search_toggle.set_tooltip_text(Some("Search this chapter (Ctrl+F)"));
+    search_toggle.set_tooltip_text(Some("Search (Ctrl+F)"));
     let search_bar_entry = gtk4::SearchEntry::new();
     search_bar_entry.set_placeholder_text(Some("Search this chapter"));
     search_bar_entry.set_hexpand(true);
@@ -11476,21 +11616,44 @@ fn show_epub_reader(
     search_prev.set_tooltip_text(Some("Previous match"));
     let search_next = gtk4::Button::from_icon_name("go-down-symbolic");
     search_next.set_tooltip_text(Some("Next match"));
+    let whole_book_toggle = gtk4::ToggleButton::with_label("Whole book");
+    whole_book_toggle.add_css_class("flat");
+    whole_book_toggle.set_tooltip_text(Some(
+        "Search every chapter instead of just the one currently open",
+    ));
     let search_count = gtk4::Label::new(None);
     search_count.add_css_class("dim-label");
     search_count.add_css_class("caption");
     let search_row = gtk4::Box::new(Orientation::Horizontal, 6);
     search_row.set_margin_top(6);
-    search_row.set_margin_bottom(6);
     search_row.set_margin_start(8);
     search_row.set_margin_end(8);
     search_row.append(&search_bar_entry);
     search_row.append(&search_count);
     search_row.append(&search_prev);
     search_row.append(&search_next);
+    search_row.append(&whole_book_toggle);
+
+    // Whole-book results: chapter + excerpt, the match bolded via Pango markup. Only shown
+    // (and only populated) while `whole_book_toggle` is active.
+    let results_list = gtk4::ListBox::new();
+    results_list.set_selection_mode(gtk4::SelectionMode::None);
+    let results_scroll = gtk4::ScrolledWindow::new();
+    results_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+    results_scroll.set_min_content_height(160);
+    results_scroll.set_max_content_height(240);
+    results_scroll.set_propagate_natural_height(true);
+    results_scroll.set_child(Some(&results_list));
+    let results_revealer = gtk4::Revealer::new();
+    results_revealer.set_reveal_child(false);
+    results_revealer.set_child(Some(&results_scroll));
+
+    let search_container = gtk4::Box::new(Orientation::Vertical, 0);
+    search_container.append(&search_row);
+    search_container.append(&results_revealer);
     let search_revealer = gtk4::Revealer::new();
     search_revealer.set_reveal_child(false);
-    search_revealer.set_child(Some(&search_row));
+    search_revealer.set_child(Some(&search_container));
 
     let content = gtk4::Box::new(Orientation::Vertical, 0);
     content.append(&hint);
@@ -11632,6 +11795,16 @@ fn show_epub_reader(
     // left `None` for plain prev/next/TOC navigation, which just lands at the top.
     let pending_scroll: Rc<RefCell<Option<String>>> =
         Rc::new(RefCell::new(start_annotation_id.map(|s| s.to_string())));
+
+    // Reading-position resume: consumed by the very first `load-changed` finish (see below),
+    // never set again afterward, so it can't fight a later prev/next/TOC/search jump.
+    let pending_scroll_percent: Rc<RefCell<Option<u8>>> = Rc::new(RefCell::new(start_percent));
+
+    // Whole-book search: set right before navigating to a result's chapter, so the
+    // `load-changed` handler below can hand the query to WebKit's `FindController` once that
+    // chapter has actually finished loading — highlighting/scrolling to the match the same
+    // way in-chapter search already does, just arriving at the right chapter first.
+    let pending_search: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
     let rebuild_notes_cell: RebuildCell = Rc::new(RefCell::new(None));
     {
@@ -11963,13 +12136,17 @@ fn show_epub_reader(
         redo_button.connect_clicked(move |_| epub_redo());
     }
 
-    // In-chapter search wiring: toggling `search_toggle` reveals the bar and focuses the
-    // entry; turning it off clears the query and WebKit's highlight state
-    // (`search_finish`) rather than leaving stale highlights visible.
+    // Search wiring: toggling `search_toggle` reveals the bar and focuses the entry; turning
+    // it off clears the query, WebKit's highlight state (`search_finish`), the whole-book
+    // results list, and drops out of whole-book mode — so reopening search always starts
+    // from the same clean state rather than leaving stale results/highlights visible.
     {
         let search_revealer = search_revealer.clone();
         let search_bar_entry = search_bar_entry.clone();
         let search_count = search_count.clone();
+        let results_list = results_list.clone();
+        let results_revealer = results_revealer.clone();
+        let whole_book_toggle = whole_book_toggle.clone();
         let view = web_view.clone();
         search_toggle.connect_toggled(move |btn| {
             let on = btn.is_active();
@@ -11979,6 +12156,11 @@ fn show_epub_reader(
             } else {
                 search_bar_entry.set_text("");
                 search_count.set_text("");
+                whole_book_toggle.set_active(false);
+                results_revealer.set_reveal_child(false);
+                while let Some(child) = results_list.first_child() {
+                    results_list.remove(&child);
+                }
                 if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) {
                     fc.search_finish();
                 }
@@ -11986,10 +12168,117 @@ fn show_epub_reader(
         });
     }
     {
+        let search_bar_entry = search_bar_entry.clone();
+        let search_count = search_count.clone();
+        let results_list = results_list.clone();
+        let results_revealer = results_revealer.clone();
+        let view = web_view.clone();
+        whole_book_toggle.connect_toggled(move |btn| {
+            search_bar_entry.set_placeholder_text(Some(if btn.is_active() {
+                "Search the whole book"
+            } else {
+                "Search this chapter"
+            }));
+            search_bar_entry.set_text("");
+            search_count.set_text("");
+            results_revealer.set_reveal_child(false);
+            while let Some(child) = results_list.first_child() {
+                results_list.remove(&child);
+            }
+            if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) {
+                fc.search_finish();
+            }
+            search_bar_entry.grab_focus();
+        });
+    }
+    {
         let view = web_view.clone();
         let search_count = search_count.clone();
+        let whole_book_toggle = whole_book_toggle.clone();
+        let results_list = results_list.clone();
+        let results_revealer = results_revealer.clone();
+        let reader = reader.clone();
+        let prev = prev.clone();
+        let next = next.clone();
+        let chapter_label = chapter_label.clone();
+        let pending_search = pending_search.clone();
         search_bar_entry.connect_search_changed(move |entry| {
             let text = entry.text();
+
+            if whole_book_toggle.is_active() {
+                while let Some(child) = results_list.first_child() {
+                    results_list.remove(&child);
+                }
+                if text.is_empty() {
+                    search_count.set_text("");
+                    results_revealer.set_reveal_child(false);
+                    return;
+                }
+                let matches = epub_search_whole_book(&reader, &text);
+                if matches.is_empty() {
+                    search_count.set_text("No matches");
+                    results_revealer.set_reveal_child(false);
+                    return;
+                }
+                search_count.set_text(&if matches.len() >= EPUB_WHOLE_BOOK_MATCH_LIMIT {
+                    format!("{EPUB_WHOLE_BOOK_MATCH_LIMIT}+ found")
+                } else {
+                    format!("{} found", matches.len())
+                });
+                let spine_len = reader.borrow().spine.len();
+                for m in &matches {
+                    let before = glib::markup_escape_text(&m.snippet[..m.match_start]);
+                    let hit = glib::markup_escape_text(&m.snippet[m.match_start..m.match_end]);
+                    let after = glib::markup_escape_text(&m.snippet[m.match_end..]);
+                    let row = gtk4::ListBoxRow::new();
+                    let box_ = gtk4::Box::new(Orientation::Vertical, 2);
+                    box_.set_margin_top(6);
+                    box_.set_margin_bottom(6);
+                    box_.set_margin_start(6);
+                    box_.set_margin_end(6);
+                    let heading = gtk4::Label::new(Some(&format!(
+                        "Chapter {} of {}",
+                        m.chapter + 1,
+                        spine_len
+                    )));
+                    heading.set_xalign(0.0);
+                    heading.add_css_class("dim-label");
+                    heading.add_css_class("caption-heading");
+                    box_.append(&heading);
+                    let excerpt = gtk4::Label::new(None);
+                    excerpt.set_markup(&format!("…{before}<b>{hit}</b>{after}…"));
+                    excerpt.set_xalign(0.0);
+                    excerpt.set_wrap(true);
+                    excerpt.set_ellipsize(gtk4::pango::EllipsizeMode::None);
+                    box_.append(&excerpt);
+                    row.set_child(Some(&box_));
+
+                    let click = gtk4::GestureClick::new();
+                    let reader = reader.clone();
+                    let view = view.clone();
+                    let prev = prev.clone();
+                    let next = next.clone();
+                    let chapter_label = chapter_label.clone();
+                    let pending_search = pending_search.clone();
+                    let query = text.to_string();
+                    let chapter_idx = m.chapter;
+                    click.connect_released(move |_, _n_press, _x, _y| {
+                        let target = {
+                            let r = reader.borrow();
+                            r.spine.get(chapter_idx).cloned()
+                        };
+                        let Some(target) = target else { return };
+                        *pending_search.borrow_mut() = Some(query.clone());
+                        epub_go_to(&reader, &view, &prev, &next, &chapter_label, &target);
+                    });
+                    row.add_controller(click);
+                    results_list.append(&row);
+                }
+                results_revealer.set_reveal_child(true);
+                return;
+            }
+
+            results_revealer.set_reveal_child(false);
             let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) else {
                 return;
             };
@@ -12005,7 +12294,11 @@ fn show_epub_reader(
     }
     {
         let view = web_view.clone();
+        let whole_book_toggle = whole_book_toggle.clone();
         search_prev.connect_clicked(move |_| {
+            if whole_book_toggle.is_active() {
+                return;
+            }
             if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) {
                 fc.search_previous();
             }
@@ -12013,7 +12306,11 @@ fn show_epub_reader(
     }
     {
         let view = web_view.clone();
+        let whole_book_toggle = whole_book_toggle.clone();
         search_next.connect_clicked(move |_| {
+            if whole_book_toggle.is_active() {
+                return;
+            }
             if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&view) {
                 fc.search_next();
             }
@@ -12021,12 +12318,18 @@ fn show_epub_reader(
     }
     if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(&web_view) {
         let count_label = search_count.clone();
+        let toggle = whole_book_toggle.clone();
         fc.connect_found_text(move |_, count| {
-            count_label.set_text(&format!("{count} found"));
+            if !toggle.is_active() {
+                count_label.set_text(&format!("{count} found"));
+            }
         });
         let count_label = search_count.clone();
+        let toggle = whole_book_toggle.clone();
         fc.connect_failed_to_find_text(move |_| {
-            count_label.set_text("No matches");
+            if !toggle.is_active() {
+                count_label.set_text("No matches");
+            }
         });
     }
 
@@ -12097,14 +12400,33 @@ fn show_epub_reader(
     // Re-apply saved highlights after every chapter load (initial load, TOC jump,
     // prev/next, a notes-sidebar jump — all funnel through `epub_go_to`'s `load_uri`, so
     // one handler here covers all of them), consuming `pending_scroll` if the navigation
-    // that triggered this load set one.
+    // that triggered this load set one. Also consumes `pending_scroll_percent` (reading-
+    // position resume, first load only) and `pending_search` (a whole-book search result's
+    // chapter jump, handed to WebKit's own `FindController` once the page is actually there).
     {
         let reader = reader.clone();
         let pending_scroll = pending_scroll.clone();
+        let pending_scroll_percent = pending_scroll_percent.clone();
+        let pending_search = pending_search.clone();
         web_view.connect_load_changed(move |view, event| {
             if event == webkit6::LoadEvent::Finished {
                 let scroll_to = pending_scroll.borrow_mut().take();
                 epub_apply_highlights(view, &reader, scroll_to.as_deref());
+                if let Some(percent) = pending_scroll_percent.borrow_mut().take() {
+                    let script = format!(
+                        "window.scrollTo(0, Math.round((document.documentElement.scrollHeight - document.documentElement.clientHeight) * {}));",
+                        (percent.min(100) as f64) / 100.0
+                    );
+                    view.evaluate_javascript(&script, None, None, gio::Cancellable::NONE, |_| {});
+                }
+                if let Some(query) = pending_search.borrow_mut().take() {
+                    if let Some(fc) = webkit6::prelude::WebViewExt::find_controller(view) {
+                        let options = (webkit6::FindOptions::CASE_INSENSITIVE
+                            | webkit6::FindOptions::WRAP_AROUND)
+                            .bits();
+                        fc.search(&query, options, 1000);
+                    }
+                }
             }
         });
     }
@@ -12250,6 +12572,47 @@ fn show_epub_reader(
                     }
                 },
             );
+        });
+    }
+
+    // Save the current chapter+scroll-percent back to the entry's Progress on close, so the
+    // next "Read" resumes where this session left off — the EPUB half of the same resume
+    // Tier 2a already gives the PDF reader (see its own `connect_close_request` above).
+    // Reading `document.documentElement.scrollTop`/`scrollHeight`/`clientHeight` is async
+    // (`evaluate_javascript`), so this returns `Propagation::Proceed` immediately and writes
+    // the note in the callback — nothing after that write depends on the dialog still being
+    // open, it just needs `state`/`key`, both cheap `Rc`/`String` clones.
+    {
+        let state = state.clone();
+        let key = key.to_string();
+        let reader = reader.clone();
+        let view = web_view.clone();
+        dialog.connect_close_request(move |_| {
+            let (chapter_num, chapter_count) = {
+                let r = reader.borrow();
+                (r.index as u32 + 1, r.spine.len() as u32)
+            };
+            let state = state.clone();
+            let key = key.clone();
+            let script = "(function() {\n  var el = document.documentElement;\n  var range = el.scrollHeight - el.clientHeight;\n  return range > 0 ? Math.round((el.scrollTop / range) * 100) : 0;\n})()";
+            view.evaluate_javascript(script, None, None, gio::Cancellable::NONE, move |result| {
+                let percent: u8 = result
+                    .ok()
+                    .map(|v| v.to_int32().clamp(0, 100) as u8)
+                    .unwrap_or(0);
+                let s = state.borrow();
+                if let Some(library) = s.library.as_ref() {
+                    if let Ok(Some(mut note)) = library.load_note(&key) {
+                        note.frontmatter.progress = Some(fond_bib::Progress {
+                            page: chapter_num,
+                            of: chapter_count,
+                            chapter_percent: Some(percent),
+                        });
+                        let _ = library.write_note(&key, &note);
+                    }
+                }
+            });
+            glib::Propagation::Proceed
         });
     }
 
@@ -12501,7 +12864,11 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
             let page: Option<u32> = progress_page.text().trim().parse().ok();
             let of: Option<u32> = progress_of.text().trim().parse().ok();
             updated.frontmatter.progress = match (page, of) {
-                (Some(page), Some(of)) => Some(fond_bib::Progress { page, of }),
+                (Some(page), Some(of)) => Some(fond_bib::Progress {
+                    page,
+                    of,
+                    chapter_percent: None,
+                }),
                 _ => None,
             };
 

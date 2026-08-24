@@ -183,7 +183,9 @@ pub fn extract_text(path: &Path) -> Result<String> {
 /// Skips `<script>`/`<style>` contents (not reader-visible text). Malformed markup degrades
 /// to a best-effort partial result (whatever text was collected before the parse error)
 /// rather than an error — a slightly incomplete search index entry beats no chapter at all.
-fn strip_tags(xml: &str) -> String {
+/// Public so a reader UI can build a whole-book search index from chapter files it has
+/// already extracted to disk, without re-opening the EPUB zip via `extract_text`.
+pub fn strip_tags(xml: &str) -> String {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut out = String::new();

@@ -34,11 +34,19 @@ pub struct Attachment {
 }
 
 /// Coarse reading position (§8). Pairs with `read-status: reading`.
+///
+/// For a PDF, `page`/`of` are the whole story. For an EPUB — which has no fixed page
+/// grid — `page`/`of` hold the 1-based chapter index and chapter count instead, and
+/// `chapter_percent` (0-100) adds the scroll position within that chapter, so the reader
+/// can resume at "12% through Chapter 4" rather than just "Chapter 4". `None` for a PDF,
+/// where `page` alone is already precise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Progress {
     pub page: u32,
     pub of: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_percent: Option<u8>,
 }
 
 /// Per-entry citation preferences (§13). `preferred_style` is advisory to export; `short`
@@ -233,7 +241,11 @@ mod tests {
         let note = Note::parse(text, &p()).unwrap();
         assert_eq!(
             note.frontmatter.progress,
-            Some(Progress { page: 112, of: 420 })
+            Some(Progress {
+                page: 112,
+                of: 420,
+                chapter_percent: None
+            })
         );
         assert_eq!(
             note.frontmatter.cite.short.as_deref(),
