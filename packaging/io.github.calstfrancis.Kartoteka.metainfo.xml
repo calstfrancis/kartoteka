@@ -46,6 +46,21 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.7.0" date="2026-08-24">
+      <description>
+        <p>0.7.0 "Whole Volume" — whole-book EPUB search, and the EPUB reader now
+        remembers where you left off.</p>
+        <ul>
+          <li>The EPUB reader's search bar has a new "Whole book" toggle: instead of
+          searching only the currently open chapter, it searches every chapter at once
+          and lists each match as a chapter and excerpt you can click to jump straight
+          to.</li>
+          <li>The EPUB reader now saves your reading position (chapter and scroll
+          position within it) when you close it, and resumes there next time — matching
+          the PDF reader's existing resume behaviour.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.6.1" date="2026-08-21">
       <description>
         <p>0.6.1 "Quiet Stack" — fixes a startup crash on opening a library.</p>

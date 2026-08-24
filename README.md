@@ -10,7 +10,7 @@ opaque database. The search index and metadata cache are disposable and rebuild 
 files with one command. `library.yml` is regenerated on every write, so
 `#bibliography("library.yml")` in Typst is always current.
 
-> Status: **0.6.0 "Deep Stacks"**, released 2026-08-20. A full GTK4/libadwaita desktop app
+> Status: **0.7.0 "Whole Volume"**, released 2026-08-24. A full GTK4/libadwaita desktop app
 > (`kartoteka-ui-gtk`) ships alongside the headless CLI, distributed as a flatpak — see
 > **Install** below. See `docs/ROADMAP.md` for what's still ahead.
 
@@ -24,7 +24,7 @@ files with one command. `library.yml` is regenerated on every write, so
 - Import from Zotero (BetterBibTeX and the Zotero SQLite store), or acquire references by
   DOI, arXiv, or ISBN. Drop a PDF or EPUB in and it identifies itself.
 - Built-in PDF and EPUB readers with highlighting, underline/strikeout, freestanding
-  notes, in-document search, and undo/redo.
+  notes, in-document and whole-book search, reading-position resume, and undo/redo.
 - Typed relations and a knowledge-graph layer — link entries to people, concepts, and
   schools of thought, not just to each other — visualized as an interactive relations
   map, either centered on one entry or across the whole library, with most-connected/

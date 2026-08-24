@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [dev] — EPUB reader: whole-book search and reading-position resume
+## [0.7.0] "Whole Volume" — 2026-08-24 — Whole-book EPUB search and reading-position resume
 
 **Whole-book search in the EPUB reader.** The search bar's new "Whole book" toggle
 switches from the existing chapter-scoped `Ctrl+F` search (which only ever sees the one
