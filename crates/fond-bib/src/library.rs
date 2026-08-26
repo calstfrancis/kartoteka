@@ -11,6 +11,7 @@ use hayagriva::Library as HLibrary;
 use crate::ai::AiMetadata;
 use crate::annotation::AnnotationSidecar;
 use crate::collection::Collection;
+use crate::custom_field::CustomFieldDefs;
 use crate::entry::{self, ParsedEntry};
 use crate::error::{BibError, Result};
 use crate::key;
@@ -30,6 +31,7 @@ pub const NODES_DIR: &str = "nodes";
 pub const ATTACHMENTS_DIR: &str = "attachments";
 pub const DERIVED_DIR: &str = ".kartoteka";
 pub const LIBRARY_YML: &str = "library.yml";
+pub const CUSTOM_FIELDS_YML: &str = "custom-fields.yml";
 
 const GITIGNORE_BODY: &str = "attachments/\n.kartoteka/\n";
 
@@ -106,6 +108,10 @@ impl Library {
 
     pub fn library_yml_path(&self) -> PathBuf {
         self.root.join(LIBRARY_YML)
+    }
+
+    pub fn custom_fields_path(&self) -> PathBuf {
+        self.root.join(CUSTOM_FIELDS_YML)
     }
 
     fn dir_stems(&self, dir: &str, ext: &str) -> Result<Vec<String>> {
@@ -246,7 +252,7 @@ impl Library {
                 slug,
             }),
             Target::Entry(key) | Target::Dangling(key) => Ok(RelationHost::Note {
-                note: self.load_note(&key)?.unwrap_or_default(),
+                note: Box::new(self.load_note(&key)?.unwrap_or_default()),
                 key,
             }),
         }
@@ -261,9 +267,12 @@ impl Library {
                 node: self.load_node(&slug)?,
                 slug,
             })),
-            Target::Entry(key) | Target::Dangling(key) => Ok(self
-                .load_note(&key)?
-                .map(|note| RelationHost::Note { key, note })),
+            Target::Entry(key) | Target::Dangling(key) => {
+                Ok(self.load_note(&key)?.map(|note| RelationHost::Note {
+                    key,
+                    note: Box::new(note),
+                }))
+            }
         }
     }
 
@@ -633,7 +642,12 @@ impl Library {
                     continue;
                 }
                 let id = (Predicate::Related, target.as_str());
-                if !note.frontmatter.relations.iter().any(|r| r.identity() == id) {
+                if !note
+                    .frontmatter
+                    .relations
+                    .iter()
+                    .any(|r| r.identity() == id)
+                {
                     note.frontmatter
                         .relations
                         .push(Relation::forward(Predicate::Related, target));
@@ -686,6 +700,25 @@ impl Library {
         Ok(path)
     }
 
+    /// Load the library-wide custom field definitions. An absent file (no custom fields
+    /// defined yet — the common case) is not an error, just an empty list.
+    pub fn load_custom_field_defs(&self) -> Result<CustomFieldDefs> {
+        let path = self.custom_fields_path();
+        if !path.is_file() {
+            return Ok(CustomFieldDefs::default());
+        }
+        let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
+        CustomFieldDefs::parse(&text, &path)
+    }
+
+    /// Write the library-wide custom field definitions.
+    pub fn save_custom_field_defs(&self, defs: &CustomFieldDefs) -> Result<PathBuf> {
+        let path = self.custom_fields_path();
+        ensure_parent(&path)?;
+        fs::write(&path, defs.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
     pub fn load_collection(&self, slug: &str) -> Result<Collection> {
         let path = self.collection_path(slug);
         let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
@@ -698,6 +731,31 @@ impl Library {
         ensure_parent(&path)?;
         fs::write(&path, collection.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
+    }
+
+    /// Add `key` to the collection at `slug`, if it isn't already a member. A no-op (not an
+    /// error) if it's already there — matches the idempotent load-mutate-save pattern the
+    /// membership dialog and `delete_entry`/merge already use inline, factored out here so a
+    /// single-collection assignment (e.g. dragging an entry onto a collection row) doesn't
+    /// need to reimplement it.
+    pub fn add_to_collection(&self, slug: &str, key: &str) -> Result<()> {
+        let mut coll = self.load_collection(slug)?;
+        if !coll.keys.iter().any(|k| k == key) {
+            coll.keys.push(key.to_string());
+            self.save_collection(slug, &coll)?;
+        }
+        Ok(())
+    }
+
+    /// Remove `key` from the collection at `slug`, if present. A no-op (not an error) if it
+    /// isn't there. See `add_to_collection`.
+    pub fn remove_from_collection(&self, slug: &str, key: &str) -> Result<()> {
+        let mut coll = self.load_collection(slug)?;
+        if coll.keys.iter().any(|k| k == key) {
+            coll.keys.retain(|k| k != key);
+            self.save_collection(slug, &coll)?;
+        }
+        Ok(())
     }
 
     /// Delete a collection file. Missing is not an error.
@@ -782,6 +840,26 @@ impl Library {
             }
         }
 
+        Ok(report)
+    }
+
+    /// Delete a knowledge-graph node: strip every relation edge (forward or inverse) naming
+    /// it from every other host, then remove `nodes/<slug>.md`. The simpler subset of
+    /// `delete_entry`'s work — a node has no attachments or collection membership — reusing
+    /// the same `strip_all_edges_to` cleanup (it already spans notes ∪ nodes) and the same
+    /// `DeleteReport` shape, with `collections_updated`/`blobs_removed` always empty. The
+    /// search index is derived state, so the caller reindexes afterward.
+    pub fn delete_node(&self, slug: &str) -> Result<DeleteReport> {
+        let mut report = DeleteReport {
+            relations_cleared: self.strip_all_edges_to(slug)?,
+            ..Default::default()
+        };
+        let path = self.node_path(slug);
+        match fs::remove_file(&path) {
+            Ok(()) => report.files_removed.push(path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(BibError::io(&path, e)),
+        }
         Ok(report)
     }
 
@@ -988,6 +1066,61 @@ impl Library {
         let mut dups: Vec<Vec<String>> = groups.into_values().filter(|g| g.len() > 1).collect();
         dups.sort();
         Ok(dups)
+    }
+
+    /// Fuzzy duplicate candidates: entries `find_duplicates` didn't already group by exact
+    /// DOI/ISBN/title+year, but whose titles are still highly similar (Dice bigram
+    /// coefficient ≥ 0.82) with compatible years (equal, or either missing) — catches a typo
+    /// or a differently-punctuated subtitle the exact bucketing above would miss. Returned
+    /// separately, not merged into `find_duplicates`'s result, since these are guesses rather
+    /// than certainties — the caller should present them as "possible" duplicates a user can
+    /// dismiss, not merge automatically.
+    pub fn find_duplicates_fuzzy(&self) -> Result<Vec<Vec<String>>> {
+        let exact: HashSet<String> = self.find_duplicates()?.into_iter().flatten().collect();
+
+        let mut items: Vec<(String, String, Option<i32>)> = Vec::new();
+        for key in self.keys_sorted()? {
+            if exact.contains(&key) {
+                continue;
+            }
+            let parsed = self.load_entry(&key)?;
+            let Some(title) = entry::title_string(&parsed.entry) else {
+                continue;
+            };
+            let folded = crate::key::ascii_fold(&title);
+            if folded.trim().is_empty() {
+                continue;
+            }
+            items.push((key, folded, entry::year(&parsed.entry)));
+        }
+
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        let mut used = vec![false; items.len()];
+        for i in 0..items.len() {
+            if used[i] {
+                continue;
+            }
+            let mut group = vec![items[i].0.clone()];
+            for (j, item) in items.iter().enumerate().skip(i + 1) {
+                if used[j] {
+                    continue;
+                }
+                let years_compatible = match (items[i].2, item.2) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                };
+                if years_compatible && title_dice_similarity(&items[i].1, &item.1) >= 0.82 {
+                    group.push(item.0.clone());
+                    used[j] = true;
+                }
+            }
+            if group.len() > 1 {
+                used[i] = true;
+                groups.push(group);
+            }
+        }
+        groups.sort();
+        Ok(groups)
     }
 
     /// Merge a duplicate group into `into`: fold the others' tags, attachments,
@@ -1329,7 +1462,7 @@ pub struct UsageMap {
 /// edge algorithms (`set_relations`, `reconcile_relations`, …) operate uniformly over the
 /// notes ∪ nodes universe without caring which file type backs a given id.
 enum RelationHost {
-    Note { key: String, note: Note },
+    Note { key: String, note: Box<Note> },
     Node { slug: String, node: Node },
 }
 
@@ -1531,5 +1664,49 @@ impl FsckReport {
             + self.relations.orphaned.len()
             + self.relations.dangling_targets.len()
             + self.dangling_project_docs.len()
+    }
+}
+
+/// Dice's coefficient over character bigrams — a cheap, dependency-free string-similarity
+/// measure good at catching typos and minor punctuation/subtitle differences between two
+/// already-folded titles. 1.0 for identical strings, 0.0 for no shared bigrams; falls back to
+/// exact-equality for strings too short to have any bigrams (single characters).
+fn title_dice_similarity(a: &str, b: &str) -> f64 {
+    let bigrams = |s: &str| -> HashSet<(char, char)> {
+        let chars: Vec<char> = s.chars().collect();
+        chars.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let ba = bigrams(a);
+    let bb = bigrams(b);
+    if ba.is_empty() || bb.is_empty() {
+        return if a == b { 1.0 } else { 0.0 };
+    }
+    let common = ba.intersection(&bb).count();
+    (2.0 * common as f64) / (ba.len() + bb.len()) as f64
+}
+
+#[cfg(test)]
+mod fuzzy_duplicate_tests {
+    use super::title_dice_similarity;
+
+    #[test]
+    fn identical_titles_score_one() {
+        assert_eq!(
+            title_dice_similarity("the abolition of man", "the abolition of man"),
+            1.0
+        );
+    }
+
+    #[test]
+    fn minor_typo_scores_high() {
+        // "abolision" vs "abolition" — a single transposed/misspelled letter.
+        let sim = title_dice_similarity("the abolision of man", "the abolition of man");
+        assert!(sim >= 0.82, "expected >= 0.82, got {sim}");
+    }
+
+    #[test]
+    fn unrelated_titles_score_low() {
+        let sim = title_dice_similarity("the abolition of man", "war and peace");
+        assert!(sim < 0.5, "expected < 0.5, got {sim}");
     }
 }

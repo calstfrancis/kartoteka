@@ -46,5 +46,164 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.7.0" date="2026-08-24">
+      <description>
+        <p>0.7.0 "Whole Volume" — whole-book EPUB search, and the EPUB reader now
+        remembers where you left off.</p>
+        <ul>
+          <li>The EPUB reader's search bar has a new "Whole book" toggle: instead of
+          searching only the currently open chapter, it searches every chapter at once
+          and lists each match as a chapter and excerpt you can click to jump straight
+          to.</li>
+          <li>The EPUB reader now saves your reading position (chapter and scroll
+          position within it) when you close it, and resumes there next time — matching
+          the PDF reader's existing resume behaviour.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.6.1" date="2026-08-21">
+      <description>
+        <p>0.6.1 "Quiet Stack" — fixes a startup crash on opening a library.</p>
+        <ul>
+          <li>Fixed a <code>RefCell already borrowed</code> panic that could abort the app
+          on startup when opening a library with a saved column order or a custom field
+          defined.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.6.0" date="2026-08-20">
+      <description>
+        <p>0.6.0 "Deep Stacks" — optional spreadsheet columns, bulk actions, smarter
+        duplicate detection, and a whole-library relations map.</p>
+        <ul>
+          <li>The entries spreadsheet can now show optional columns for Tags, Status, and
+          any custom field you've defined, via a new "Columns…" dialog — off by default.
+          Column order and which optional columns are visible are both remembered across
+          sessions.</li>
+          <li>A "Select multiple" toggle adds a checkbox column and a bulk-action bar for
+          tagging, adding to a collection, or deleting several entries at once.</li>
+          <li>Custom fields gained a fourth type, Date, with a calendar picker.</li>
+          <li>"Find duplicates…" now also lists "possible duplicates" caught by title
+          similarity alone, alongside the existing exact DOI/ISBN/title+year matches.</li>
+          <li>A new whole-library relations map (menu → "Relations map (whole
+          library)…") shows everything connected to everything at once, with a sidebar
+          ranking the most-connected and most-cited entries.</li>
+          <li>The EPUB reader gained in-chapter search (Ctrl+F) and undo/redo
+          (Ctrl+Z/Ctrl+Shift+Z), matching the PDF reader.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.5.1" date="2026-08-19">
+      <description>
+        <p>0.5.1 "Sound Index" — fixes a rare, intermittent search-index rebuild failure, and
+        updates dependencies to close two real denial-of-service security advisories found in
+        a routine dependency audit.</p>
+      </description>
+    </release>
+    <release version="0.5.0" date="2026-08-14">
+      <description>
+        <p>0.5.0 "Cross Reference" — nested collections, drag-to-organize, and a detail pane
+        you edit in place.</p>
+        <ul>
+          <li>Text selection (and highlighting/underlining/strikeout) is now line-aware — a
+          straight vertical drag through a paragraph selects each whole in-between line, not
+          just the narrow column under the pointer.</li>
+          <li>Collections can nest: give a collection a parent and the sidebar shows the
+          resulting tree. Drag an entry from the list straight onto a collection to add it
+          there.</li>
+          <li>The detail pane is directly editable — Type, Title, Author(s), Year,
+          Publisher, DOI, ISBN, Tags, Status, and Rating all save on Enter or on click-away,
+          no dialog required.</li>
+          <li>Each entry in the list now shows a small icon when a PDF and/or EPUB is
+          available to open.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-08-14">
+      <description>
+        <p>0.4.0 "Quiet Margin" — a big PDF reader usability pass, and a hang fixed.</p>
+        <ul>
+          <li>Continuous scrolling is now the reader's default mode, and the Contents sidebar
+          is user-resizable instead of pinned to the width of the longest chapter title.</li>
+          <li>Right-click a highlight, underline, strikeout, or note to edit its note or
+          delete it, or right-click blank page space to add a new note — replacing the old
+          "This page" dropdown. A new Notes sidebar lists every note and highlight in the
+          whole document, readable at a glance, not just an on-page icon.</li>
+          <li>A new "Select text" drag mode copies the covered text to the clipboard instead
+          of creating an annotation. Highlight and search-match colours are also more
+          visible.</li>
+          <li>Page navigation and zoom moved to a new bottom status bar, freeing the
+          headerbar's title to show the document's own name.</li>
+          <li>Fixed: opening a PDF, or switching into continuous-scroll mode, could hang the
+          whole window for the document's full render time — page layout is now instant and
+          each page's image renders incrementally afterward.</li>
+          <li>Fixed: launching Kartoteka while it was already running opened a second window
+          instead of raising the existing one.</li>
+          <li>Dragging a PDF onto the window to add it now explains a failed drop instead of
+          silently doing nothing.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-08-13">
+      <description>
+        <p>0.3.0 "Loose Leaf" — annotations you can read outside Kartoteka, and proper support
+        for entries with more than one readable attachment.</p>
+        <ul>
+          <li>An "Export…" button in the "Annotations…" dialog renders an entry's whole
+          annotation sidecar as a portable Markdown file — one heading per PDF page or EPUB
+          chapter, the highlighted text quoted, then your note below it.</li>
+          <li>An entry with both a PDF and an EPUB attached now gets a "Read" chooser instead
+          of silently opening whichever the attachments list listed first, and the
+          "Annotations…" dialog's "Go to" buttons correctly route each row to the format that
+          specific annotation actually anchors on.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-08-13">
+      <description>
+        <p>0.2.0 "Marked Folio" — a built-in EPUB reader, and a big round of PDF reader
+        polish.</p>
+        <ul>
+          <li>A built-in EPUB reader alongside the existing PDF one — chapter navigation, a
+          table-of-contents jump list, and proper rendering of text, images, and stylesheets
+          via an embedded WebKitGTK view, not just metadata-only import.</li>
+          <li>EPUB highlighting, with saved highlights reapplied automatically on every
+          chapter load, and EPUB chapter text now indexed for full-text search.</li>
+          <li>The PDF reader gained underline and strikeout, freestanding notes, a colour
+          picker, an outline/bookmarks panel (now a persistent sidebar), an in-reader search
+          bar, an inline per-page annotation list with editable notes, remembered reading
+          position, continuous scroll, and Zotero-style document page numbering.</li>
+          <li>A live preview while dragging to highlight/underline/strikeout, and
+          snapshot-based undo/redo for every annotation change (buttons plus
+          Ctrl+Z/Ctrl+Shift+Z).</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.1.1" date="2026-08-13">
+      <description>
+        <p>0.1.1 "Tidy Shelf" — internal build-hygiene fix, no user-facing changes.</p>
+        <ul>
+          <li>Reformatted the codebase with cargo fmt, fixing a long-standing CI
+          format-check failure that had been skipping clippy and tests on every push.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-08-13">
+      <description>
+        <p>0.1.0 "Open Stacks" — first release.</p>
+        <ul>
+          <li>A plain-file library — Hayagriva YAML entries, Markdown notes — that lives in a
+          git repository and stays readable without Kartoteka.</li>
+          <li>Import from Zotero (BetterBibTeX and the Zotero SQLite store), or acquire
+          references by DOI, arXiv, or ISBN. Drop a PDF or EPUB in and it identifies itself.</li>
+          <li>A built-in PDF viewer with highlighting and annotation management.</li>
+          <li>Bibliography output in SBL and Chicago styles, and annotated Typst documents.</li>
+          <li>Full-text search over metadata, notes, annotations, and PDF text.</li>
+          <li>Typed relations and a knowledge-graph layer — link entries to people, concepts,
+          and schools of thought, not just to each other.</li>
+          <li>Sync via git, GitHub, or WebDAV.</li>
+        </ul>
+      </description>
+    </release>
   </releases>
 </component>

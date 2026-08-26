@@ -1,30 +1,32 @@
 #!/usr/bin/env bash
-# publish-flatpak.sh — build and publish Kartoteka to the personal flatpak repo.
+# publish-flatpak.sh — push a release; GitHub Actions builds and publishes it
 #
 # Usage:
-#   ./publish-flatpak.sh 0.2.0
+#   ./publish-flatpak.sh 0.6.0
 #
-# What this does NOT do (Claude's job, done before running this):
+# What this script does NOT do (Claude's job, done before running this):
 #   - Write the CHANGELOG entry / metainfo release note
 #   - Bump the version / commit / tag
 #
-# What this DOES do:
-#   1. Verify the version matches the GUI crate (sanity check)
-#   2. Push this repo to GitHub (flatpak-builder pulls sources from there)
-#   3. Build the flatpak
-#   4. Pull/clone the public flatpak repo, export, regenerate summary, push
+# What this script DOES do:
+#   1. Verify the version you pass matches the GUI crate (sanity check)
+#   2. Push main and the version tag to GitHub
 #
-# Prerequisite: packaging/cargo-sources.json must be current (see packaging/PACKAGING.md).
+# Pushing the tag is what triggers .github/workflows/release-flatpak.yml, which does
+# everything this script used to do locally: build the flatpak, export it into the public
+# repo, GPG-sign it, and push. Watch it at:
+#   https://github.com/calstfrancis/kartoteka/actions/workflows/release-flatpak.yml
+#
+# Needs CI to have already passed for this commit — release-flatpak.yml checks this itself
+# and refuses to publish otherwise, so there's no separate manual check to remember here
+# anymore. If GitHub Actions is down or you need to debug the build locally, use
+# publish-flatpak-local.sh instead (does the full build+publish here, same as this script
+# used to).
 
 set -euo pipefail
 
-GPG_KEY="A2918A9B43B199ADF9879F934AC9D5173DE4BC41"
-FLATPAK_REPO="/tmp/flatpak-checkout"
-MANIFEST="packaging/io.github.calstfrancis.Kartoteka.yml"
-APP_LABEL="Kartoteka"
-
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <version>   e.g.  $0 0.2.0"
+  echo "Usage: $0 <version>   e.g.  $0 0.6.0"
   exit 1
 fi
 VERSION="$1"
@@ -36,52 +38,10 @@ if [[ "$CARGO_VERSION" != "$VERSION" ]]; then
   exit 1
 fi
 
-echo "==> Publishing $APP_LABEL $VERSION"
-
-echo "==> Pushing source repo to GitHub..."
+echo "==> Publishing Kartoteka $VERSION"
 git push origin main
-git push origin "v$VERSION" 2>/dev/null || true
-
-echo "==> Building flatpak (this will take a while)..."
-flatpak-builder --force-clean --user --install build-flatpak "$MANIFEST"
-
-echo "==> Syncing public flatpak repo..."
-if [[ -d "$FLATPAK_REPO/.git" ]]; then
-  git -C "$FLATPAK_REPO" pull
-else
-  git clone https://github.com/calstfrancis/flatpak "$FLATPAK_REPO"
-fi
-
-echo "==> Exporting build..."
-flatpak build-export \
-  --gpg-sign="$GPG_KEY" \
-  "$FLATPAK_REPO" \
-  build-flatpak \
-  master
-
-echo "==> Regenerating OSTree summary..."
-flatpak build-update-repo \
-  --gpg-sign="$GPG_KEY" \
-  "$FLATPAK_REPO"
-
-# ── verify the commit actually got signed ──────────────────────────────────
-# build-export produces an unsigned commit if --gpg-sign is missing or the key
-# is unavailable, and says nothing. The repo summary still signs fine, so the
-# breakage only surfaces later as a GPG failure on someone else's install.
-APP_ID="$(basename "$MANIFEST" .yml)"
-COMMIT="$(cat "$FLATPAK_REPO/refs/heads/app/$APP_ID/x86_64/master")"
-if [[ ! -f "$FLATPAK_REPO/objects/${COMMIT:0:2}/${COMMIT:2}.commitmeta" ]]; then
-  echo "ERROR: commit $COMMIT for $APP_ID carries no GPG signature."
-  echo "Refusing to push. Re-run build-export with --gpg-sign=\"$GPG_KEY\"."
-  exit 1
-fi
-echo "==> Signature verified for $APP_ID"
-
-echo "==> Pushing flatpak repo..."
-cd "$FLATPAK_REPO"
-git add -A
-git commit -m "$APP_LABEL $VERSION"
-git push origin main
+git push origin "v$VERSION"
 
 echo ""
-echo "Done! $APP_LABEL $VERSION is live at https://calstfrancis.github.io/flatpak/"
+echo "Done! GitHub Actions is building and publishing $VERSION now:"
+echo "  https://github.com/calstfrancis/kartoteka/actions/workflows/release-flatpak.yml"

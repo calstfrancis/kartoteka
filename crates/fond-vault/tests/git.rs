@@ -72,6 +72,13 @@ fn commit_then_clone_reads_content_back() {
     let clone_path = dst.path().join("clone");
     git2::Repository::clone(src.path().to_str().unwrap(), &clone_path).unwrap();
 
+    // Normalize line endings before comparing: Windows git installs commonly default to
+    // `core.autocrlf=true`, so a checkout (this clone included) can rewrite LF to CRLF on
+    // disk even though the committed blob itself is untouched — that's a platform git-config
+    // concern, not something this round-trip test should fail on.
     let cloned = fs::read_to_string(clone_path.join("library.yml")).unwrap();
-    assert_eq!(cloned, "key:\n  type: book\n  title: X\n");
+    assert_eq!(
+        cloned.replace("\r\n", "\n"),
+        "key:\n  type: book\n  title: X\n"
+    );
 }

@@ -2,7 +2,7 @@
 
 **Read this first when picking up Kartoteka cold** (e.g. after a cleared chat). It records
 where the project actually is, how the docs fit together, and what's committed vs. not.
-Last updated: **2026-07-27.**
+Last updated: **2026-08-11.**
 
 ---
 
@@ -14,10 +14,46 @@ the single most confusing thing about the docs:
 1. **`ROADMAP.md` "Milestone 1–5"** — the *original project brief*. **All done.** The vault
    (M1), Zotero migration (M2), bibliography output (M3), documents/PDF (M4), acquisition
    (M5), and cross-cutting search are all implemented and shipped (see dev1–dev4 history).
+   Note: §4.5 there is itself stale — it says bitmap rendering "not yet needed," but the GTK
+   app has had a working in-app PDF viewer for a while. Worth a cleanup pass independent of
+   the M4 work below.
 
-2. **The knowledge-base extension track — "M1 / M2 / M3"** — a *newer* track that grew out of
-   a large brainstorm (a ChatGPT feature dump, 23 sections). This is what the `M2-SPEC.md`,
-   `M3-SPEC.md`, `DATA-MODEL-EXTENSIONS.md`, and `M2-GUI-PLAN.md` docs describe.
+2. **The knowledge-base extension track — "M1 / M2 / M3 / M4 / M5"** — a *newer* track that
+   grew out of a large brainstorm (a ChatGPT feature dump, 23 sections), now extended past
+   the brainstorm's own scope. This is what `M2-SPEC.md`, `M3-SPEC.md`, `M4-SPEC.md`,
+   `M5-SPEC.md`, `DATA-MODEL-EXTENSIONS.md`, and `M2-GUI-PLAN.md` describe.
+   - **Extension-M5** = the full PDF+EPUB reader. **Tier 1 and Tier 2 are both fully
+     complete**: Tier 1 — 5A (typed attachment routing, fixing the
+     EPUB-attachment-opens-the-PDF-viewer bug), 5B (EPUB rendering + chapter/TOC navigation
+     via an embedded WebKitGTK 6 `WebView`), 5C (EPUB highlighting — chapter+snippet anchor,
+     WebKit-native selection + DOM search-and-wrap), 5D (EPUB body text in the search
+     index). Tier 2 — PDF `Progress` resume/save, underline/strikeout/note drawing gestures,
+     an outline/bookmarks panel, an in-reader text search bar, a colour picker + inline
+     per-page annotation list, continuous/vertical scroll (a toggle alongside the
+     page-by-page view, eagerly rendered on first use rather than virtualized), and
+     Zotero-style document page numbering (shows/navigates by a PDF's own `/PageLabels`
+     printed page number, not just the raw file position — added beyond the original Tier 2
+     list, on request). Everything above verified end-to-end headless, not just compiled.
+     A further round of PDF reader UX polish also shipped on request, beyond both tiers'
+     original lists: the Contents outline became a persistent sidebar instead of a popover, a
+     live drag preview shows the highlight/underline/strikeout region while dragging (not
+     just after release), snapshot-based undo/redo covers every annotation mutation
+     (Undo/Redo buttons + Ctrl+Z/Ctrl+Shift+Z), and "This page"'s inline annotation list
+     gained editable notes (parity with the whole-document "Annotations…" dialog). **Tier 3
+     is also done**: `AnnotationSidecar::to_markdown` (`fond-bib`, UI-agnostic) renders an
+     entry's annotations as portable Markdown — headings per PDF page/EPUB chapter, quoted
+     snippet, note — and an "Export…" button in the "Annotations…" dialog saves it via the
+     same `gtk4::FileDialog` flow "Export bibliography…" uses. **Tier 4 is also done**: an
+     entry with both a PDF and an EPUB attached now gets a "Read" chooser instead of silently
+     opening whichever the attachments list listed first, and the "Annotations…" dialog routes
+     each row's "Go to" to the format that specific annotation actually anchors on rather than
+     one kind fixed for the whole dialog (a latent bug the single-attachment case never
+     exposed). **All four M5 tiers are now complete** (`M5-SPEC.md`).
+   - **Extension-M4** = the map toward a "full-fledged" citation manager beyond the original
+     brief and the brainstorm both — live PDF annotation, Zerkalo vault adoption, and the
+     smaller GUI/platform gaps. **Tier 1's PDF-annotation work (4A, all three phases) and
+     all of Tier 2 are done** (`M4-SPEC.md`); 4B (Zerkalo vault adoption) is the only Tier 1
+     item still open, and is Zerkalo-repo work.
    - **Extension-M1** = the original vault (`DATA-MODEL.md`) — the baseline these extend.
    - **Extension-M2** = typed relations, facets, small note fields, AI sidecar, projects/usage
      — **built and tested** (see below).
@@ -98,11 +134,12 @@ Clean once the dev7 bump is committed.
 | `DATA-MODEL-EXTENSIONS.md` | The 23-section brainstorm mapped to disk + the scope **decisions**. The master "where does each idea land" table lives here. |
 | `M2-SPEC.md` | Extension-M2 implementation spec (relations/facets/fields/AI/projects). Has an "Implementation status" section. |
 | `M2-GUI-PLAN.md` | Extension-M2 GUI + index surfacing plan, with ✅/🔨/⏳ status per item. |
-| `M3-SPEC.md` | Extension-M3 spec (knowledge-graph nodes). Not built yet. |
+| `M3-SPEC.md` | Extension-M3 spec (knowledge-graph nodes). **Complete** — all 8 PRs built and tested. |
+| `M4-SPEC.md` | Extension-M4: the map toward a "full-fledged" citation manager (live PDF annotation, Zerkalo vault adoption, remaining GUI/platform gaps), tiered by how much each blocks the core workflow. **In progress.** |
 | `LICENSES.md` | Licensing (`fond-*` crates MIT; app proprietary). |
 
 **Reading order for a cold start:** this file → `DATA-MODEL-EXTENSIONS.md` (the map) →
-whichever of `M2-SPEC.md` / `M2-GUI-PLAN.md` / `M3-SPEC.md` matches the task.
+whichever of `M2-SPEC.md` / `M2-GUI-PLAN.md` / `M3-SPEC.md` / `M4-SPEC.md` matches the task.
 
 ---
 
@@ -117,14 +154,29 @@ Done and tested (extension-M2), in `crates/fond-bib` + `crates/fond-index` + GUI
 - Projects/usage: `project.rs`, `scan_usage`/`write_usage` → `.kartoteka/usage.json`.
 - Index: `facet` + `ai` fields. GUI: relations display + editing dialog.
 
-Next candidates (pick per Cal):
-- **Extension-M2 leftovers** (`M2-GUI-PLAN.md` §4): "Used in" panel (needs GUI scan trigger +
-  `usage.json` loader), facet chip grouping in the editor, "promote AI keyword → tag", global
-  task view, in-GUI editing of progress/cite/tasks.
-- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **complete (all 8 PRs)**. Possible
-  future extensions (all deferred): a visual graph/neighbours canvas (spec open item 3); a
-  node-side relation editor (relations are currently authored from the entry side only); node
-  deletion with relation cleanup (the Nodes manager has no delete yet — vim/git for now).
+Next candidates (pick per Cal) — **superseded by `M4-SPEC.md`'s tiering**, kept here as a
+one-line pointer rather than duplicated:
+- **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **complete (all 8 PRs)**.
+- **Extension-M4** (`M4-SPEC.md`): live PDF annotation — **Tier 1's 4A (all 3 phases) and
+  all of Tier 2 done**; 4B (Zerkalo vault adoption, a Zerkalo-repo task) is the only open
+  Tier 1 item; Tier 3 (Windows UI) and Tier 4 (browser capture, bulk ops, library
+  quick-switcher) not started.
+- **Extension-M5** (`M5-SPEC.md`): the full PDF+EPUB reader. **Tier 1 and Tier 2 both fully
+  complete, verified end-to-end headless (real xdotool-driven interaction, not just
+  compiled).** Tier 1 — 5A (typed attachment routing), 5B (EPUB rendering + chapter/TOC nav
+  via WebKitGTK 6), 5C (EPUB highlighting — chapter+snippet anchor, WebKit-native selection +
+  DOM search-and-wrap), 5D (EPUB text into the search index). Tier 2 — PDF `Progress`
+  resume/save, underline/strikeout/note drawing gestures, an outline/bookmarks panel,
+  in-reader text search, a colour picker + inline per-page annotation list,
+  continuous/vertical scroll (a toggle alongside the page-by-page view), and Zotero-style
+  document page numbering (`/PageLabels`-aware display and jump-by-typed-label). A further
+  round of PDF reader UX polish also shipped: Contents as a persistent sidebar, a live drag
+  preview while highlighting, snapshot-based undo/redo (buttons + Ctrl+Z/Ctrl+Shift+Z), and
+  editable notes in "This page"'s inline annotation list. **Tier 3** (a Markdown annotation
+  export, à la Zotero's "add note from annotations") **and Tier 4** (a "Read"/"Annotations…"
+  chooser for entries with both a PDF and an EPUB attached, instead of silently picking the
+  first-listed attachment) **are also done — all four M5 tiers complete.** See `M5-SPEC.md`
+  for the full tiered list.
 
 ---
 

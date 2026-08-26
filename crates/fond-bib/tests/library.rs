@@ -49,7 +49,15 @@ fn temp_library() -> (tempfile::TempDir, Library) {
 #[test]
 fn init_creates_layout_and_gitignore() {
     let (dir, _lib) = temp_library();
-    for sub in ["entries", "notes", "annots", "collections", "ai", "projects", "nodes"] {
+    for sub in [
+        "entries",
+        "notes",
+        "annots",
+        "collections",
+        "ai",
+        "projects",
+        "nodes",
+    ] {
         assert!(dir.path().join(sub).is_dir(), "missing {sub}/");
     }
     let ignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
@@ -250,7 +258,10 @@ fn asymmetric_relation_materializes_typed_inverse() {
 
     // a cites b  ⇒  a holds forward `cites`, b holds inverse `cited-by`.
     lib.add_relation("a", Predicate::Cites, "b").unwrap();
-    assert_eq!(edges(&lib, "a"), vec![(Predicate::Cites, "b".into(), false)]);
+    assert_eq!(
+        edges(&lib, "a"),
+        vec![(Predicate::Cites, "b".into(), false)]
+    );
     assert_eq!(
         edges(&lib, "b"),
         vec![(Predicate::CitedBy, "a".into(), true)]
@@ -296,7 +307,10 @@ fn set_relations_preserves_inbound_inverse_edges() {
         a.contains(&(Predicate::CitedBy, "b".into(), true)),
         "editing a's forward edges must not drop its inbound inverse: {a:?}"
     );
-    assert_eq!(edges(&lib, "c"), vec![(Predicate::CritiquedBy, "a".into(), true)]);
+    assert_eq!(
+        edges(&lib, "c"),
+        vec![(Predicate::CritiquedBy, "a".into(), true)]
+    );
 }
 
 #[test]
@@ -313,7 +327,10 @@ fn reconcile_repairs_desynced_inverse_and_is_idempotent() {
     // Fix it, and the inverse comes back.
     let fixed = lib.reconcile_relations(true).unwrap();
     assert_eq!(fixed.missing.len(), 1);
-    assert_eq!(edges(&lib, "b"), vec![(Predicate::CitedBy, "a".into(), true)]);
+    assert_eq!(
+        edges(&lib, "b"),
+        vec![(Predicate::CitedBy, "a".into(), true)]
+    );
 
     // Idempotent: a second fix finds nothing.
     let again = lib.reconcile_relations(true).unwrap();
@@ -336,8 +353,15 @@ fn reconcile_removes_orphaned_inverse() {
     lib.write_note("b", &note).unwrap();
 
     let report = lib.reconcile_relations(true).unwrap();
-    assert_eq!(report.orphaned.len(), 1, "orphaned inverse should be flagged");
-    assert!(edges(&lib, "b").is_empty(), "orphaned inverse should be removed");
+    assert_eq!(
+        report.orphaned.len(),
+        1,
+        "orphaned inverse should be flagged"
+    );
+    assert!(
+        edges(&lib, "b").is_empty(),
+        "orphaned inverse should be removed"
+    );
 }
 
 #[test]
@@ -371,8 +395,14 @@ fn migrate_lifts_legacy_related_to_typed_edges() {
             (Predicate::Related, "c".into(), false),
         ]
     );
-    assert_eq!(edges(&lib, "b"), vec![(Predicate::Related, "a".into(), false)]);
-    assert_eq!(edges(&lib, "c"), vec![(Predicate::Related, "a".into(), false)]);
+    assert_eq!(
+        edges(&lib, "b"),
+        vec![(Predicate::Related, "a".into(), false)]
+    );
+    assert_eq!(
+        edges(&lib, "c"),
+        vec![(Predicate::Related, "a".into(), false)]
+    );
 
     // Idempotent: nothing left to migrate.
     assert_eq!(lib.migrate_related_to_relations().unwrap(), 0);
@@ -422,7 +452,10 @@ fn scan_usage_maps_keys_to_projects() {
     .unwrap();
 
     let usage = lib.write_usage().unwrap();
-    let uses = usage.by_key.get("cone1970black").expect("cited key present");
+    let uses = usage
+        .by_key
+        .get("cone1970black")
+        .expect("cited key present");
     assert_eq!(uses.len(), 1);
     assert_eq!(uses[0].0, "diss");
     // The uncited entry has no usage.
@@ -433,7 +466,11 @@ fn scan_usage_maps_keys_to_projects() {
     // A dangling document path is flagged by fsck, not fatal.
     lib.save_project(
         "broken",
-        &Project { name: "Broken".into(), description: None, documents: vec!["/no/such.typ".into()] },
+        &Project {
+            name: "Broken".into(),
+            description: None,
+            documents: vec!["/no/such.typ".into()],
+        },
     )
     .unwrap();
     let report = lib.fsck().unwrap();
@@ -635,6 +672,7 @@ fn delete_entry_removes_files_relations_and_collection_membership() {
         &fond_bib::Collection {
             name: "Reading".into(),
             description: None,
+            parent: None,
             keys: vec!["a".into(), "b".into()],
         },
     )
@@ -660,6 +698,65 @@ fn delete_entry_removes_files_relations_and_collection_membership() {
     assert!(again.files_removed.is_empty());
 }
 
+// ---- add_to_collection / remove_from_collection --------------------------------------
+
+#[test]
+fn add_to_collection_is_idempotent() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a"]);
+    lib.save_collection(
+        "reading",
+        &fond_bib::Collection {
+            name: "Reading".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    lib.add_to_collection("reading", "a").unwrap();
+    lib.add_to_collection("reading", "a").unwrap();
+    assert_eq!(lib.load_collection("reading").unwrap().keys, vec!["a"]);
+
+    lib.remove_from_collection("reading", "a").unwrap();
+    lib.remove_from_collection("reading", "a").unwrap();
+    assert!(lib.load_collection("reading").unwrap().keys.is_empty());
+}
+
+#[test]
+fn delete_node_removes_file_and_incoming_relations() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a"]);
+    let node = Node::parse(
+        "---\nnode-type: person\nlabel: Origen of Alexandria\n---\nThird-century theologian.\n",
+        std::path::Path::new("nodes/origen.md"),
+    )
+    .unwrap();
+    lib.write_node("origen", &node).unwrap();
+
+    // Entry A relates to the node (authored) — the node gains a maintained inverse edge.
+    lib.add_relation("a", Predicate::Authored, "origen")
+        .unwrap();
+    assert!(edges(&lib, "a").iter().any(|(_, t, _)| t == "origen"));
+
+    let report = lib.delete_node("origen").unwrap();
+
+    assert!(!lib.node_path("origen").exists());
+    assert!(report
+        .files_removed
+        .iter()
+        .any(|p| p.ends_with("origen.md")));
+    assert!(report.collections_updated.is_empty());
+    assert!(report.blobs_removed.is_empty());
+
+    // A no longer has any edge pointing at the deleted node.
+    assert!(!edges(&lib, "a").iter().any(|(_, t, _)| t == "origen"));
+    assert_eq!(report.relations_cleared, 1, "{report:?}");
+
+    // Deleting again is a harmless no-op.
+    let again = lib.delete_node("origen").unwrap();
+    assert!(again.files_removed.is_empty());
+}
+
 #[test]
 fn delete_entry_gcs_unshared_blob_but_keeps_shared_one() {
     let (dir, lib) = temp_library();
@@ -681,11 +778,17 @@ fn delete_entry_gcs_unshared_blob_but_keeps_shared_one() {
 
     // Deleting one sharer keeps the shared blob (still referenced by the other).
     lib.delete_entry("shared_a").unwrap();
-    assert!(lib.attachment_blob_path(&hex).exists(), "shared blob GC'd too early");
+    assert!(
+        lib.attachment_blob_path(&hex).exists(),
+        "shared blob GC'd too early"
+    );
 
     // Deleting the sole referencer GCs its blob.
     let report = lib.delete_entry("solo").unwrap();
-    assert!(!lib.attachment_blob_path(&solo_hex).exists(), "solo blob not GC'd");
+    assert!(
+        !lib.attachment_blob_path(&solo_hex).exists(),
+        "solo blob not GC'd"
+    );
     assert!(report.blobs_removed.iter().any(|p| p.ends_with(&solo_hex)));
 }
 
@@ -752,6 +855,9 @@ fn edit_fields_clearing_a_field_removes_it() {
     lib.edit_fields("work", &edited).unwrap();
 
     let raw = fs::read_to_string(lib.entry_path("work")).unwrap();
-    assert!(!raw.contains("publisher"), "cleared field still present: {raw}");
+    assert!(
+        !raw.contains("publisher"),
+        "cleared field still present: {raw}"
+    );
     assert!(raw.contains("date: 2000"), "unrelated field lost: {raw}");
 }

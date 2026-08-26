@@ -155,6 +155,7 @@ rebuilt from it.
 ```yaml
 name: Liberation Theology
 description: Sources for the dissertation chapter on liberation hermeneutics.
+parent: theology
 keys:
   - cone1970black
   - berdyaev1937destiny
@@ -165,6 +166,13 @@ keys:
 no `entries/<key>.yml` is a dangling reference — reported by `kartoteka fsck`, never a
 hard crash. Collections are the unit `kartoteka bib <collection>` and
 `kartoteka annotated-bib <collection>` operate on (M3).
+
+`parent` (optional) is another collection's slug, making this one its child in the sidebar's
+tree — omitted for a top-level collection, which is how every collection worked before
+nesting existed. A cycle (a collection listed as its own ancestor) is invalid and the UI
+refuses to create one, but the field itself carries no built-in cycle protection at the
+storage layer — a hand-edited file forming a cycle is a `kartoteka fsck` concern, not a
+parse error.
 
 ---
 

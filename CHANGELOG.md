@@ -2,6 +2,587 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.7.0] "Whole Volume" — 2026-08-24 — Whole-book EPUB search and reading-position resume
+
+**Whole-book search in the EPUB reader.** The search bar's new "Whole book" toggle
+switches from the existing chapter-scoped `Ctrl+F` search (which only ever sees the one
+chapter currently loaded) to a search across every chapter at once, listing each match
+as a chapter + excerpt you can click to jump straight to — the match itself gets
+highlighted on arrival, the same as an ordinary in-chapter search would. Chapter text is
+indexed lazily from the already-extracted chapter files the first time it's used.
+
+**EPUB reading position now resumes.** The EPUB reader saves its scroll position (chapter
++ percent scrolled through that chapter) when you close it, and the "Read" button on an
+entry with an EPUB attachment resumes there next time — the same resume-on-reopen the PDF
+reader already had. `fond_bib::Progress` gained an optional `chapter_percent` field for
+this; PDF entries are unaffected (it stays unset).
+
+## [0.6.1] "Quiet Stack" — 2026-08-21 — Startup crash fix
+
+**Fixed: Kartoteka could fail to start (`RefCell already borrowed` panic → abort) when
+opening a library.** Opening a library re-syncs the optional custom-field spreadsheet
+columns, which briefly held the app config borrowed while also removing/re-adding
+columns on the entries view — and column changes synchronously fire GTK's
+`items-changed` signal, whose handler tries to borrow the same config to save the
+column order. The double borrow panicked inside a GTK signal callback, which can't
+unwind, so the whole process aborted. Any library with a saved column order or a
+custom field defined hit this on every launch. Fixed by dropping the config borrow
+before touching the columns.
+
+**Internal: releases now build and publish via GitHub Actions, not locally.**
+`publish-flatpak.sh` now just pushes the commit and tag; `.github/workflows/release-flatpak.yml`
+does the flatpak build, GPG-signing, and publish to the OSTree repo, matching Zerkalo's
+setup (and refusing to publish unless CI passed for that commit). The old fully-local flow
+still exists at `publish-flatpak-local.sh` as a fallback. No user-facing change; takes effect
+starting with this release — 0.6.0 itself was already published via the old manual flow
+before this landed. See `RELEASE-CI-SETUP.md` for the one-time secrets setup this needs.
+
+## [0.6.0] "Deep Stacks" — 2026-08-20 — Optional columns, bulk actions, smarter duplicates, and a whole-library relations map
+
+**Optional spreadsheet columns for Tags, Status, and custom fields.** Menu → "Columns…"
+lets you turn on a Tags and/or Status column, plus one column per custom field you've
+defined — off by default so the sheet stays uncluttered until you ask for them. Column
+order (drag a header to reorder, as before) and which optional columns are visible are
+now both remembered across sessions instead of resetting to Key/Title/Author/Year/Files
+every launch.
+
+**Bulk select.** The header's new "Select multiple" toggle adds a checkbox column and an
+action bar for tagging, adding to a collection, or deleting several entries at once,
+instead of one at a time in the detail pane.
+
+**Date custom fields.** Custom Fields now offers a fourth type, Date, with a calendar
+picker (stored as `YYYY-MM-DD`) — for things like "date read" or "date acquired" that
+want a picker rather than a text box a typo could silently break sorting on.
+
+**Smarter duplicate detection.** "Find duplicates…" now also lists "possible
+duplicates" — entries with highly similar titles (a typo or a differently-punctuated
+subtitle) that the existing exact DOI/ISBN/title+year matching missed. Shown separately
+from exact matches since these are guesses, with the same per-group Merge button.
+
+**Relations map: whole-library view + analytics.** Menu → "Relations map (whole
+library)…" opens a bird's-eye map of everything connected to everything in your
+library (not just one entry's neighbourhood), with a sidebar ranking the most-connected
+and most-cited entries. Same click-to-expand/double-click-to-open interaction as the
+entry-centered map.
+
+**EPUB reader: in-chapter search and undo/redo.** Ctrl+F (or the header's search
+button) opens a find bar that highlights and cycles matches in the current chapter,
+same as a browser's. Undo/Redo (Ctrl+Z / Ctrl+Shift+Z, and header buttons) now cover
+adding, editing, and deleting marks — matching the PDF reader's own undo/redo.
+
+**Relations map (prototype), fleshed out.** An entry's "More" menu has "Relations
+map…" — an entry-centered, force-directed visualization of its typed relations (cites,
+influenced by, authored by, …), including the automatically-maintained inverse edges
+(so it doubles as a backlinks view: who cites *this*, not just what this cites).
+- Click a node to pull its own connections in too, expanding outward from the entry
+  you started on.
+- **Double-click a node to open it** — closes the map and selects that entry (or opens
+  the node editor, for a person/school/concept/event/place).
+- **Right-click a node to remove it** from the map (client-side only; doesn't touch
+  your data) — for decluttering after expanding a few hops.
+- **Reset button** in the header returns to just the starting entry's direct connections.
+- **Edges are now directional** (arrowheads, matching the predicate label's own
+  phrasing) and there's a **legend** for the node-kind colours.
+- A soft cap (80 nodes) with an on-canvas notice, so an entry with a lot of connections
+  can't turn the map into an unreadable, unresponsive tangle.
+
+Still read-only otherwise — no editing relations or dragging a line to create one from
+the map itself. Rendered in a `WebView` (Canvas 2D, a small hand-written force
+simulation, no external resources) rather than hand-built in Cairo — the same
+`WebView`-embedding pattern the EPUB reader uses, extended with a JS↔Rust message
+channel (`UserContentManager`) for node clicks. Marked "(prototype)" in the UI; not
+yet a finished feature.
+
+**Re-arrangeable columns, remembered window sizing, more keyboard access.**
+- The entries spreadsheet's columns can now be dragged by their headers to reorder them
+  (native GTK behaviour; order is now remembered across sessions — see above).
+- Window size/maximized state and both pane positions (collections sidebar, detail pane)
+  are now remembered across sessions instead of resetting to the same defaults every launch.
+- New keyboard shortcuts: Ctrl+N (New item), Ctrl+O (Open library), Ctrl+Shift+N (New
+  library), Ctrl+F (focus search), Ctrl+? / F1 (Keyboard shortcuts — a new help dialog,
+  also in the menu). Escape in the search field now clears it and returns focus to the list.
+- The EPUB reader gets font-size controls (A-/A+ in the header) — text-only zoom, so
+  images and layout width stay put while the text scales.
+
+
+**EPUB reader: notes sidebar, more mark kinds.** The EPUB reader gets a persistent
+Notes/highlights sidebar — every annotation in reading order, click to jump to it,
+edit its comment inline, delete it — matching the PDF reader's own sidebar (Contents
+moved into the same sidebar-toggle pattern alongside it). Marking text is no longer
+highlight-only: a mode picker adds Underline and Strikeout, plus a colour picker for
+highlights. See `EPUB-READER-PLAN.md` for the full parity plan and what's still ahead
+(reading position tracking).
+
+**Spreadsheet: read-only cells, zebra striping, more room by default.** Cells in the
+entries spreadsheet are no longer editable in place — editing lives entirely in the
+detail pane on the right now, matching how attachments/tags/notes already work. Rows
+alternate with a subtle background tint to make wide rows easier to track across
+columns, and the window opens with substantially more space given to the spreadsheet
+(the detail pane starts narrower — drag the divider if you want it back).
+
+**Custom fields.** Menu → "Custom fields…" lets you define your own fields — a name and
+a type (Text, Number, or Tag/comma-separated, styled like the built-in Tags field) —
+that then appear on every entry's detail pane. Values are per-entry as usual; the
+definitions are library-wide and travel with the library (`custom-fields.yml` at the
+library root, git-tracked like everything else).
+
+**Move library…** (Menu) relocates the current library's folder — its git history and
+search index included — to a new location, e.g. a different drive; updates the saved
+path so it reopens there next time. A plain rename where possible, falling back to a
+full copy for a cross-filesystem move.
+
+**Create book part…** (an entry's "More" menu, on a Book/Anthology entry) starts a new
+chapter/section entry — for one contributor's chapter in an edited anthology — that
+credits the source book as its `parent:` (title, editor/author, publisher, date, ISBN…)
+without duplicating those fields onto the new entry. Choose whether the book's listed
+author(s) become the part's editor (the common case) or stay as author. Unlike a
+copy-and-retype workflow, the part remembers where it came from: **"Refresh from source
+book…"** on the resulting entry re-pulls the book's current fields on demand, so editing
+the book later doesn't leave every chapter's citation quietly out of date.
+
+**Friendlier for first-time and non-technical users.** A round of accessibility/onboarding
+work:
+- **First-run welcome page** instead of a blank window: "New library…" and "Open existing
+  library…" front and centre, with a plain-language explanation of what a library is.
+- **New library…** creates the folder and its layout for you (name + location), so you no
+  longer need to go create an empty folder yourself before Kartoteka will let you in.
+- **Empty-library and no-results states**: an empty library now shows quick "Acquire…" /
+  "New item…" buttons instead of a blank pane; a search or collection with no matches says
+  so instead of just going blank.
+- **Save a copy…** (Menu) — a one-click, no-git-required backup: copies the whole library to
+  a folder you choose. "Back up (git commit)…" is still there for versioned history and
+  GitHub push, for anyone who wants it.
+- **Plain-language error messages** in place of raw internal errors for the most common
+  actions — opening a library, adding a reference (Acquire/New item/PDF/EPUB/URL), editing
+  fields, saving notes/tags/collections/nodes — including a specific, actionable message
+  when a first backup fails because git has no name/email configured yet.
+- **Jargon explained in place**: hover text on the DOI/arXiv/ISBN picker, the citation-key
+  column, and the search bar's `author:`/`title:`/`tag:`/`type:`/`year:` syntax; the Nodes
+  feature now says up front that it's for tracking people, places, and other things
+  connected to your references.
+
+**Entries as a spreadsheet.** The entry list is now a sortable, Zotero-style spreadsheet
+(`Key` / `Title` / `Author` / `Year` / a compact PDF/EPUB availability column) instead of a
+card list — click a column header to sort by it, and double-click (or Enter on a focused
+cell) any Title/Author/Year cell to edit it in place, no dialog needed. The citation key is
+its own read-only column (it's also the on-disk filename); dragging it onto a collection in
+the sidebar still adds the entry to that collection, same as before. The sidebar and detail
+pane are unchanged.
+
+**Automatic backups.** Menu → "Automatic backups…" turns on a periodic backup while a
+library is open: commits any changes on a chosen interval (15 min / 30 min / hour / 4
+hours), pushing to GitHub if already signed in with a repo configured, and mirroring to
+WebDAV if that's set up too. Off by default; reuses whatever GitHub/WebDAV credentials are
+already configured via the existing manual backup flows, so there's nothing new to set up.
+Ticks are skipped when nothing has changed, and auto-backup never creates a new GitHub repo
+on its own — that first push still happens through the explicit "Back up (git commit)…"
+action.
+
+## [0.5.1] "Sound Index" — 2026-08-19 — Dependency security updates and a search-index race fix
+
+### Fixed
+
+- **Fixed a rare, intermittent failure rebuilding the search index** — a background
+  file-watcher thread tantivy sets up for search queries could still be touching the index
+  directory at the moment something tried to delete and rebuild it, occasionally failing the
+  rebuild outright. More likely to surface under load (e.g. background reindexing while other
+  work is happening) than in everyday single-library use, but a real bug either way.
+
+### Internal
+
+- Updated `rusqlite` (0.32→0.40), `hayagriva` (0.9→0.10), and `quick-xml` (0.37→0.41) —
+  closes two real CVSS-7.5 denial-of-service advisories in `quick-xml`
+  (RUSTSEC-2026-0194, RUSTSEC-2026-0195) that a `cargo audit` pass turned up, reachable via
+  EPUB text extraction. Two more `quick-xml` advisories remain, pulled in transitively via
+  `citationberg`'s own pin — not fixable from here until `citationberg` bumps its own
+  `quick-xml` dependency.
+
+## [0.5.0] "Cross Reference" — 2026-08-14 — Nested collections and an editable-in-place detail pane
+
+"Select text" mode (and highlighting/underlining/strikeout too) now works the way a real
+text editor's click-drag selection does: dragging in a straight line down through a
+paragraph selects each whole in-between line, not just the narrow column directly under the
+pointer — only the first and last lines are trimmed to the exact start/end position. The
+cursor switches to an I-beam in Select mode, and the live drag preview now shows the actual
+line-aware selection (in a distinct blue tint for Select mode) instead of a plain rectangle.
+
+Adding a note right after copying a text selection on the same page now pre-fills the note
+with the selected text, quoted and tagged with its page number, instead of starting blank.
+
+**Collections can now nest.** A collection can have a parent (set at creation, or by hand in
+its `collections/<slug>.yml`), and the sidebar shows the resulting tree, indented — the
+"Collections…" membership dialog reflects the same nesting. Drag an entry from the list
+straight onto a collection in the sidebar to add it there, instead of only through the
+membership dialog.
+
+Each entry in the list now shows a small icon when a PDF and/or EPUB is available to open,
+at a glance, without opening the entry first.
+
+**The detail pane is directly editable — no dialog required.** Type, Title, Author(s), Year,
+Publisher, DOI, ISBN, Tags, Status, and Rating are now live fields: click into one, edit it,
+and it saves on Enter or when you click away. The "Edit citation info…" dialog is gone (its
+job is done inline now); "Edit note…" remains for the fields that aren't inline yet —
+reading progress, citation preferences, tasks, and the free-text note body.
+
+## [0.4.0] "Quiet Margin" — 2026-08-14 — PDF reader usability pass
+
+The Contents/table-of-contents sidebar is now user-resizable via its Paned handle instead of
+being pinned to the width of the longest chapter title, and can be dragged down to a slim
+strip. Continuous scrolling is now the reader's default mode (was single-page); switching
+between continuous and single-page already preserved your position and still does.
+
+The old per-page "This page" dropdown for editing/deleting annotations is gone — **right-click
+a highlight, underline, strikeout, or note** to edit its note text or delete it inline, or
+right-click blank page space to add a new note there. A new **Notes sidebar toggle** (next to
+Contents) lists every note and highlight in the whole document, with its highlighted snippet
+and note text readable at a glance rather than just an on-page icon — click an entry to jump
+to its page, or delete it from there too. Highlight and search-match colours are also more
+visible (raised from ~35%/50% to ~55%/65% opacity).
+
+Page navigation and zoom controls moved from the headerbar down to a new bottom status bar,
+freeing the headerbar's title slot to show the document's own name again.
+
+The mode picker has a new **"Select text"** option (now the drag mode next to Highlight/
+Underline/Strikeout) — drag over text to copy it to the clipboard instead of creating an
+annotation.
+
+**Fixed:** opening a PDF (or switching into continuous-scroll mode) could hang the whole
+window for the document's full render time, sometimes appearing to freeze permanently —
+continuous mode's page layout used to rasterize every page synchronously before showing
+anything. Page sizing is now computed from cheap PDF metadata up front (instant), and each
+page's actual image renders incrementally in idle time afterward, starting from whichever
+page you opened on.
+
+Dragging a PDF onto the window to add it now tells you when a drop couldn't be read (an
+unrecognized drag source, or a remote file with no local path) instead of silently doing
+nothing.
+
+**Fixed:** launching Kartoteka while it was already running opened a second window instead
+of raising the existing one — relevant now that other Fond-suite apps (starting with Zerkalo)
+can launch Kartoteka via `flatpak run`, which activates the existing instance over D-Bus
+rather than starting a new process.
+
+## [0.3.0] "Loose Leaf" — 2026-08-13 — Markdown annotation export, multi-attachment reading
+
+Annotations are now readable without opening Kartoteka at all, à la Zotero's "add note from
+annotations": an **"Export…" button** in the "Annotations…" dialog renders an entry's whole
+annotation sidecar as a portable Markdown file — one heading per PDF page or EPUB chapter,
+the highlighted text quoted, then your note below it — and saves it wherever you choose.
+
+An entry with **both a PDF and an EPUB attached** (the same work in two formats) now gets a
+**"Read" chooser** letting you pick which to open, instead of silently opening whichever the
+attachments list happened to list first. The "Annotations…" dialog's "Go to" buttons are also
+now correctly per-annotation format-aware on such an entry — a PDF-anchored row opens the PDF
+reader, an EPUB-anchored row opens the EPUB reader, instead of every row routing through
+whichever format the dialog happened to open with.
+
+## [0.2.0] "Marked Folio" — 2026-08-13 — Built-in EPUB reader and PDF reader polish
+
+A built-in EPUB reader, alongside the existing PDF one: chapter navigation, a table-of-
+contents jump list (from the EPUB3 nav document or the EPUB2 NCX), and proper rendering of
+each chapter's text, images, and stylesheet via an embedded WebKitGTK view — not just the
+metadata-only import EPUB had before.
+
+EPUB pages can now be highlighted, same as PDF: select text and click "Highlight" to save it
+to the entry's annotation sidecar (chapter + snippet, since an EPUB has no fixed page grid to
+anchor a PDF-style quadpoint to), with saved highlights reapplied automatically on every
+chapter load. The "Annotations…" list and "Go to" now work for both formats, jumping into
+the right chapter and scrolling straight to the highlight for an EPUB entry.
+
+EPUB chapter text is also now indexed for full-text search, alongside PDF text (previously
+only an EPUB's bibliographic metadata was searchable, never its actual content).
+
+Also fixed: an EPUB attachment no longer routes into the PDF reader and fails silently on
+"Read" — attachments are now identified by type before deciding which reader to open.
+
+The PDF reader itself also gained a round of polish:
+- **Underline and strikeout**, alongside the existing highlight — a mode picker in the
+  reader's header switches what a drag creates, drawn as a thin line rather than a filled
+  block. A **"Note…" button** adds a freestanding marginal note not tied to any drawn region.
+- **A colour picker** (five presets) for highlights/underlines/strikeouts — each annotation
+  keeps its own colour, shown correctly on re-render, not just a single shared tint for every
+  highlight on the page.
+- **"Contents"**, an outline/bookmarks panel — jumps straight to a chapter or section, when
+  the PDF has one.
+- **A search bar** — find text across the whole document, jump between matches, with the
+  current match highlighted in its own colour.
+- **"This page"**, an inline list of the current page's annotations with one-click delete —
+  no need to open the separate "Annotations…" dialog just to remove a stray highlight.
+- **Reading position is remembered**: "Read" now resumes on the page you left off on, saved
+  automatically when the reader closes.
+- **Continuous scroll**: a "Continuous" toggle switches from page-by-page to scrolling
+  smoothly through every page in one view — highlighting, search, and navigation all work
+  the same way in either mode, and switching between them keeps your place.
+- **Document page numbers, Zotero-style**: for a PDF that defines its own printed page
+  numbering (roman-numeral front matter, an index restarting at 1, etc.), the reader now
+  shows and lets you type that printed number instead of always the raw position in the
+  file — type "iv" or "1" and it jumps to the actual page the document itself calls that.
+
+A further round of PDF reader polish:
+- **Contents is now a persistent sidebar**, not a popover — toggle it from the headerbar and
+  it stays open while you navigate, instead of closing after every jump.
+- **Live drag preview**: dragging to highlight/underline/strikeout now shows the region in
+  your current colour *while* you're dragging, instead of only appearing once you let go.
+- **Undo/redo** for every annotation change — a new highlight, a note, a deletion, or a note
+  edit. Undo/Redo buttons in the header, or Ctrl+Z / Ctrl+Shift+Z.
+- **"This page" annotations are now editable, not just deletable** — each row has an inline
+  note field (save on Enter or on losing focus), matching the whole-document "Annotations…"
+  dialog instead of requiring you to open that separate dialog just to edit a note.
+
+## [0.1.1] "Tidy Shelf" — 2026-08-13 — Internal: CI format-check fix
+
+No user-facing changes. The codebase had no `rustfmt.toml` and had never been kept `cargo
+fmt`-clean, so CI's format check had been failing since the earliest run visible in history —
+skipping Clippy and Test on every single push, silently. Reformatted the whole workspace with
+`cargo fmt --all` (pure whitespace/line-wrapping; build, clippy, and both test invocations CI
+runs were re-verified clean before and after) so CI can actually catch something again.
+
+## [0.1.0] "Open Stacks" — 2026-08-13 — First release
+
+Kartoteka's first stable release, after seventeen development builds covering the original
+project brief (vault, Zotero migration, bibliography output, documents, acquisition,
+cross-cutting search) and two extension tracks on top of it: typed relations, facets, an AI
+sidecar, and projects/usage (extension-M2); and a knowledge-graph layer of person/concept/
+school nodes with typed edges to entries (extension-M3). The name is a library-science term
+for shelving patrons can browse directly rather than request from a closed stack — apt for a
+plain-file library that stays readable and editable without Kartoteka at all.
+
+### Highlights
+
+- **A plain-file library.** Entries are Hayagriva YAML, notes are Markdown, everything lives
+  in a git repository — nothing locked in an opaque database.
+- **Getting references in.** Import from Zotero (BetterBibTeX or its SQLite store); acquire
+  by DOI, arXiv, or ISBN (the "Acquire…" dialog, Zotero's "Add by identifier" equivalent); or
+  drop a PDF or EPUB in and it identifies itself, enriching via DOI/ISBN lookups where it can.
+- **Working with PDFs.** A built-in viewer with highlighting, annotation management, and
+  live rectangle highlighting.
+- **Getting references out.** Bibliography output in SBL and Chicago styles, and annotated
+  Typst documents that pair each reference with its note.
+- **Finding things again.** Full-text search over metadata, notes, annotations, and PDF text,
+  with field scoping (`author:`, `title:`, `tag:`, `type:`, `year:`).
+  Typed relations, facets, and free-text notes, plus a knowledge-graph layer — link an entry
+  to a person, concept, or school of thought, not just to another entry.
+- **Sync.** Git, GitHub (device-flow sign-in), or WebDAV.
+
+Full development history, including everything above in its original increments, follows
+below.
+
+## [0.1.0-dev17] — 2026-08-13 — Fix: hamburger menu not opening
+
+dev16's hand-built hamburger popover (~20 rows) had no height cap, unlike the `gio::Menu` it
+replaced, which scrolls automatically once its content doesn't fit. Reproduced locally: on a
+screen without enough room below the button for the popover's full natural height, it didn't
+reposition or shrink — it failed to show at all, which is what "click it and nothing happens"
+was.
+
+### Fixed
+
+- **The hand-built popover helper (`popover_menu`, shared by the hamburger and the detail
+  panel's "Edit"/"More" popovers) now wraps its rows in a `ScrolledWindow` capped at 420px**,
+  scrolling past that instead of growing unbounded. Short popovers (Edit, More) are
+  unaffected — the cap only engages once content actually exceeds it.
+
+## [0.1.0-dev16] — 2026-08-13 — Detail panel UX pass
+
+The detail panel's action row had grown to as many as eleven buttons (Edit note, Edit
+citation…, Cite, Read, Annotations…, Open externally, Collections…, Relations…, AI
+keywords…, Link author…, Locate, Delete…) in a single non-wrapping row, which forced the
+whole panel to scroll horizontally to reach the later ones at any normal window width. Fixing
+that properly — rather than just letting the buttons wrap — was also a chance to address a
+broader clarity gap: the panel dumped every field (including Typst-internal ones like the
+citation key) at equal weight, and the hamburger menu's 20-odd actions were one flat
+`gio::Menu` list.
+
+### Changed — action row capped at four items, everything else in a "More" popover
+
+- **The action row is now `[Read/Find PDF] [Edit ▾] [Cite] [More ▾]`**, never more, regardless
+  of how many actions an entry has. "Edit" is a small popover offering both edit surfaces
+  (citation fields vs. personal note); "More" holds Collections…, Relations…, Annotations…,
+  Link author…, AI keywords…, Open externally, Open DOI, Google Scholar, and — set off by its
+  own separator — Delete…, which no longer sits in the always-visible row where a stray click
+  was one motion away.
+- **The hamburger menu is now a hand-built grouped popover** instead of a flat `gio::Menu`
+  model — the same house-style pattern (Zerkalo's hamburger) CLAUDE.md's UI standard calls for
+  once a menu has "more than a handful" of actions. Theme (System/Light/Dark) is now three
+  rows with the active one bold, replacing a nested submenu — the same "name-as-label" toggle
+  idiom the status bar convention already uses elsewhere in the suite.
+- **The detail panel's "Key" and "Used in" rows moved into a collapsed "Details" disclosure**,
+  renamed "Citation key" with a tooltip explaining what it's for — both are Typst-internal
+  concepts a reader of the entry wouldn't recognize, now one click away instead of dumped
+  in the main field list. DOI/ISBN stay visible as-is; they're recognizable identifiers, not
+  jargon.
+
+
+
+Dropping a book PDF onto Kartoteka scraped noticeably less than Zotero — usually just a
+title and author, missing date and publisher entirely — because the fallback path only ever
+read the PDF's own embedded metadata (which rarely carries more than that), with no attempt
+at the ISBN-based enrichment already used for EPUB. A Zotero-style "Add by identifier" search
+already existed (the "Acquire…" dialog/`kartoteka acquire`, DOI/arXiv/ISBN), so this closes
+the other half: better *automatic* enrichment for dropped PDFs.
+
+### Added — ISBN sniffing for dropped PDFs
+
+- **`fond_doc::find_isbn`** scans a PDF's text layer for a checksum-validated ISBN-10 or
+  ISBN-13 — near an "ISBN" label first (the copyright-page case), falling back to any
+  checksum-valid `978`/`979`-prefixed ISBN-13 found unlabeled. Mirrors `find_doi`'s existing
+  scan-and-checksum approach.
+- **PDF import now tries DOI, then ISBN, then embedded metadata, in order** (CLI `add-pdf`
+  and the GUI's "Add PDF…"), each network step falling through to the next on failure instead
+  of hard-erroring — so a DOI lookup that fails to resolve no longer kills an import that
+  could still have succeeded via ISBN or embedded title/author. An ISBN hit is enriched via
+  the same OpenLibrary lookup EPUB import already uses, pulling in date, publisher, location,
+  and page count that embedded PDF metadata never carries. If the ISBN was found but the
+  network lookup itself failed, it's still kept and written into the fallback entry's
+  `serial-number` rather than silently dropped.
+
+
+
+The last Tier 2 item from `docs/M4-SPEC.md`: the node-side relation editor. Tier 2 is now
+fully built.
+
+### Added — node-side relation editor
+
+- **A node can now relate to another node, or to an entry, without leaving its own editor.**
+  The node editor gained a "Relations…" button that opens the same dialog the entry detail
+  panel already uses — it turned out the library layer (`set_relations`/
+  `forward_relations`) was already host-agnostic since the M3 knowledge-graph work, so this
+  was a missing entry point, not missing plumbing. Closes the one real gap left in the
+  knowledge graph: a node-to-node edge (e.g. "this person influenced that person") had no
+  path to creation other than hand-editing YAML. This was the last item on
+  `docs/M4-SPEC.md` Tier 2 — Tier 2 is now fully built.
+
+### Added — "Used in" panel and a global task view
+
+- **The detail panel shows "Used in: Project (doc.typ)"** whenever a declared project's
+  Typst documents cite the entry's key — the reverse map `scan_usage()` already computed,
+  now actually surfaced.
+- **A "Tasks…" menu item aggregates every note's tasks into one list** — undone first
+  (nearest due date first), then done — with the owning entry, a due date if set, a
+  checkbox that saves straight back to that task's note, and "Go to entry". See
+  `docs/M4-SPEC.md` Tier 2, which is now down to one item (the node-side relation editor).
+
+## [0.1.0-dev13] — 2026-08-11 — Development build
+
+Two more Tier 2 items from `docs/M4-SPEC.md`: facet chip grouping and promote-AI-keyword-to-tag.
+
+### Added — facet chip grouping and promote-AI-keyword-to-tag
+
+- **The detail panel's Tags row now groups faceted tags** (`discipline:theology`) under a
+  small caption per facet, rendered as pill chips, instead of one flat comma-joined string
+  that stopped scanning as soon as facets and plain topical tags mixed together.
+- **An "AI keywords…" button** (shown only when an entry has an `ai/<key>.yml` sidecar with
+  keywords) offers them as tags to add — already-tagged keywords shown disabled, the rest
+  pre-checked. One-directional and user-triggered only; nothing writes back into the AI
+  sidecar. See `docs/M4-SPEC.md` Tier 2.
+
+## [0.1.0-dev12] — 2026-08-11 — Development build
+
+Two Tier 2 items from `docs/M4-SPEC.md`: progress/cite/task editing in the note editor, and
+node deletion.
+
+### Added — progress, cite, and task editing in the note editor
+
+- **The note editor gained three sections that were previously disk-only round-trips:**
+  reading progress (page X of Y), per-entry citation preferences (a short form and a
+  preferred style), and a small editable task list — add a task, check it done, give it a
+  due date, delete it. See `docs/M4-SPEC.md` Tier 2.
+
+### Added — node deletion
+
+- **The Nodes manager can delete a node.** A "Delete…" button in the node editor (only when
+  editing an existing node, matching the entry detail panel's pattern) removes the node file
+  and strips every relation edge naming it from every other entry or node, behind the same
+  confirmation dialog the entry delete flow already uses. `Library::delete_node()` reuses
+  `delete_entry`'s `strip_all_edges_to` cleanup, which already spans notes ∪ nodes.
+
+## [0.1.0-dev11] — 2026-08-11 — Development build
+
+Finishes live PDF annotation (real text-run selection and an annotation management UI, on
+top of `dev10`'s rectangle highlighting) and adopts the Fond suite's shared theming
+throughout the app.
+
+### Added — real text-run selection when highlighting
+
+- **Dragging over text now selects the actual text, not just a rectangle.** The highlight
+  hugs each line's real glyph extent — one quad per line — instead of the drag's own
+  bounding box, and the selected text is captured into the annotation (`Annotation.snippet`),
+  which Phase 1's rectangle highlights couldn't do. Dragging over an area with no text (a
+  figure, a blank margin) still falls back to a plain rectangle, so nothing regressed.
+  `fond_doc::select_text_in_rect()` walks every character on the page and groups the ones
+  under the drag into lines — deliberately not PDFium's `chars_inside_rect()`, which only
+  resolves the two characters nearest the drag's left/right edges and is wrong the moment a
+  selection spans more than one line. Three new `fond-doc` integration tests exercise this
+  against a real two-line PDF (spanning both lines, one line only, and a blank-area miss).
+  See `docs/M4-SPEC.md` §4A Phase 2.
+
+### Added — annotation management
+
+- **The detail panel gains an "Annotations…" button** (shown whenever an entry has any)
+  listing every highlight: page and kind, a "Go to page" button that opens the built-in
+  reader jumped straight to it, an editable note (saves on Enter or on losing focus), and a
+  delete button. This closes the loop opened by `0.1.0-dev10`'s drag-to-highlight — until
+  now there was no way to review, annotate, or remove a highlight once drawn, only a bare
+  count on the detail panel. See `docs/M4-SPEC.md` §4A Phase 3.
+
+### Added — adopted fond-style theming, throughout the app
+
+- **The GTK app now loads the Fond suite's shared stylesheet** (`fond-style`, vendored at
+  `kartoteka-ui-gtk/style/fond.css`) — until this, Kartoteka predated the suite-wide theming
+  work entirely and every window used bare libadwaita defaults. Added
+  `kartoteka/kartoteka-ui-gtk` to `fond-style`'s `sync.sh`/`check.sh` app list so future
+  stylesheet changes reach it the same way they reach
+  Rubric/Zerkalo/Skrizhal/Iskra/Gost/Kopilka/Retseptura/Chered.
+- **Every header bar in the app** (24 of them, across the main window and every dialog) now
+  carries the shared chrome tint instead of Adwaita's plain white.
+- **The main window's three panes** use the suite's surface classes: `.fond-sidebar` on the
+  collections pane, `.fond-ground` on the entries-list pane, `.fond-view` on the detail
+  pane.
+- **Every real row-list in the app** — the entries list, the collections list, the Cite
+  picker, the Relations dialog, the Tags manager, the Nodes manager, and the Annotations
+  dialog — now uses the shared `.fond-list`/`row.fond-row`/`.fond-row-title`/
+  `.fond-row-meta` conventions in place of Adwaita's `navigation-sidebar` (an accent-colour
+  fill) or plain unstyled labels, and the entries list, Tags manager, and Annotations
+  dialog additionally group into `.fond-card` cards with rounded first/last corners.
+  Checklist-style forms (collection membership, link-authors) were deliberately left as
+  plain forms — they're short confirmation lists, not scannable content, so the row/card
+  treatment doesn't fit them the way it fits an actual list.
+- The bottom status bar now carries `.fond-chrome`/`.fond-statusbar` to match.
+- Verified light and dark headless across the main window, the Tags manager, and the Nodes
+  manager.
+
+## [0.1.0-dev10] — 2026-08-11 — Development build
+
+Live PDF highlighting in the built-in viewer, and richer metadata from the ISBN/URL/manual
+lookups (fuller dates, plus fields that were being scraped but not captured).
+
+### Added — live PDF highlighting
+
+- **The built-in PDF viewer can now create highlights, not just display embedded ones.**
+  Click-drag over a rendered page draws a highlight, saved immediately to the entry's
+  `annots/<key>.json` sidecar and blended back into the page render so it's visible right
+  away. This is the sidecar format's first *writer* — until now, annotations only entered it
+  via importing highlights already embedded in a PDF by another reader.
+  `fond-doc` gains `page_size()` and `blend_highlights()` (pure pixel math, unit-tested);
+  `fond-bib::Annotation` gains a `drawn()` constructor alongside the existing `imported()`.
+  See `docs/M4-SPEC.md` §4A for the phased plan (this is Phase 1 — rectangle highlights only;
+  real text-run selection and an annotation list/edit/delete UI are the follow-ups).
+
+### Added — richer metadata from lookups
+
+- **The ISBN lookup (OpenLibrary) no longer truncates dates to a bare year.** `publish_date`
+  values like "October 2007" or "Oct 01, 2007" now become `2007-10` / `2007-10-01` —
+  whatever precision OpenLibrary actually gave — instead of always dropping to `2007`.
+  It also now captures the place of publication (`location`), the edition statement (as
+  `note`), and OCLC/LCCN identifiers alongside the ISBN, when OpenLibrary has them.
+- **"Add from URL" and the manual "New item" form gain the same date fix**, plus capture
+  volume, issue, page range, and language from Highwire/Dublin-Core meta tags
+  (`citation_volume`, `citation_issue`, `citation_firstpage`/`citation_lastpage`,
+  `citation_language`) — previously discarded entirely.
+- Verified against the real parser, not just string checks: a new `fond-bib` integration
+  test builds an entry from a full OpenLibrary-shaped JSON fixture through
+  `Library::add_from_yaml` and confirms Hayagriva accepts every new field.
+
 ## [0.1.0-dev9] — 2026-07-27 — Development build
 
 Three library-management features: deleting entries, editing citation fields, and importing

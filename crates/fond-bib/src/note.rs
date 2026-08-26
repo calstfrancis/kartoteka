@@ -3,6 +3,7 @@
 //! See `docs/DATA-MODEL.md`. Keeping this out of `entries/*.yml` is what lets the
 //! generated `library.yml` stay pure Hayagriva.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -33,11 +34,19 @@ pub struct Attachment {
 }
 
 /// Coarse reading position (§8). Pairs with `read-status: reading`.
+///
+/// For a PDF, `page`/`of` are the whole story. For an EPUB — which has no fixed page
+/// grid — `page`/`of` hold the 1-based chapter index and chapter count instead, and
+/// `chapter_percent` (0-100) adds the scroll position within that chapter, so the reader
+/// can resume at "12% through Chapter 4" rather than just "Chapter 4". `None` for a PDF,
+/// where `page` alone is already precise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Progress {
     pub page: u32,
     pub of: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_percent: Option<u8>,
 }
 
 /// Per-entry citation preferences (§13). `preferred_style` is advisory to export; `short`
@@ -103,6 +112,24 @@ pub struct NoteFrontmatter {
     /// Per-item to-dos (§20).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<Task>,
+    /// Values for library-wide custom fields (see `custom_field::CustomFieldDefs`), keyed
+    /// by field name. Always plain strings regardless of the field's declared type — a
+    /// `Tag`-type value is comma-separated, a `Number`-type value is numeral text. A field
+    /// with no value here just doesn't show one; nothing needs backfilling when a new
+    /// field is defined.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub custom_fields: HashMap<String, String>,
+    /// Set when this entry was created via "Create book part…" from another entry in this
+    /// library (that entry's key) — lets "Refresh from source book" re-pull the parent
+    /// book's current fields later, instead of the copy silently drifting out of sync the
+    /// way a plain duplicate-and-edit (Zotero's "Create Book Section From Item") would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from_book: Option<String>,
+    /// Whether the source book's author(s) were copied into the new part's `parent:` block
+    /// as `editor` or kept as `author` — remembered so a refresh regenerates the same shape
+    /// instead of guessing. `None` for anything not created this way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from_role: Option<String>,
 }
 
 /// Split a faceted tag into `(facet, value)`. A tag containing `:` is faceted
@@ -212,8 +239,18 @@ mod tests {
     fn round_trips_small_fields() {
         let text = "---\nprogress:\n  page: 112\n  of: 420\ncite:\n  short: Cone, Black Theology\n  preferred-style: chicago-author-date\ntasks:\n  - text: Verify the Barth quotation\n    done: false\n    due: 2026-08-15\n  - text: Re-read chapter 3\n    done: true\n---\nBody.\n";
         let note = Note::parse(text, &p()).unwrap();
-        assert_eq!(note.frontmatter.progress, Some(Progress { page: 112, of: 420 }));
-        assert_eq!(note.frontmatter.cite.short.as_deref(), Some("Cone, Black Theology"));
+        assert_eq!(
+            note.frontmatter.progress,
+            Some(Progress {
+                page: 112,
+                of: 420,
+                chapter_percent: None
+            })
+        );
+        assert_eq!(
+            note.frontmatter.cite.short.as_deref(),
+            Some("Cone, Black Theology")
+        );
         assert_eq!(note.frontmatter.tasks.len(), 2);
         assert!(note.frontmatter.tasks[1].done);
         // Round-trips unchanged.
@@ -226,7 +263,10 @@ mod tests {
         let text = "---\nrelations:\n  - predicate: critiques\n    target: barth1932kd\n  - predicate: cited-by\n    target: cone1975god\n    inverse: true\n---\nBody.\n";
         let note = Note::parse(text, &p()).unwrap();
         assert_eq!(note.frontmatter.relations.len(), 2);
-        assert_eq!(note.frontmatter.relations[0].predicate, Predicate::Critiques);
+        assert_eq!(
+            note.frontmatter.relations[0].predicate,
+            Predicate::Critiques
+        );
         assert!(!note.frontmatter.relations[0].inverse);
         assert_eq!(note.frontmatter.relations[1].predicate, Predicate::CitedBy);
         assert!(note.frontmatter.relations[1].inverse);

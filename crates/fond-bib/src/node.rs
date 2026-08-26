@@ -130,9 +130,21 @@ mod tests {
         let node = Node::parse(text, &p()).unwrap();
         assert_eq!(node.frontmatter.node_type, NodeType::Person);
         assert_eq!(node.frontmatter.label, "Augustine of Hippo");
-        assert_eq!(node.frontmatter.aliases, vec!["Augustine", "Aurelius Augustinus"]);
-        assert_eq!(node.frontmatter.identifiers.get("wikidata").map(String::as_str), Some("Q8018"));
-        assert_eq!(node.frontmatter.identifiers.get("viaf").map(String::as_str), Some("66806872"));
+        assert_eq!(
+            node.frontmatter.aliases,
+            vec!["Augustine", "Aurelius Augustinus"]
+        );
+        assert_eq!(
+            node.frontmatter
+                .identifiers
+                .get("wikidata")
+                .map(String::as_str),
+            Some("Q8018")
+        );
+        assert_eq!(
+            node.frontmatter.identifiers.get("viaf").map(String::as_str),
+            Some("66806872")
+        );
         assert_eq!(node.frontmatter.relations.len(), 2);
         assert_eq!(node.frontmatter.relations[0].predicate, Predicate::Related);
         assert_eq!(node.frontmatter.relations[0].target, "aquinas");

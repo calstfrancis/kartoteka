@@ -97,7 +97,13 @@ mod tests {
     fn empty_collections_are_elided() {
         let ai = AiMetadata::new("m", "t");
         let yaml = ai.to_yaml().unwrap();
-        assert!(!yaml.contains("keywords"), "empty keywords should be elided: {yaml}");
-        assert!(!yaml.contains("source-hash"), "absent source-hash elided: {yaml}");
+        assert!(
+            !yaml.contains("keywords"),
+            "empty keywords should be elided: {yaml}"
+        );
+        assert!(
+            !yaml.contains("source-hash"),
+            "absent source-hash elided: {yaml}"
+        );
     }
 }

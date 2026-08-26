@@ -9,15 +9,21 @@ pub mod epub;
 pub mod error;
 pub mod pdf;
 
-pub use epub::{extract_metadata as extract_epub_metadata, EpubMetadata};
+pub use epub::{
+    extract_all as extract_epub, extract_metadata as extract_epub_metadata,
+    extract_text as extract_epub_text, open_book, strip_tags as strip_epub_tags, EpubBook,
+    EpubMetadata, TocEntry,
+};
 
 pub use annotation::{
     embed_highlights, extract_annotations, AnnotationToEmbed, PdfAnnotation, PdfAnnotationKind,
 };
 pub use error::{DocError, Result};
 pub use pdf::{
-    bind_pdfium, extract_metadata, extract_text, extract_text_from_file, find_doi, page_count,
-    render_page, PdfMeta, PdfText, RenderedPage,
+    bind_pdfium, blend_annotations, blend_highlights, extract_metadata, extract_text,
+    extract_text_from_file, find_doi, find_isbn, outline, page_count, page_labels, page_size,
+    render_page, search_document, select_text_in_rect, select_text_range, MarkupKind, PdfMeta,
+    PdfOutlineEntry, PdfSearchMatch, PdfText, RenderedPage, TextSelection,
 };
 
 /// Re-exported so callers can name the binding handle without depending on `pdfium-render`.

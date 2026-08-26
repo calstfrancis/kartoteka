@@ -17,7 +17,8 @@ fn highlight(id: &str) -> Annotation {
     Annotation {
         id: id.into(),
         kind: AnnotationKind::Highlight,
-        page: 7,
+        page: Some(7),
+        chapter: None,
         quadpoints: vec![[72.0, 640.1, 523.4, 640.1, 72.0, 628.7, 523.4, 628.7]],
         snippet: Some("a gospel of liberation".into()),
         snippet_prefix: None,
