@@ -10,6 +10,3 @@ Plans/
 # Editor swap files
 *.kate-swp
 *~
-
-# Flatpak cargo-sources generator (download to /tmp; keep out of the repo)
-/flatpak-cargo-generator.py
