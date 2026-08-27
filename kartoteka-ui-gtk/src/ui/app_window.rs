@@ -354,7 +354,8 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let widgets_slot: Rc<RefCell<Option<Rc<Widgets>>>> = Rc::new(RefCell::new(None));
     let (column_view, store, selection) = build_entries_column_view();
     apply_column_visibility(&column_view, &config.borrow());
-    reorder_columns(&column_view, &config.borrow().column_order);
+    let column_order = config.borrow().column_order.clone();
+    reorder_columns(&column_view, &column_order);
     // Column order changes (drag-to-reorder) show up as `items-changed` on the columns
     // model — the same debounced-save timer as window size/pane position, so a drag that
     // passes through several intermediate positions collapses into one write.

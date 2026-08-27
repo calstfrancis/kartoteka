@@ -2,6 +2,19 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.7.1] "Firm Spine" — 2026-08-27 — Startup crash fix
+
+**Fixed: Kartoteka could fail to start (`RefCell already borrowed` panic → abort) on
+every launch, not just when opening a library.** The 0.6.1 "Quiet Stack" fix closed this
+same double-borrow hole in `open_library`, but the app window's own construction had an
+identical one: it read the saved column order out of a borrowed config and passed it
+straight into `reorder_columns`, which reorders the entries spreadsheet's columns —
+and that synchronously fires GTK's `items-changed` signal, whose handler tries to
+borrow the same config to persist the column order. The double borrow panicked inside
+a GTK signal callback, which can't unwind, so the whole process aborted before a
+window ever appeared. Any library with a saved column order hit this on every launch.
+Fixed by copying the column order out of the config before touching the columns.
+
 ## [0.7.0] "Whole Volume" — 2026-08-24 — Whole-book EPUB search and reading-position resume
 
 **Whole-book search in the EPUB reader.** The search bar's new "Whole book" toggle

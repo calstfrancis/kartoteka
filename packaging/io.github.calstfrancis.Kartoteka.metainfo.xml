@@ -46,6 +46,17 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.7.1" date="2026-08-27">
+      <description>
+        <p>0.7.1 "Firm Spine" — fixes a startup crash that could happen on every launch,
+        not just when opening a library.</p>
+        <ul>
+          <li>Fixed a <code>RefCell already borrowed</code> panic that could abort the
+          app on startup for any library with a saved column order, before a window
+          ever appeared.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-08-24">
       <description>
         <p>0.7.0 "Whole Volume" — whole-book EPUB search, and the EPUB reader now
