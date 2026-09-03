@@ -365,7 +365,10 @@ pub fn fetch_isbn_cover(isbn: &str) -> Result<Option<Vec<u8>>> {
     }
     if !response.status().is_success() {
         return Err(BibError::Import {
-            message: format!("cover lookup for '{isbn}' failed: HTTP {}", response.status()),
+            message: format!(
+                "cover lookup for '{isbn}' failed: HTTP {}",
+                response.status()
+            ),
         });
     }
     let bytes = response

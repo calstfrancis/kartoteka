@@ -63,7 +63,8 @@ pub(crate) fn build_bookshelf_view(
     // unbind: a stale entry pointing at a since-recycled widget is harmless (the update just
     // lands on an orphaned `Box` nobody is looking at), and last-bind-wins keeps it correct
     // for the common case of a single card per ISBN.
-    let bound_cards: Rc<RefCell<HashMap<String, gtk4::Box>>> = Rc::new(RefCell::new(HashMap::new()));
+    let bound_cards: Rc<RefCell<HashMap<String, gtk4::Box>>> =
+        Rc::new(RefCell::new(HashMap::new()));
 
     let factory = gtk4::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
@@ -99,7 +100,10 @@ pub(crate) fn build_bookshelf_view(
     scroller.set_child(Some(&grid));
     scroller.set_vexpand(true);
 
-    BookshelfView { scroller, selection }
+    BookshelfView {
+        scroller,
+        selection,
+    }
 }
 
 /// One card: a cover slot (placeholder icon, filled in by a real cover when available) plus
@@ -274,7 +278,11 @@ fn bind_card(
 /// thumbnail isn't worth interrupting the user for, and the placeholder from `bind_card`
 /// already stands.
 #[allow(deprecated)]
-fn spawn_cover_fetch(bound_cards: Rc<RefCell<HashMap<String, gtk4::Box>>>, isbn: String, library: Library) {
+fn spawn_cover_fetch(
+    bound_cards: Rc<RefCell<HashMap<String, gtk4::Box>>>,
+    isbn: String,
+    library: Library,
+) {
     let (sender, receiver) =
         glib::MainContext::channel::<Option<std::path::PathBuf>>(glib::Priority::DEFAULT);
     let isbn_thread = isbn.clone();
