@@ -54,6 +54,10 @@ pub struct Config {
     /// on its own. Missing/unknown ids are appended in their built-in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub column_order: Vec<String>,
+    /// Whether the entries pane is showing the Bookshelf cover grid instead of the
+    /// spreadsheet, restored on next launch.
+    #[serde(default)]
+    pub bookshelf_view: bool,
 }
 
 fn default_auto_backup_interval() -> u32 {

@@ -334,6 +334,50 @@ pub fn fetch_isbn_yaml(isbn: &str) -> Result<String> {
     isbn_json_to_yaml(&body, &isbn)
 }
 
+/// Minimum plausible size (bytes) for a real OpenLibrary cover JPEG at size `M`. A
+/// defensive fallback alongside `default=false` below, in case a "success" response is
+/// still a tiny placeholder image rather than a real cover.
+const MIN_COVER_BYTES: usize = 1000;
+
+/// Fetch a book's cover image (JPEG bytes) from the OpenLibrary Covers API, at size `M`
+/// (medium — right-sized for a grid thumbnail). Returns `Ok(None)` — not an error — when
+/// OpenLibrary has no cover for this ISBN. `default=false` asks the API to answer with a
+/// plain HTTP 404 in that case instead of its own "no cover" placeholder graphic.
+pub fn fetch_isbn_cover(isbn: &str) -> Result<Option<Vec<u8>>> {
+    let isbn = isbn.trim().replace(['-', ' '], "");
+    if isbn.is_empty() {
+        return Err(BibError::Import {
+            message: "empty ISBN".to_string(),
+        });
+    }
+    let url = format!("https://covers.openlibrary.org/b/isbn/{isbn}-M.jpg?default=false");
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| net_err("could not build HTTP client", e))?;
+    let response = client
+        .get(&url)
+        .send()
+        .map_err(|e| net_err("cover request failed", e))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(BibError::Import {
+            message: format!("cover lookup for '{isbn}' failed: HTTP {}", response.status()),
+        });
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|e| net_err("could not read cover response", e))?
+        .to_vec();
+    if bytes.len() < MIN_COVER_BYTES {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
 /// Map an OpenLibrary `jscmd=data` JSON response to a Hayagriva YAML document. Separated
 /// from the network fetch so it can be tested offline.
 pub fn isbn_json_to_yaml(json: &str, isbn: &str) -> Result<String> {

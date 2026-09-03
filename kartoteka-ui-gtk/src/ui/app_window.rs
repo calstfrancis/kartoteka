@@ -18,7 +18,7 @@ use webkit6::prelude::*;
 use fond_bib::{entry as bibentry, Library};
 
 use crate::config::Config;
-use crate::ui::friendly;
+use crate::ui::{bookshelf, friendly};
 use crate::{github, secret_store, webdav};
 
 /// Which kind of identifier the acquire dialog is looking up.
@@ -48,11 +48,17 @@ struct EntrySummary {
     /// spreadsheet columns — same values `show_detail`'s custom field rows show, just also
     /// available at list-row granularity without a per-entry note re-read.
     custom_fields: HashMap<String, String>,
+    /// Hayagriva entry type, lowercased (e.g. "book", "article") — used by the Bookshelf
+    /// view's book-only filter.
+    entry_type: String,
+    /// ISBN as authored on the entry, or empty if none — used to look up/fetch a cached
+    /// cover for the Bookshelf view.
+    isbn: String,
 }
 
 #[derive(Default)]
-struct AppState {
-    library: Option<Library>,
+pub(crate) struct AppState {
+    pub(crate) library: Option<Library>,
     entries: Vec<EntrySummary>,
     /// Indices into `entries` matching the current filter, in display order.
     visible: Vec<usize>,
@@ -103,7 +109,7 @@ struct Widgets {
 /// structs. `idx` is the entry's stable position in `AppState.entries`; unlike the row's
 /// position in the (sortable, filterable) `ColumnView` model, it never changes underneath an
 /// open detail view.
-mod entry_row {
+pub(crate) mod entry_row {
     use super::EntrySummary;
     use glib::subclass::types::ObjectSubclassIsExt;
 
@@ -125,6 +131,8 @@ mod entry_row {
             *imp.tags.borrow_mut() = e.tags.clone();
             *imp.status.borrow_mut() = e.status.clone();
             *imp.custom_fields.borrow_mut() = e.custom_fields.clone();
+            *imp.entry_type.borrow_mut() = e.entry_type.clone();
+            *imp.isbn.borrow_mut() = e.isbn.clone();
             obj
         }
 
@@ -163,6 +171,12 @@ mod entry_row {
                 .cloned()
                 .unwrap_or_default()
         }
+        pub fn entry_type(&self) -> String {
+            self.imp().entry_type.borrow().clone()
+        }
+        pub fn isbn(&self) -> String {
+            self.imp().isbn.borrow().clone()
+        }
         /// Update the cached display fields after a save, so the row reflects the edit
         /// immediately without waiting for the next full list rebuild.
         pub fn set_display(&self, title: String, author: String, year: String) {
@@ -188,6 +202,8 @@ mod entry_row {
             pub tags: RefCell<String>,
             pub status: RefCell<String>,
             pub custom_fields: RefCell<HashMap<String, String>>,
+            pub entry_type: RefCell<String>,
+            pub isbn: RefCell<String>,
         }
 
         #[glib::object_subclass]
@@ -300,6 +316,16 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         .build();
     header.pack_end(&bulk_toggle);
 
+    // Bookshelf toggle: swaps the entries pane between the spreadsheet and a cover-grid
+    // view of just the book entries (see `ui::bookshelf`). Packed right after `bulk_toggle`
+    // so the two entries-display-mode controls sit next to each other — `pack_end` calls
+    // apply in reverse visual order, so this ends up immediately left of it.
+    let bookshelf_toggle = gtk4::ToggleButton::builder()
+        .icon_name("view-grid-symbolic")
+        .tooltip_text("Bookshelf view — cover grid of books")
+        .build();
+    header.pack_end(&bookshelf_toggle);
+
     toolbar_view.add_top_bar(&header);
 
     // Collections pane (leftmost): "All entries" + one row per collection, with a + to
@@ -352,7 +378,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     // block — `widgets_slot` is filled in once it does; edits can't happen before the window
     // is shown, so it's always populated by the time a factory closure runs.
     let widgets_slot: Rc<RefCell<Option<Rc<Widgets>>>> = Rc::new(RefCell::new(None));
-    let (column_view, store, selection) = build_entries_column_view();
+    let (column_view, store, selection, sort_model) = build_entries_column_view();
     apply_column_visibility(&column_view, &config.borrow());
     let column_order = config.borrow().column_order.clone();
     reorder_columns(&column_view, &column_order);
@@ -412,9 +438,28 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let list_scroll = gtk4::ScrolledWindow::new();
     list_scroll.set_child(Some(&column_view));
     list_scroll.set_vexpand(true);
+
+    let bookshelf_view = bookshelf::build_bookshelf_view(&sort_model, state.clone());
+
+    // View-mode stack: swaps the entries pane between the spreadsheet and the Bookshelf
+    // cover grid (see the `bookshelf_toggle` headerbar button below). Both are built
+    // eagerly — constructing the `GridView` is cheap, and cover fetches only fire for
+    // cells actually scrolled into view, so there's no eager-cost concern in building it
+    // up front rather than lazily on first toggle (unlike the PDF reader's continuous view).
+    let view_mode_stack = gtk4::Stack::new();
+    view_mode_stack.add_named(&list_scroll, Some("list"));
+    view_mode_stack.add_named(&bookshelf_view.scroller, Some("grid"));
+    view_mode_stack.set_visible_child_name(if config.borrow().bookshelf_view {
+        "grid"
+    } else {
+        "list"
+    });
+    view_mode_stack.set_vexpand(true);
+    bookshelf_toggle.set_active(config.borrow().bookshelf_view);
+
     sidebar.append(&search);
     sidebar.append(&bulk_bar);
-    sidebar.append(&list_scroll);
+    sidebar.append(&view_mode_stack);
 
     // Detail pane: a vertical box of field rows, rebuilt on selection.
     let detail = gtk4::Box::new(Orientation::Vertical, 10);
@@ -650,6 +695,34 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         });
     }
 
+    // Bookshelf toggle: swaps the entries pane between the spreadsheet and the cover grid.
+    // Note bulk-select mode only affects the spreadsheet (its checkbox column) — toggling
+    // to Bookshelf while it's on just leaves that column's state inert, not shown.
+    {
+        let config = config.clone();
+        let view_mode_stack = view_mode_stack.clone();
+        bookshelf_toggle.connect_toggled(move |b| {
+            view_mode_stack.set_visible_child_name(if b.is_active() { "grid" } else { "list" });
+            config.borrow_mut().bookshelf_view = b.is_active();
+            config.borrow().save();
+        });
+    }
+
+    // Bookshelf grid selection → show detail, mirroring the spreadsheet's own wiring above.
+    // `idx()` is stable across both the full-sorted and book-filtered models, so
+    // `show_detail` needs no changes to serve either view.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        bookshelf_view
+            .selection
+            .connect_selected_notify(move |sel| {
+                if let Some(row) = sel.selected_item().and_downcast::<EntryRow>() {
+                    show_detail(&state, &widgets, row.idx());
+                }
+            });
+    }
+
     // Bulk actions: add a tag, add to a collection, or delete — applied to every currently
     // checked key. All three clear the bulk selection and reload on completion.
     {
@@ -751,8 +824,15 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
             .unwrap_or_else(|| "system".to_string()),
     );
 
-    // Restore the last-opened library.
-    if let Some(path) = config.borrow().library_path.clone() {
+    // Restore the last-opened library. The `.clone()` is bound to `last_library` first,
+    // rather than matched directly in the `if let`'s scrutinee, so the temporary `Ref`
+    // `config.borrow()` produces is dropped immediately instead of being kept alive for the
+    // whole `if let` block (a real, pre-existing bug: `open_library` below can synchronously
+    // trigger a column-reorder signal whose handler does `config.borrow_mut()` — with the
+    // scrutinee-bound `Ref` still alive across that call, that panics with "already
+    // borrowed").
+    let last_library = config.borrow().library_path.clone();
+    if let Some(path) = last_library {
         if path.is_dir() {
             open_library(&state, &widgets, path);
         }
@@ -3886,6 +3966,8 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
                         tags,
                         status,
                         custom_fields,
+                        entry_type: format!("{:?}", parsed.entry.entry_type()).to_lowercase(),
+                        isbn: parsed.entry.isbn().unwrap_or_default().to_string(),
                     });
                 }
             }
@@ -6679,7 +6761,12 @@ fn add_text_column_with(
 /// ever cleared/refilled by `refresh_list` — sort order lives entirely in the `ColumnView`'s
 /// own sorter, so it survives a refill (a re-filter or a reload after an edit) without
 /// needing to be reapplied.
-fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::SingleSelection) {
+fn build_entries_column_view() -> (
+    gtk4::ColumnView,
+    gio::ListStore,
+    gtk4::SingleSelection,
+    gtk4::SortListModel,
+) {
     let store = gio::ListStore::new::<EntryRow>();
 
     let column_view = gtk4::ColumnView::new(None::<gtk4::SingleSelection>);
@@ -6855,12 +6942,12 @@ fn build_entries_column_view() -> (gtk4::ColumnView, gio::ListStore, gtk4::Singl
     column_view.append_column(&formats_column);
 
     let sort_model = gtk4::SortListModel::new(Some(store.clone()), column_view.sorter());
-    let selection = gtk4::SingleSelection::new(Some(sort_model));
+    let selection = gtk4::SingleSelection::new(Some(sort_model.clone()));
     selection.set_autoselect(false);
     selection.set_can_unselect(true);
     column_view.set_model(Some(&selection));
 
-    (column_view, store, selection)
+    (column_view, store, selection, sort_model)
 }
 
 fn column_by_id(column_view: &gtk4::ColumnView, id: &str) -> Option<gtk4::ColumnViewColumn> {

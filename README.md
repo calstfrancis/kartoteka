@@ -10,7 +10,7 @@ opaque database. The search index and metadata cache are disposable and rebuild 
 files with one command. `library.yml` is regenerated on every write, so
 `#bibliography("library.yml")` in Typst is always current.
 
-> Status: **0.7.1 "Firm Spine"**, released 2026-08-27. A full GTK4/libadwaita desktop app
+> Status: **0.8.0 "Dust Jacket"**, released 2026-09-03. A full GTK4/libadwaita desktop app
 > (`kartoteka-ui-gtk`) ships alongside the headless CLI, distributed as a flatpak — see
 > **Install** below. See `docs/ROADMAP.md` for what's still ahead.
 
@@ -21,6 +21,9 @@ files with one command. `library.yml` is regenerated on every write, so
 - A Zotero-style spreadsheet view of your entries, with optional columns for tags,
   status, and any custom field you define; drag-to-reorder columns and bulk actions
   (tag/collection/delete) across a multi-selection.
+- A Bookshelf view — a cover-grid alternative to the spreadsheet, showing just your book
+  entries with cover art (fetched by ISBN from OpenLibrary and cached locally) and a
+  reading-status badge, for when Kartoteka is doing double duty as a reading tracker.
 - Import from Zotero (BetterBibTeX and the Zotero SQLite store), or acquire references by
   DOI, arXiv, or ISBN. Drop a PDF or EPUB in and it identifies itself.
 - Built-in PDF and EPUB readers with highlighting, underline/strikeout, freestanding

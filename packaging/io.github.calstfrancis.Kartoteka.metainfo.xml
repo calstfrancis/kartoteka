@@ -46,6 +46,24 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.8.0" date="2026-09-03">
+      <description>
+        <p>0.8.0 "Dust Jacket" — a new Bookshelf view: a cover-grid alternative to the
+        entries spreadsheet, for when Kartoteka is doing double duty as a reading
+        tracker.</p>
+        <ul>
+          <li>A new headerbar toggle swaps the entries pane between the spreadsheet and
+          a grid of book covers — narrowed to book entries, but still respecting
+          whatever collection filter or search is active. Cover art is fetched by ISBN
+          from OpenLibrary and cached locally; a book with no ISBN or no cover found
+          gets a plain placeholder card with its title and author. Each card shows a
+          "Reading"/"Read" badge from the same read-status already used elsewhere.</li>
+          <li>Fixed another <code>RefCell already borrowed</code> startup-crash panic,
+          in the same family as 0.7.1 "Firm Spine" and 0.6.1 "Quiet Stack" — this one in
+          the last-opened-library restore on launch.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-08-27">
       <description>
         <p>0.7.1 "Firm Spine" — fixes a startup crash that could happen on every launch,

@@ -341,6 +341,32 @@ impl Library {
         Ok(attachment)
     }
 
+    /// Directory holding cached cover images (fetched from OpenLibrary by ISBN), keyed by
+    /// normalized ISBN rather than content hash — a re-fetch for the same ISBN should just
+    /// overwrite the same file, not accumulate blobs. Derived, gitignored state alongside
+    /// `attachments/` (see `DERIVED_DIR`).
+    pub fn covers_dir(&self) -> PathBuf {
+        self.root.join(DERIVED_DIR).join("covers")
+    }
+
+    /// Where a cached cover for `isbn` would live, whether or not it has been fetched yet.
+    /// Normalizes the ISBN the same way `acquire::fetch_isbn_cover` does, so lookups are
+    /// hyphenation-insensitive.
+    pub fn cover_cache_path(&self, isbn: &str) -> PathBuf {
+        let isbn = isbn.trim().replace(['-', ' '], "");
+        self.covers_dir().join(format!("{isbn}.jpg"))
+    }
+
+    /// Save fetched cover bytes for `isbn` into the cache, creating `covers_dir()` if
+    /// needed. Idempotent: a re-fetch just overwrites the same path.
+    pub fn store_cover(&self, isbn: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let dir = self.covers_dir();
+        fs::create_dir_all(&dir).map_err(|e| BibError::io(&dir, e))?;
+        let path = self.cover_cache_path(isbn);
+        fs::write(&path, bytes).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
     /// Load a note if one exists for the key.
     pub fn load_note(&self, key: &str) -> Result<Option<Note>> {
         let path = self.note_path(key);

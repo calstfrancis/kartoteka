@@ -2,6 +2,31 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.8.0] "Dust Jacket" — 2026-09-03 — Bookshelf view
+
+**New Bookshelf view: a cover-grid alternative to the entries spreadsheet.** A toggle in
+the headerbar (next to the bulk-select toggle) swaps the entries pane between the
+existing spreadsheet and a grid of book covers — narrowed to `type: book` entries, but
+otherwise respecting whatever collection filter or search query is already active, so
+it's a genuine second view of the same filtered set rather than a separate browsing mode.
+Each card shows a "Reading"/"Read" badge sourced from the same `read-status` note
+frontmatter the spreadsheet's Status column already reads, and cover art fetched by ISBN
+from the OpenLibrary Covers API, cached locally at `.kartoteka/covers/<isbn>.jpg`
+(gitignored, alongside `attachments/`) so a cover is only ever fetched once per book. A
+book with no ISBN, or no cover found for its ISBN, gets a plain placeholder card with its
+title and author rather than a broken image. The view choice persists across restarts
+(`bookshelf_view` in `gui.json`).
+
+**Fixed: a second startup crash from the same double-borrow class of bug 0.7.1 "Firm
+Spine" fixed for `reorder_columns`.** Restoring the last-opened library on launch read
+its path out of a borrowed config inside an `if let` scrutinee — Rust extends that
+temporary's lifetime across the whole `if let` block, not just the condition — so the
+borrow was still held while `open_library` ran, and any library whose custom-fields set
+needed a column reorder during that same open (nothing to do with the Bookshelf feature
+itself, but found while building and exercising it end-to-end) hit the identical
+`RefCell already borrowed` panic-and-abort on every launch. Fixed the same way: bind the
+cloned path to a variable first, so the borrow drops before `open_library` runs.
+
 ## [0.7.1] "Firm Spine" — 2026-08-27 — Startup crash fix
 
 **Fixed: Kartoteka could fail to start (`RefCell already borrowed` panic → abort) on
