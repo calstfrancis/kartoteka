@@ -135,7 +135,7 @@ Clean once the dev7 bump is committed.
 | `M2-SPEC.md` | Extension-M2 implementation spec (relations/facets/fields/AI/projects). Has an "Implementation status" section. |
 | `M2-GUI-PLAN.md` | Extension-M2 GUI + index surfacing plan, with ✅/🔨/⏳ status per item. |
 | `M3-SPEC.md` | Extension-M3 spec (knowledge-graph nodes). **Complete** — all 8 PRs built and tested. |
-| `M4-SPEC.md` | Extension-M4: the map toward a "full-fledged" citation manager (live PDF annotation, Zerkalo vault adoption, remaining GUI/platform gaps), tiered by how much each blocks the core workflow. **In progress.** |
+| `M4-SPEC.md` | Extension-M4: the map toward a "full-fledged" citation manager (live PDF annotation, Zerkalo vault adoption, remaining GUI/platform gaps), tiered by how much each blocks the core workflow. **Tier 1 done; Tiers 3–4 remain.** |
 | `LICENSES.md` | Licensing (`fond-*` crates MIT; app proprietary). |
 
 **Reading order for a cold start:** this file → `DATA-MODEL-EXTENSIONS.md` (the map) →
@@ -157,11 +157,13 @@ Done and tested (extension-M2), in `crates/fond-bib` + `crates/fond-index` + GUI
 Next candidates (pick per Cal) — **superseded by `M4-SPEC.md`'s tiering**, kept here as a
 one-line pointer rather than duplicated:
 - **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **complete (all 8 PRs)**.
-- **Extension-M4** (`M4-SPEC.md`): live PDF annotation — **Tier 1's 4A (all 3 phases) and
-  all of Tier 2 done**; 4B (Zerkalo vault adoption, a Zerkalo-repo task) is the only open
-  Tier 1 item. Tier 3 (Windows UI) not started. **Tier 4: bulk ops (done since 0.6.0) and
-  the library quick-switcher (done 2026-09-04) are both done; only the browser-extension
-  capture item remains, not started.**
+- **Extension-M4** (`M4-SPEC.md`): live PDF annotation — **Tier 1 is now fully complete**:
+  4A (all 3 phases), Tier 2 (all six items), and 4B (Zerkalo vault adoption) are all done —
+  4B shipped Zerkalo-side as v0.23.0 "Open Shelf" (2026-08-14; reconciled into this doc
+  2026-09-04, having shipped before this doc's own last update). Tier 3 (Windows UI) not
+  started. **Tier 4: bulk ops (done since 0.6.0) and the library quick-switcher (done
+  2026-09-04) are both done; only the browser-extension capture item remains, not
+  started.**
 - **Extension-M5** (`M5-SPEC.md`): the full PDF+EPUB reader. **Tier 1 and Tier 2 both fully
   complete, verified end-to-end headless (real xdotool-driven interaction, not just
   compiled).** Tier 1 — 5A (typed attachment routing), 5B (EPUB rendering + chapter/TOC nav

@@ -2,6 +2,14 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.9.1] "Clean Copy" — 2026-09-04 — Documentation maintenance
+
+No functional or user-visible changes. Internal planning docs (`docs/M4-SPEC.md`,
+`docs/STATUS.md`) corrected: they had gone stale claiming 4B (Zerkalo vault adoption —
+live `@`-autocomplete over a Kartoteka vault via `fond-bib`/`fond-vault`) was still an
+open item, when it actually shipped in Zerkalo v0.23.0 "Open Shelf" back on 2026-08-14.
+M4 Tier 1 is now correctly recorded as fully complete.
+
 ## [0.9.0] "Call Slip" — 2026-09-04 — Library quick-switcher
 
 **Hamburger menu now offers a one-click switch to recently opened libraries.** Below "Open

@@ -1,9 +1,8 @@
 # Kartoteka M4 — Map to a Full-Fledged Citation Manager
 
-Status: **in progress.** All of 4A (live PDF highlighting: rectangle highlights, real
-text-run selection, and annotation list/edit/delete) and all of Tier 2 are **built and
-tested**. What's left of Tier 1 is 4B (Zerkalo integration, a different repo); Tiers 3–4
-are scoped, not started.
+Status: **Tier 1 done.** All of 4A (live PDF highlighting: rectangle highlights, real
+text-run selection, and annotation list/edit/delete), all of Tier 2, and 4B (Zerkalo
+integration) are **built and tested**. Tiers 3–4 are scoped, not started.
 
 > **Naming note.** "M4" here is the next step in the **knowledge-base extension track**
 > (M1 = the original vault, M2 = typed relations/facets/AI sidecar/projects, M3 = knowledge-
@@ -109,23 +108,28 @@ capable) still have no *drawing* gesture — Phase 1's drag gesture only creates
 That's a small follow-up (a mode toggle or modifier-key variant on the same drag), not
 tracked as its own phase since it reuses everything Phase 1 already built.
 
-### 4B. Zerkalo doesn't consume the vault yet
+### 4B. Zerkalo doesn't consume the vault yet — done
 
-**The gap:** `ARCHITECTURE.md` §5 calls Zerkalo/Skrizhal adoption of `fond-bib`/`fond-vault`
-"deferred." Today, Zerkalo can only point at `library.yml` as a flat bibliography file — there
-is no live citation-key autocomplete while writing, because Zerkalo never watches the vault
-directory or reads structured `Entry` objects. For a citation manager whose reason for being
-is "for writing in Typst," this is the actual missing link end-to-end: Kartoteka manages
-sources, but the writing tool doesn't yet feel that.
+**Done, Zerkalo-side, shipped 2026-08-14 as Zerkalo v0.23.0 "Open Shelf" (before this
+doc's or `STATUS.md`'s last update — this file just hadn't been reconciled with it until
+2026-09-04).** Zerkalo's Settings → Bibliography and the citation sidebar both gained a
+"choose a Kartoteka vault folder" option alongside the existing `.bib`/`.yaml` picker
+(`src/ui/app_window/citations.rs`, `src/vault_watch.rs`, `src/bibliography.rs`). Entries
+load through `fond-bib::Library::open`/`keys_sorted`/`load_entry` — the same crate
+Kartoteka itself is built on — and refresh live via `fond_vault::watch`'s `notify` wrapper
+the moment anything changes in the vault: add or edit an entry in Kartoteka and it shows
+up in Zerkalo's `@`-autocomplete popup, the citation sidebar, and the reference manager
+within about a second, no restart needed. A "K" button next to the vault picker launches
+Kartoteka directly (or focuses it if already running). Plain `.bib`/`.yaml` bibliographies
+keep working unchanged.
 
-**This is Zerkalo-side work, not Kartoteka-side** — the crates (`fond-bib`, `fond-vault`) are
-already designed UI-agnostic and consumer-neutral for exactly this (`ARCHITECTURE.md` §4), so
-adoption is additive on Zerkalo's end: depend on the two crates as a git dependency on this
-repo, watch the vault with `fond-vault`'s `notify` wrapper, feed a citation-key autocomplete
-from `fond-bib::Library::keys_sorted()`/`load_entry`. Scoping the actual autocomplete UI is a
-Zerkalo-repo task; flagged here because it's the highest-leverage single change to the
-*combined* Kartoteka+Zerkalo workflow, and because Kartoteka's crates already made the
-adoption path a non-redesign on purpose.
+Zerkalo currently pins `fond-bib`/`fond-vault` at `tag = "v0.7.0"` (its `Cargo.toml`)
+against Kartoteka's current `v0.9.0` — checked 2026-09-04: the only changes to those two
+crates between the two tags are `acquire::fetch_isbn_cover`/`Library::store_cover`
+(Bookshelf-view cover caching, v0.8.0), which Zerkalo's citation autocomplete doesn't use,
+so there is no functional gap from the stale pin. Bumping it is still worth doing
+opportunistically (next time Zerkalo's dependencies get a pass, per its own
+`WINDOWS-HARDENING-PLAN.md` precedent of bumping this same pin) — just not urgent.
 
 ---
 
@@ -218,7 +222,6 @@ nothing new decided here, just consolidated. All six items are now built.
 2. **4A Phase 3 — done.**
 3. **4A Phase 2 — done.** All of Tier 1's Kartoteka-side work (4A) is now complete.
 4. **Tier 2 — done.** All six items built.
-5. **4B (Zerkalo integration)** next — highest leverage on the *combined* workflow, but lives
-   in another repo; scope it there when picked up. The only Tier 1 item left, now that 4A and
-   Tier 2 are both done.
-6. **Tier 3 (Windows)** — after Tier 1 is actually done on Linux.
+5. **4B (Zerkalo integration) — done.** Shipped as Zerkalo v0.23.0 "Open Shelf"
+   (2026-08-14). **Tier 1 is now fully complete.**
+6. **Tier 3 (Windows)** — next up, now that Tier 1 is actually done on Linux.

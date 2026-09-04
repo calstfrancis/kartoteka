@@ -46,6 +46,17 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.9.1" date="2026-09-04">
+      <description>
+        <p>0.9.1 "Clean Copy" — documentation maintenance only, no functional or
+        user-visible changes.</p>
+        <ul>
+          <li>Corrected internal planning docs that had gone stale claiming Zerkalo vault
+          adoption was still an open item, when it actually shipped in Zerkalo v0.23.0
+          "Open Shelf" back on 2026-08-14.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-09-04">
       <description>
         <p>0.9.0 "Call Slip" — a one-click quick-switcher for recently opened libraries.</p>
