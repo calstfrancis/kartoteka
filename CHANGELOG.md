@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased] — Library quick-switcher (M4 Tier 4)
+## [0.9.0] "Call Slip" — 2026-09-04 — Library quick-switcher
 
 **Hamburger menu now offers a one-click switch to recently opened libraries.** Below "Open
 library…"/"Move library…", a "Switch to…" row appears for each library you've opened

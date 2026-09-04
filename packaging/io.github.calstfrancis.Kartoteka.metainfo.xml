@@ -46,6 +46,17 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.9.0" date="2026-09-04">
+      <description>
+        <p>0.9.0 "Call Slip" — a one-click quick-switcher for recently opened libraries.</p>
+        <ul>
+          <li>The hamburger menu now lists a "Switch to…" row for each library you've
+          opened recently (most-recent-first, the currently open one excluded), so
+          switching between two or more libraries no longer needs the folder picker every
+          time.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-09-03">
       <description>
         <p>0.8.0 "Dust Jacket" — a new Bookshelf view: a cover-grid alternative to the
