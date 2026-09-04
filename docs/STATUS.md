@@ -159,8 +159,9 @@ one-line pointer rather than duplicated:
 - **Extension-M3** (`M3-SPEC.md`): knowledge-graph nodes — **complete (all 8 PRs)**.
 - **Extension-M4** (`M4-SPEC.md`): live PDF annotation — **Tier 1's 4A (all 3 phases) and
   all of Tier 2 done**; 4B (Zerkalo vault adoption, a Zerkalo-repo task) is the only open
-  Tier 1 item; Tier 3 (Windows UI) and Tier 4 (browser capture, bulk ops, library
-  quick-switcher) not started.
+  Tier 1 item. Tier 3 (Windows UI) not started. **Tier 4: bulk ops (done since 0.6.0) and
+  the library quick-switcher (done 2026-09-04) are both done; only the browser-extension
+  capture item remains, not started.**
 - **Extension-M5** (`M5-SPEC.md`): the full PDF+EPUB reader. **Tier 1 and Tier 2 both fully
   complete, verified end-to-end headless (real xdotool-driven interaction, not just
   compiled).** Tier 1 — 5A (typed attachment routing), 5B (EPUB rendering + chapter/TOC nav

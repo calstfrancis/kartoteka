@@ -220,6 +220,10 @@ use entry_row::EntryRow;
 pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let state = Rc::new(RefCell::new(AppState::default()));
     let config = Rc::new(RefCell::new(config));
+    // Declared early so the hamburger popover's recent-libraries quick-switcher (built
+    // below, before `Widgets` exists) can populate it — see the fuller comment at its
+    // original declaration site further down, near `build_entries_column_view`.
+    let widgets_slot: Rc<RefCell<Option<Rc<Widgets>>>> = Rc::new(RefCell::new(None));
 
     // Window size and pane positions are restored from last session below (the "internal
     // window sizing remembered across sessions" that, along with the column/pane layout,
@@ -300,7 +304,11 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         .icon_name("open-menu-symbolic")
         .tooltip_text("Main menu")
         .build();
-    menu_button.set_popover(Some(&build_hamburger_popover(&config)));
+    menu_button.set_popover(Some(&build_hamburger_popover(
+        &config,
+        &state,
+        &widgets_slot,
+    )));
     header.pack_end(&menu_button);
 
     let reload_button = gtk4::Button::from_icon_name("view-refresh-symbolic");
@@ -375,9 +383,9 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     // Entries spreadsheet: a sortable, in-place-editable `ColumnView` (Zotero-style) in place
     // of the old card list — see `build_entries_column_view`. The factories it wires up need
     // `Widgets` (for toasts/reload on a committed edit), which doesn't exist until after this
-    // block — `widgets_slot` is filled in once it does; edits can't happen before the window
-    // is shown, so it's always populated by the time a factory closure runs.
-    let widgets_slot: Rc<RefCell<Option<Rc<Widgets>>>> = Rc::new(RefCell::new(None));
+    // block — `widgets_slot` (declared above, near `state`) is filled in once it does; edits
+    // can't happen before the window is shown, so it's always populated by the time a
+    // factory closure runs.
     let (column_view, store, selection, sort_model) = build_entries_column_view();
     apply_column_visibility(&column_view, &config.borrow());
     let column_order = config.borrow().column_order.clone();
@@ -909,7 +917,11 @@ fn build_no_library_status_page(
 /// changed — except the theme rows, which are built directly so they can also update their
 /// own bold/not-bold state on click (the house-style "name-as-label" toggle idiom, used here
 /// in place of a nested Theme submenu).
-fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
+fn build_hamburger_popover(
+    config: &Rc<RefCell<Config>>,
+    state: &Rc<RefCell<AppState>>,
+    widgets_slot: &Rc<RefCell<Option<Rc<Widgets>>>>,
+) -> gtk4::Popover {
     let (popover, rows) = popover_menu(230);
 
     let activate_row = |rows: &gtk4::Box, popover: &gtk4::Popover, label: &str, action: &str| {
@@ -929,6 +941,63 @@ fn build_hamburger_popover(config: &Rc<RefCell<Config>>) -> gtk4::Popover {
     activate_row(&rows, &popover, "Move library…", "win.move-library").set_tooltip_text(Some(
         "Relocate the current library's folder — e.g. onto a different drive",
     ));
+
+    // Quick-switcher: recently opened libraries, most-recent-first, excluding whichever is
+    // open right now. Rebuilt every time the popover opens (via `connect_show` below) rather
+    // than once at startup, since the recent list and the currently-open library both change
+    // over the session (M4 Tier 4 — see `docs/M4-SPEC.md`).
+    let recent_box = gtk4::Box::new(Orientation::Vertical, 2);
+    rows.append(&recent_box);
+    let refresh_recent: Rc<dyn Fn()> = {
+        let recent_box = recent_box.clone();
+        let popover = popover.clone();
+        let config = config.clone();
+        let state = state.clone();
+        let widgets_slot = widgets_slot.clone();
+        Rc::new(move || {
+            while let Some(child) = recent_box.first_child() {
+                recent_box.remove(&child);
+            }
+            let current = state
+                .borrow()
+                .library
+                .as_ref()
+                .map(|l| l.root().to_path_buf());
+            let recents: Vec<PathBuf> = config
+                .borrow()
+                .recent_libraries
+                .iter()
+                .filter(|p| Some((*p).clone()) != current)
+                .cloned()
+                .collect();
+            for path in recents {
+                let label = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("library");
+                let row = popover_button(&format!("Switch to \"{label}\"…"), false);
+                row.set_tooltip_text(Some(&path.display().to_string()));
+                let popover = popover.clone();
+                let state = state.clone();
+                let widgets_slot = widgets_slot.clone();
+                let config = config.clone();
+                let path = path.clone();
+                row.connect_clicked(move |_| {
+                    popover.popdown();
+                    let Some(widgets) = widgets_slot.borrow().clone() else {
+                        return;
+                    };
+                    config.borrow_mut().library_path = Some(path.clone());
+                    config.borrow().save();
+                    open_library(&state, &widgets, path.clone());
+                });
+                recent_box.append(&row);
+            }
+        })
+    };
+    refresh_recent();
+    popover.connect_show(move |_| refresh_recent());
+
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "New item…", "win.new-item");
     activate_row(&rows, &popover, "Acquire…", "win.acquire");
@@ -3919,6 +3988,12 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
             return;
         }
     };
+
+    // Recorded here rather than at each caller (folder picker, new-library dialog, "Move
+    // library…", startup restore) — a single point that only fires once the library has
+    // actually opened successfully.
+    widgets.config.borrow_mut().record_recent_library(&path);
+    widgets.config.borrow().save();
 
     let defs = library.load_custom_field_defs().unwrap_or_default();
     let config = widgets.config.borrow().clone();

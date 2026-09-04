@@ -58,7 +58,14 @@ pub struct Config {
     /// spreadsheet, restored on next launch.
     #[serde(default)]
     pub bookshelf_view: bool,
+    /// Recently opened library paths, most-recent-first, capped at `MAX_RECENT_LIBRARIES` —
+    /// powers the hamburger menu's quick-switcher so reopening one doesn't need the folder
+    /// picker every time (M4 Tier 4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_libraries: Vec<PathBuf>,
 }
+
+const MAX_RECENT_LIBRARIES: usize = 8;
 
 fn default_auto_backup_interval() -> u32 {
     30
@@ -85,5 +92,13 @@ impl Config {
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = fs::write(config_file(), text);
         }
+    }
+
+    /// Records `path` as just-opened: moves it to the front of the recent-libraries list
+    /// (dropping any earlier occurrence so it doesn't appear twice) and caps the list length.
+    pub fn record_recent_library(&mut self, path: &std::path::Path) {
+        self.recent_libraries.retain(|p| p != path);
+        self.recent_libraries.insert(0, path.to_path_buf());
+        self.recent_libraries.truncate(MAX_RECENT_LIBRARIES);
     }
 }

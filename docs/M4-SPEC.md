@@ -199,10 +199,16 @@ nothing new decided here, just consolidated. All six items are now built.
 
 ## Tier 4 — not asked for anywhere in the existing docs, flagging in case it matters
 
-- A real browser extension (one-click capture), vs. today's paste-a-URL scrape.
-- Bulk/batch operations — multi-select tag, delete, or move-to-collection.
-- A recent-libraries quick-switcher (today: one `library_path` in config, reopened via a
-  folder picker each time you switch).
+- A real browser extension (one-click capture), vs. today's paste-a-URL scrape. **Not
+  started** — a different tech stack (WebExtension + a local capture endpoint) rather than
+  a GTK feature; scope as its own mini-project when picked up.
+- ✅ Bulk/batch operations — multi-select tag, add-to-collection, or delete. **Done as of
+  0.6.0** "Deep Stacks" (the header's "Select multiple" toggle). No dedicated
+  move-to-collection (only add) — collections behave as non-exclusive tags, so "move" may
+  not be a meaningful operation; revisit only if that assumption turns out wrong.
+- ✅ A recent-libraries quick-switcher. **Done 2026-09-04** — the hamburger menu's "Switch
+  to…" row(s), most-recent-first, current library excluded, persisted in `gui.json`
+  (`recent_libraries`, capped at 8). See `CHANGELOG.md`.
 
 ---
 

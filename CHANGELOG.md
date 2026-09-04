@@ -2,6 +2,14 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased] — Library quick-switcher (M4 Tier 4)
+
+**Hamburger menu now offers a one-click switch to recently opened libraries.** Below "Open
+library…"/"Move library…", a "Switch to…" row appears for each library you've opened
+recently (most-recent-first, currently open one excluded), so switching between two or
+more libraries no longer needs the folder picker every time. The list is capped at 8 and
+persists in `gui.json` (`recent_libraries`) across restarts.
+
 ## [0.8.0] "Dust Jacket" — 2026-09-03 — Bookshelf view
 
 **New Bookshelf view: a cover-grid alternative to the entries spreadsheet.** A toggle in
