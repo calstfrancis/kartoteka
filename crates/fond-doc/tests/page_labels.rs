@@ -1,8 +1,7 @@
 //! Real-PDF test for `page_labels()`: a hand-built four-page PDF whose `/PageLabels`
 //! declares lowercase-roman front matter (pages 1-2 print as "i"/"ii") followed by arabic
-//! body pages restarting at 1 (pages 3-4 print as "1"/"2") — the exact case Zotero-style
-//! document-page-number display exists for: the printed number often isn't the raw file
-//! position. Requires PDFium (skips otherwise, like the other real-PDF tests in this crate).
+//! body pages restarting at 1 (pages 3-4 print as "1"/"2") — the exact case printed-page-
+//! number display exists for: the printed number often isn't the raw file position. Requires PDFium (skips otherwise, like the other real-PDF tests in this crate).
 
 use fond_doc::{bind_pdfium, page_labels};
 

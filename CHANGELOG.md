@@ -2,6 +2,17 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.11.0] "Wide Margin" — 2026-09-06 — Notes sidebar moved to its own right-hand panel
+
+**The PDF and EPUB readers' Notes/highlights list is now a separate sidebar on the right,
+independent of the Contents (outline/TOC) sidebar on the left.** Previously the two shared
+one sidebar slot via a toggle-exclusive Stack — opening Notes closed Contents and vice
+versa. They're now two independent `Paned`s, so both can be open at once (Contents left,
+document in the middle, Notes right) instead of forcing a choice between outline and
+annotations. The Notes sidebar sizes itself from the
+reader window's current width the moment it's first shown, then keeps that width fixed
+(same as Contents does) as the window is resized.
+
 ## [0.10.0] "Open Folio" — 2026-09-06 — Two-page reader view, guided backup, collection editing, and page-number fixes
 
 **New "Two-page" view in the PDF reader**, alongside the existing single-page and Continuous

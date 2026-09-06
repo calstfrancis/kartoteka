@@ -194,8 +194,8 @@ pub fn outline(pdfium: &Pdfium, bytes: &[u8]) -> Result<Vec<PdfOutlineEntry>> {
 /// pages restarting at "1"), as opposed to the raw 1-based position of the page within the
 /// file. Most PDFs have no `/PageLabels` at all, in which case every entry is `None` and a
 /// caller should fall back to the raw page number — this is what lets a reader show (and let
-/// you type in) the same page number the document itself prints on the page, the way Zotero
-/// does, instead of always the raw file position.
+/// you type in) the same page number the document itself prints on the page, instead of
+/// always the raw file position.
 ///
 /// One entry per page, in document order; index `i` is 0-based, matching `render_page`'s own
 /// indexing (not `PdfOutlineEntry.page`, which is 1-based).

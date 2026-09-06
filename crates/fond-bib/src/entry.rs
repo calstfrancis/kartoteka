@@ -145,9 +145,8 @@ fn parent_block(source: &HEntry, role: ParentRole) -> Result<serde_yaml_ng::Valu
 /// Build a new "book part" (chapter/section) entry's YAML from an existing book/anthology
 /// `source`: `source`'s own fields become the new entry's `parent:` block (see
 /// `parent_block`), so the part cites correctly ("In: Editor (Ed.), Book Title…") without
-/// duplicating data the source entry already owns — unlike copy-and-edit workflows (e.g.
-/// Zotero's "Create Book Section From Item"), where the two entries start drifting apart the
-/// moment either is edited afterward; see `refresh_book_part_parent` for pulling the source's
+/// duplicating data the source entry already owns — unlike a plain copy-and-edit workflow,
+/// where the two entries start drifting apart the moment either is edited afterward; see `refresh_book_part_parent` for pulling the source's
 /// latest fields back in later. `part_type` is normally `"chapter"`. Returns YAML under a
 /// placeholder key; the caller re-keys it (`Library::add_from_yaml` already generates a
 /// fresh key from title/author when it sees one).

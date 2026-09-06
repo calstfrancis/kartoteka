@@ -156,7 +156,7 @@ pub struct NoteFrontmatter {
     /// Set when this entry was created via "Create book part…" from another entry in this
     /// library (that entry's key) — lets "Refresh from source book" re-pull the parent
     /// book's current fields later, instead of the copy silently drifting out of sync the
-    /// way a plain duplicate-and-edit (Zotero's "Create Book Section From Item") would.
+    /// way a plain duplicate-and-edit workflow would.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_from_book: Option<String>,
     /// Whether the source book's author(s) were copied into the new part's `parent:` block

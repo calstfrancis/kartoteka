@@ -1,8 +1,8 @@
 # Kartoteka
 
-A plain-file reference manager and PDF/EPUB library — a Zotero replacement for writing in
-Typst. Part of the **Fond** suite (with Zerkalo and Skrizhal). Kartoteka (Картотека) is
-the card catalogue: the inventory that lets you find anything in the fond.
+A plain-file reference manager and PDF/EPUB library for writing in Typst. Part of the
+**Fond** suite (with Zerkalo and Skrizhal). Kartoteka (Картотека) is the card catalogue:
+the inventory that lets you find anything in the fond.
 
 **Plain files are the source of truth.** Your library is Hayagriva YAML, Markdown notes,
 and JSON annotation sidecars in a git repo — human-readable, editable in `vim`, with no
@@ -10,7 +10,7 @@ opaque database. The search index and metadata cache are disposable and rebuild 
 files with one command. `library.yml` is regenerated on every write, so
 `#bibliography("library.yml")` in Typst is always current.
 
-> Status: **0.10.0 "Open Folio"**, released 2026-09-06. A full GTK4/libadwaita desktop app
+> Status: **0.11.0 "Wide Margin"**, released 2026-09-06. A full GTK4/libadwaita desktop app
 > (`kartoteka-ui-gtk`) ships alongside the headless CLI, distributed as a flatpak — see
 > **Install** below. See `docs/ROADMAP.md` for what's still ahead.
 
@@ -18,7 +18,7 @@ files with one command. `library.yml` is regenerated on every write, so
 
 - A plain-file library — Hayagriva YAML entries, Markdown notes — that lives in a git
   repository and stays readable without Kartoteka.
-- A Zotero-style spreadsheet view of your entries, with optional columns for tags,
+- A sortable spreadsheet view of your entries, with optional columns for tags,
   status, and any custom field you define; drag-to-reorder columns and bulk actions
   (tag/collection/delete) across a multi-selection.
 - A Bookshelf view — a cover-grid alternative to the spreadsheet, showing just your book

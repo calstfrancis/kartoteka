@@ -14,7 +14,7 @@ integration) are **built and tested**. Tiers 3–4 are scoped, not started.
 
 ## Where this milestone came from
 
-An audit against Zotero-level expectations, prompted by "analyze kartoteka, build a map
+An audit against a "full-fledged citation manager" bar, prompted by "analyze kartoteka, build a map
 toward a full-fledged citation manager." Two findings drove the shape of this doc:
 
 1. **The project is much further along than `~/Projects/CLAUDE.md` (the suite-wide root
@@ -42,8 +42,8 @@ annotate it → cite it while writing).
 
 **The gap:** the built-in PDF viewer was read-only (page nav + zoom). Annotations only
 entered the sidecar via import of *externally*-created highlights (`import-annots`, needs
-another PDF reader in the loop). Zotero's single most-used feature — read a PDF, highlight
-as you go — didn't exist in Kartoteka itself.
+another PDF reader in the loop). the single most-used feature of a
+citation manager — read a PDF, highlight as you go — didn't exist in Kartoteka itself.
 
 **Phase 1 — rectangle highlighting (done this session).** Click-drag on the rendered page
 creates a highlight, written straight to the existing `annots/<key>.json` sidecar format

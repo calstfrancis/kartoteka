@@ -9,10 +9,9 @@
 
   <description>
     <p>
-      Kartoteka is a reference manager and PDF library for scholarly writing in Typst — a
-      Zotero alternative whose source of truth is plain, git-friendly files. Bibliographic
-      records are Hayagriva YAML on disk; notes are Markdown; nothing is locked in an opaque
-      database.
+      Kartoteka is a reference manager and PDF library for scholarly writing in Typst, whose
+      source of truth is plain, git-friendly files. Bibliographic records are Hayagriva YAML
+      on disk; notes are Markdown; nothing is locked in an opaque database.
     </p>
     <p>Features:</p>
     <ul>
@@ -46,6 +45,17 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.11.0" date="2026-09-06">
+      <description>
+        <p>0.11.0 "Wide Margin" — the PDF and EPUB readers' Notes/highlights list is now a
+        separate sidebar on the right, independent of the Contents sidebar on the left.</p>
+        <ul>
+          <li>Contents and Notes are two independent sidebars instead of sharing one
+          toggle-exclusive slot — either or both can be open at once, with the document
+          view in between.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.10.0" date="2026-09-06">
       <description>
         <p>0.10.0 "Open Folio" — a two-page reader view, a guided GitHub backup wizard,

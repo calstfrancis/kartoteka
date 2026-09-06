@@ -31,7 +31,7 @@ the single most confusing thing about the docs:
      an outline/bookmarks panel, an in-reader text search bar, a colour picker + inline
      per-page annotation list, continuous/vertical scroll (a toggle alongside the
      page-by-page view, eagerly rendered on first use rather than virtualized), and
-     Zotero-style document page numbering (shows/navigates by a PDF's own `/PageLabels`
+     printed-page-number-aware document page numbering (shows/navigates by a PDF's own `/PageLabels`
      printed page number, not just the raw file position — added beyond the original Tier 2
      list, on request). Everything above verified end-to-end headless, not just compiled.
      A further round of PDF reader UX polish also shipped on request, beyond both tiers'
@@ -136,6 +136,7 @@ Clean once the dev7 bump is committed.
 | `M2-GUI-PLAN.md` | Extension-M2 GUI + index surfacing plan, with ✅/🔨/⏳ status per item. |
 | `M3-SPEC.md` | Extension-M3 spec (knowledge-graph nodes). **Complete** — all 8 PRs built and tested. |
 | `M4-SPEC.md` | Extension-M4: the map toward a "full-fledged" citation manager (live PDF annotation, Zerkalo vault adoption, remaining GUI/platform gaps), tiered by how much each blocks the core workflow. **Tier 1 done; Tiers 3–4 remain.** |
+| `NOTES-SPEC.md` | Standalone (not M-numbered) plan for a more robust note/annotation system. **Tier 0 done (right-hand Notes sidebar); Tiers 1–6 scoped, not started.** |
 | `LICENSES.md` | Licensing (`fond-*` crates MIT; app proprietary). |
 
 **Reading order for a cold start:** this file → `DATA-MODEL-EXTENSIONS.md` (the map) →
@@ -171,12 +172,13 @@ one-line pointer rather than duplicated:
   DOM search-and-wrap), 5D (EPUB text into the search index). Tier 2 — PDF `Progress`
   resume/save, underline/strikeout/note drawing gestures, an outline/bookmarks panel,
   in-reader text search, a colour picker + inline per-page annotation list,
-  continuous/vertical scroll (a toggle alongside the page-by-page view), and Zotero-style
-  document page numbering (`/PageLabels`-aware display and jump-by-typed-label). A further
+  continuous/vertical scroll (a toggle alongside the page-by-page view), and printed-
+  page-number-aware document page numbering (`/PageLabels`-aware display and
+  jump-by-typed-label). A further
   round of PDF reader UX polish also shipped: Contents as a persistent sidebar, a live drag
   preview while highlighting, snapshot-based undo/redo (buttons + Ctrl+Z/Ctrl+Shift+Z), and
-  editable notes in "This page"'s inline annotation list. **Tier 3** (a Markdown annotation
-  export, à la Zotero's "add note from annotations") **and Tier 4** (a "Read"/"Annotations…"
+  editable notes in "This page"'s inline annotation list. **Tier 3** (a portable Markdown annotation
+  export) **and Tier 4** (a "Read"/"Annotations…"
   chooser for entries with both a PDF and an EPUB attached, instead of silently picking the
   first-listed attachment) **are also done — all four M5 tiers complete.** See `M5-SPEC.md`
   for the full tiered list.

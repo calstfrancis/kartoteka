@@ -309,8 +309,8 @@ citations. That is a scan result — it churns and is rebuildable — so it live
 `.kartoteka/usage.*`, **never** written back into `notes/`. The UI shows "Used in:
 Dissertation (ch3), Sermon 2026-07-20" from the derived map; git never sees it.
 
-This keeps the feature (which is genuinely differentiating — §22 is a real gap in Zotero)
-without polluting per-key files with volatile scan output.
+This keeps the feature (which is genuinely differentiating — §22 is a real gap in other
+reference managers) without polluting per-key files with volatile scan output.
 
 ---
 

@@ -237,8 +237,8 @@ impl AnnotationSidecar {
         Ok(s)
     }
 
-    /// Render this entry's annotations as a portable Markdown document — à la Zotero's "add
-    /// note from annotations": one heading per PDF page or EPUB chapter, the highlighted
+    /// Render this entry's annotations as a portable Markdown document: one heading per PDF
+    /// page or EPUB chapter, the highlighted
     /// text as a blockquote (omitted for a plain drag-rectangle highlight with no text under
     /// it), then the user's note. Meant to be read with no PDF/EPUB, and no Kartoteka, open
     /// at all — a plain file in any Markdown viewer or editor.

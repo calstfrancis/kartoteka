@@ -389,7 +389,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     search.set_margin_start(6);
     search.set_margin_end(6);
 
-    // Entries spreadsheet: a sortable, in-place-editable `ColumnView` (Zotero-style) in place
+    // Entries spreadsheet: a sortable, in-place-editable `ColumnView` in place
     // of the old card list — see `build_entries_column_view`. The factories it wires up need
     // `Widgets` (for toasts/reload on a committed edit), which doesn't exist until after this
     // block — `widgets_slot` (declared above, near `state`) is filled in once it does; edits
@@ -2563,7 +2563,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 /// `fond_bib::entry::book_part_yaml`), so citing the part also correctly credits the book
 /// without copying its data — editing the book later can be pulled into the part with
 /// "Refresh from source book…" instead of the two silently drifting apart the way a plain
-/// duplicate-then-retype (Zotero's "Create Book Section From Item") would.
+/// duplicate-then-retype workflow would.
 fn show_create_book_part_dialog(
     state: &Rc<RefCell<AppState>>,
     widgets: &Rc<Widgets>,
@@ -10785,7 +10785,7 @@ fn show_pdf_reader(
     next.set_tooltip_text(Some("Next page"));
     // Shows (and, on Enter, navigates by) the *document's own* printed page number — its
     // `/PageLabels` numbering, e.g. roman-numeral front matter restarting at arabic "1" for
-    // the body — the way Zotero's reader does, rather than always the raw file position.
+    // the body, rather than always the raw file position.
     // Most PDFs have no `/PageLabels` at all, in which case this just shows the raw number,
     // identical to before.
     let page_entry = gtk4::Entry::new();
@@ -11449,21 +11449,38 @@ fn show_pdf_reader(
         })
     };
 
-    let sidebar_stack = gtk4::Stack::new();
+    // Contents (left) and Notes (right) are now two independent sidebars rather than a
+    // shared Stack behind one toggle slot — Cal asked for Notes on its own right-hand
+    // sidebar so it can stay open alongside Contents instead of the two forcing a choice
+    // between them. Width is user-adjustable via each Paned handle; start at a reasonable
+    // default but let it be dragged down to a slim strip.
     if let Some(contents_scroll) = &contents_scroll {
-        sidebar_stack.add_named(contents_scroll, Some("contents"));
+        contents_scroll.set_size_request(60, -1);
     }
-    sidebar_stack.add_named(&notes_scroll, Some("notes"));
-    // Width is user-adjustable via the Paned handle, not fixed to the longest label — start
-    // at a reasonable default but let it be dragged down to a slim strip.
-    sidebar_stack.set_size_request(60, -1);
-    sidebar_stack.set_vexpand(true);
+    notes_scroll.set_size_request(60, -1);
+
+    // Notes sidebar: its own Paned wrapping `content`, so it sits on the right of the
+    // document regardless of whether Contents is open on the left. `content` (the actual
+    // document view) is the resizing child; the notes list is the fixed-width one — sized
+    // from the paned's current allocation the moment it's first shown, since a plain
+    // constant would be wrong for whatever the window's actual width happens to be (unlike
+    // the left Contents sidebar's fixed 220, which is measured from the start edge and so
+    // stays correct regardless of window width).
+    let notes_paned = gtk4::Paned::new(Orientation::Horizontal);
+    notes_paned.set_start_child(Some(&content));
+    notes_paned.set_resize_start_child(true);
+    notes_paned.set_shrink_start_child(false);
+    notes_paned.set_end_child(gtk4::Widget::NONE);
+    notes_paned.set_resize_end_child(false);
+    notes_paned.set_shrink_end_child(true);
+    notes_paned.set_vexpand(true);
+    notes_paned.set_hexpand(true);
 
     let paned = gtk4::Paned::new(Orientation::Horizontal);
     paned.set_start_child(gtk4::Widget::NONE);
     paned.set_resize_start_child(false);
     paned.set_shrink_start_child(true);
-    paned.set_end_child(Some(&content));
+    paned.set_end_child(Some(&notes_paned));
     paned.set_vexpand(true);
     paned.set_hexpand(true);
     paned.set_position(220);
@@ -11471,37 +11488,29 @@ fn show_pdf_reader(
 
     if let Some(sidebar_toggle) = &sidebar_toggle {
         let paned = paned.clone();
-        let sidebar_stack = sidebar_stack.clone();
-        let notes_toggle = notes_toggle.clone();
+        let contents_scroll = contents_scroll.clone();
         sidebar_toggle.connect_toggled(move |btn| {
             if btn.is_active() {
-                notes_toggle.set_active(false);
-                sidebar_stack.set_visible_child_name("contents");
-                paned.set_start_child(Some(&sidebar_stack));
-            } else if !notes_toggle.is_active() {
+                paned.set_start_child(contents_scroll.as_ref());
+            } else {
                 paned.set_start_child(gtk4::Widget::NONE);
             }
         });
     }
     {
-        let paned = paned.clone();
-        let sidebar_stack = sidebar_stack.clone();
-        let sidebar_toggle = sidebar_toggle.clone();
+        let notes_paned = notes_paned.clone();
+        let notes_scroll = notes_scroll.clone();
         let rebuild_notes = rebuild_notes.clone();
+        const NOTES_SIDEBAR_WIDTH: i32 = 300;
         notes_toggle.connect_toggled(move |btn| {
             if btn.is_active() {
-                if let Some(st) = &sidebar_toggle {
-                    st.set_active(false);
-                }
                 rebuild_notes();
-                sidebar_stack.set_visible_child_name("notes");
-                paned.set_start_child(Some(&sidebar_stack));
-            } else if sidebar_toggle
-                .as_ref()
-                .map(|b| !b.is_active())
-                .unwrap_or(true)
-            {
-                paned.set_start_child(gtk4::Widget::NONE);
+                let available = notes_paned.width();
+                let total = if available > 0 { available } else { 900 };
+                notes_paned.set_position((total - NOTES_SIDEBAR_WIDTH).max(200));
+                notes_paned.set_end_child(Some(&notes_scroll));
+            } else {
+                notes_paned.set_end_child(gtk4::Widget::NONE);
             }
         });
     }
@@ -11869,8 +11878,8 @@ fn show_pdf_reader(
         });
     }
     // Typing a page number (the document's own printed label, or a raw file page number —
-    // see `find_page_by_label`) and pressing Enter jumps there, the way Zotero's reader lets
-    // you navigate by the printed page number rather than always the raw file position.
+    // see `find_page_by_label`) and pressing Enter jumps there, navigating by the printed
+    // page number rather than always the raw file position.
     {
         let reader = reader.clone();
         let render = render.clone();
@@ -13365,19 +13374,29 @@ fn show_epub_reader(
         })
     };
 
-    let sidebar_stack = gtk4::Stack::new();
+    // Contents (left) and Notes (right) are now two independent sidebars rather than a
+    // shared Stack behind one toggle slot — see `show_pdf_reader`'s matching sidebars for
+    // the full rationale (both can be open at once instead of sharing one toggle slot).
     if let Some(contents_scroll) = &contents_scroll {
-        sidebar_stack.add_named(contents_scroll, Some("contents"));
+        contents_scroll.set_size_request(60, -1);
     }
-    sidebar_stack.add_named(&notes_scroll, Some("notes"));
-    sidebar_stack.set_size_request(60, -1);
-    sidebar_stack.set_vexpand(true);
+    notes_scroll.set_size_request(60, -1);
+
+    let notes_paned = gtk4::Paned::new(Orientation::Horizontal);
+    notes_paned.set_start_child(Some(&content));
+    notes_paned.set_resize_start_child(true);
+    notes_paned.set_shrink_start_child(false);
+    notes_paned.set_end_child(gtk4::Widget::NONE);
+    notes_paned.set_resize_end_child(false);
+    notes_paned.set_shrink_end_child(true);
+    notes_paned.set_vexpand(true);
+    notes_paned.set_hexpand(true);
 
     let paned = gtk4::Paned::new(Orientation::Horizontal);
     paned.set_start_child(gtk4::Widget::NONE);
     paned.set_resize_start_child(false);
     paned.set_shrink_start_child(true);
-    paned.set_end_child(Some(&content));
+    paned.set_end_child(Some(&notes_paned));
     paned.set_vexpand(true);
     paned.set_hexpand(true);
     paned.set_position(220);
@@ -13708,37 +13727,29 @@ fn show_epub_reader(
 
     if let Some(sidebar_toggle) = &sidebar_toggle {
         let paned = paned.clone();
-        let sidebar_stack = sidebar_stack.clone();
-        let notes_toggle = notes_toggle.clone();
+        let contents_scroll = contents_scroll.clone();
         sidebar_toggle.connect_toggled(move |btn| {
             if btn.is_active() {
-                notes_toggle.set_active(false);
-                sidebar_stack.set_visible_child_name("contents");
-                paned.set_start_child(Some(&sidebar_stack));
-            } else if !notes_toggle.is_active() {
+                paned.set_start_child(contents_scroll.as_ref());
+            } else {
                 paned.set_start_child(gtk4::Widget::NONE);
             }
         });
     }
     {
-        let paned = paned.clone();
-        let sidebar_stack = sidebar_stack.clone();
-        let sidebar_toggle = sidebar_toggle.clone();
+        let notes_paned = notes_paned.clone();
+        let notes_scroll = notes_scroll.clone();
         let rebuild_notes = rebuild_notes.clone();
+        const NOTES_SIDEBAR_WIDTH: i32 = 300;
         notes_toggle.connect_toggled(move |btn| {
             if btn.is_active() {
-                if let Some(st) = &sidebar_toggle {
-                    st.set_active(false);
-                }
                 rebuild_notes();
-                sidebar_stack.set_visible_child_name("notes");
-                paned.set_start_child(Some(&sidebar_stack));
-            } else if sidebar_toggle
-                .as_ref()
-                .map(|b| !b.is_active())
-                .unwrap_or(true)
-            {
-                paned.set_start_child(gtk4::Widget::NONE);
+                let available = notes_paned.width();
+                let total = if available > 0 { available } else { 900 };
+                notes_paned.set_position((total - NOTES_SIDEBAR_WIDTH).max(200));
+                notes_paned.set_end_child(Some(&notes_scroll));
+            } else {
+                notes_paned.set_end_child(gtk4::Widget::NONE);
             }
         });
     }

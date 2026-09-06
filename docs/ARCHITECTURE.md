@@ -2,8 +2,8 @@
 
 Status: **planning draft, awaiting approval.** No code written yet.
 
-Kartoteka (Картотека, "card catalogue") is a reference manager and PDF library — a
-Zotero replacement for a solo academic writing theology in Typst. It is part of the
+Kartoteka (Картотека, "card catalogue") is a reference manager and PDF library for a
+solo academic writing theology in Typst. It is part of the
 **Fond** suite (Zerkalo, Skrizhal, …). This document defines the crate boundaries, the
 one rule everything else follows, the Zerkalo/Skrizhal integration seam, and the
 Linux/Windows story.

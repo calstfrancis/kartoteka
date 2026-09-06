@@ -1,7 +1,7 @@
 # Kartoteka M5 — The Full Reader: PDF + EPUB Reading & Portable Annotation
 
 Status: **All four tiers complete.** Tier 1 and Tier 2 (including continuous scroll and
-Zotero-style page numbers), a further round of PDF reader UX polish (Contents sidebar, live
+printed-page-number-aware page numbers), a further round of PDF reader UX polish (Contents sidebar, live
 drag preview, undo/redo, editable "This page" notes), Tier 3 (Markdown annotation export), and
 Tier 4 (multi-attachment chooser) — all built and tested end-to-end.
 
@@ -12,7 +12,7 @@ Tier 4 (multi-attachment chooser) — all built and tested end-to-end.
 > `M4-SPEC.md` left dangling — "underlines/strikeouts still have no drawing gesture" — and
 > goes further: EPUB currently has **no reader at all**, only metadata import. Prompted by
 > Cal: "look deeply at PDF and EPUB reading, make Kartoteka the go-to place to read and
-> annotate either, with a Zotero-alike annotation system readable outside the file."
+> annotate either, with an annotation system readable outside the file."
 
 ## Where this milestone came from
 
@@ -20,7 +20,7 @@ An audit of `fond-doc` (PDFium bindings, rendering, text-run selection, annotati
 embed/extract), `fond-bib`'s annotation/note sidecar, `fond-index`'s indexing pipeline, and
 `show_pdf_reader` in `kartoteka-ui-gtk`. Two findings drove the shape of this doc:
 
-1. **PDF is already a strong, mostly-Zotero-grade foundation** — real text-run-anchored
+1. **PDF is already a strong foundation** — real text-run-anchored
    highlighting, a portable JSON sidecar as the *authoritative* annotation record (the PDF
    itself is explicitly documented as "the disposable copy," see `fond-bib/src/annotation.rs`
    header comment). What's missing is reader ergonomics (search, outline, continuous scroll)
@@ -296,7 +296,7 @@ compiled:
   highlight and the earlier page-3 drawn highlight were still there, correctly rendered by
   the same shared code path.
 - **Document page numbering — done, verified end-to-end (added beyond the original Tier 2
-  list, prompted by "Zotero shows the document's own printed page number, not the raw file
+  list, prompted by "show the document's own printed page number, not the raw file
   position — can Kartoteka?").** PDFium already wraps this directly: a PDF's `/PageLabels`
   catalog entry (a number tree mapping page ranges to a numbering style — decimal, upper/
   lower-case roman, upper/lower-case letters — plus an optional prefix and start value) is
@@ -371,7 +371,7 @@ itself undoable via Ctrl+Z.
 The JSON sidecar was already the authoritative record and already human-readable — the gap
 was a *presented* export, not the underlying data model:
 
-- **Markdown export**, à la Zotero's "add note from annotations": `AnnotationSidecar::
+- **A portable Markdown export**: `AnnotationSidecar::
   to_markdown(entry_title)` in `fond-bib` (UI-agnostic, per the crate-boundary rule — no GTK
   types) renders an entry's whole sidecar into readable prose, one `##` heading per PDF page
   or EPUB chapter, the highlighted text as a `>` blockquote (omitted for a plain
@@ -452,7 +452,7 @@ per-row routing, not the dialog-wide `kind` the old code used.
    panel, in-reader search, colour picker + inline per-page annotation list, and
    continuous/vertical scroll (a toggle alongside the page-by-page view, eagerly rendered
    rather than virtualized) — all built and verified end-to-end headless.
-7. **Tier 3** — next up. Annotation export (Markdown/plain-text, à la Zotero's "add note from
-   annotations"), straightforward now that 5C's schema extension exists for both formats.
+7. **Tier 3** — next up. A portable Markdown/plain-text annotation export, straightforward
+   now that 5C's schema extension exists for both formats.
 8. **Tier 4** — multi-attachment chooser, small, low urgency until an entry with two
    attachments actually shows up in practice.
