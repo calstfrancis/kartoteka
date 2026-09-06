@@ -46,6 +46,38 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.10.0" date="2026-09-06">
+      <description>
+        <p>0.10.0 "Open Folio" — a two-page reader view, a guided GitHub backup wizard,
+        editable/nestable collections with drag-and-drop, and consistent printed-page
+        numbering everywhere annotations are shown.</p>
+        <ul>
+          <li>New "Two-page" view in the PDF reader, showing two facing pages side by
+          side like an open book, alongside the existing single-page and Continuous
+          modes.</li>
+          <li>KEPUB files with no file extension are now recognized, by sniffing the
+          file's own bytes when the filename doesn't say.</li>
+          <li>Text selections in the PDF reader now stay visibly highlighted after the
+          drag ends, and right-clicking one offers "Create note from selection…", which
+          now carries the selection's on-page region.</li>
+          <li>Fixed: dialogs opened from inside the PDF reader no longer block the main
+          library window instead of the reader; opening an already-open PDF/EPUB now
+          surfaces the existing reader instead of creating a conflicting duplicate.</li>
+          <li>New "Set up backup…" wizard walks through GitHub sign-in, repository
+          creation, first push, and enabling automatic backups in one guided flow.</li>
+          <li>Right-click an entry in the spreadsheet or Bookshelf grid for a context
+          menu (Collections…, Create book part…, Delete…), and fixed a column-resize
+          bug on the borders next to Title.</li>
+          <li>Collections can now be renamed, reparented, and deleted from the sidebar,
+          and can be drag-and-dropped onto each other to nest; the Bookshelf grid can
+          now drag books onto collections, matching the spreadsheet. Fixed a slug
+          collision that could silently overwrite a same-named collection.</li>
+          <li>Printed page numbers (including a new manual override for PDFs with no
+          <code>/PageLabels</code>) are now shown consistently across the reader, the
+          Annotations dialog, and the CLI.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.9.1" date="2026-09-04">
       <description>
         <p>0.9.1 "Clean Copy" — documentation maintenance only, no functional or

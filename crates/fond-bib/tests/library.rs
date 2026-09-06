@@ -722,6 +722,77 @@ fn add_to_collection_is_idempotent() {
     assert!(lib.load_collection("reading").unwrap().keys.is_empty());
 }
 
+// ---- create_collection / rename_collection / reparent_collection / delete_collection -----
+
+#[test]
+fn create_collection_dedupes_colliding_slugs() {
+    let (_dir, lib) = temp_library();
+    let first = lib.create_collection("Theology", None).unwrap();
+    let second = lib.create_collection("theology!!", None).unwrap();
+    assert_eq!(first, "theology");
+    assert_ne!(second, "theology");
+    // Both collections survive as separate files — the second didn't overwrite the first.
+    assert_eq!(lib.load_collection(&first).unwrap().name, "Theology");
+    assert_eq!(lib.load_collection(&second).unwrap().name, "theology!!");
+}
+
+#[test]
+fn rename_collection_keeps_slug_and_parent_references() {
+    let (_dir, lib) = temp_library();
+    let parent = lib.create_collection("Theology", None).unwrap();
+    let child = lib.create_collection("Christology", Some(&parent)).unwrap();
+
+    lib.rename_collection(&parent, "Systematic Theology")
+        .unwrap();
+
+    assert_eq!(
+        lib.load_collection(&parent).unwrap().name,
+        "Systematic Theology"
+    );
+    // The child's parent reference is a slug, untouched by the rename.
+    assert_eq!(
+        lib.load_collection(&child).unwrap().parent.as_deref(),
+        Some(parent.as_str())
+    );
+}
+
+#[test]
+fn reparent_collection_rejects_cycles() {
+    let (_dir, lib) = temp_library();
+    let a = lib.create_collection("A", None).unwrap();
+    let b = lib.create_collection("B", Some(&a)).unwrap();
+    let c = lib.create_collection("C", Some(&b)).unwrap();
+
+    // A is not its own parent.
+    assert!(lib.reparent_collection(&a, Some(a.as_str())).is_err());
+    // A -> C would close the A -> B -> C -> A loop.
+    assert!(lib.reparent_collection(&a, Some(&c)).is_err());
+    assert_eq!(lib.load_collection(&a).unwrap().parent, None);
+
+    // Moving C under A directly (skipping B) is fine — no cycle.
+    lib.reparent_collection(&c, Some(&a)).unwrap();
+    assert_eq!(
+        lib.load_collection(&c).unwrap().parent.as_deref(),
+        Some(a.as_str())
+    );
+
+    // Moving back to top level always succeeds.
+    lib.reparent_collection(&b, None).unwrap();
+    assert_eq!(lib.load_collection(&b).unwrap().parent, None);
+}
+
+#[test]
+fn delete_collection_promotes_children_to_top_level() {
+    let (_dir, lib) = temp_library();
+    let parent = lib.create_collection("Theology", None).unwrap();
+    let child = lib.create_collection("Christology", Some(&parent)).unwrap();
+
+    lib.delete_collection(&parent).unwrap();
+
+    assert!(lib.load_collection(&parent).is_err());
+    assert_eq!(lib.load_collection(&child).unwrap().parent, None);
+}
+
 #[test]
 fn delete_node_removes_file_and_incoming_relations() {
     let (_dir, lib) = temp_library();

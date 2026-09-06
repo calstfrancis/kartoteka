@@ -43,6 +43,9 @@ pub enum BibError {
 
     #[error("not a valid library at {path}: {message}")]
     Layout { path: PathBuf, message: String },
+
+    #[error("collection '{slug}': {message}")]
+    Collection { slug: String, message: String },
 }
 
 impl BibError {

@@ -45,6 +45,9 @@ pub fn bib_error(e: &BibError) -> String {
             "\"{}\" doesn't look like a Kartoteka library folder.",
             path.display()
         ),
+        BibError::Collection { .. } => {
+            "That would nest a collection inside itself — pick a different parent.".to_string()
+        }
     }
 }
 

@@ -168,6 +168,23 @@ fn build_card() -> gtk4::Box {
         card.set_data("badge-label", badge_label);
     }
 
+    // Drag source for adding a book to a collection, mirroring the spreadsheet's Key-column
+    // drag source (`app_window::build_entries_column_view`) — the Bookshelf grid previously
+    // had no drag-and-drop at all, so dragging a cover onto a collection in the sidebar did
+    // nothing. Reads the bound entry's key from qdata set in `bind_card` on every rebind,
+    // rather than capturing a `ListItem` directly, since `build_card` runs once per recycled
+    // cell while `bind_card` runs on every bind.
+    let drag = gtk4::DragSource::new();
+    drag.set_actions(gdk::DragAction::COPY);
+    {
+        let card_for_drag = card.clone();
+        drag.connect_prepare(move |_, _, _| {
+            card_widget::<String>(&card_for_drag, "row-key")
+                .map(|key| gdk::ContentProvider::for_value(&key.to_value()))
+        });
+    }
+    card.add_controller(drag);
+
     card
 }
 
@@ -220,6 +237,11 @@ fn bind_card(
 
     title_label.set_text(&row.title());
     author_label.set_text(&row.author());
+
+    // Read by the drag source (see `build_card`) and by the right-click context menu wired
+    // up in `app_window::build()` — both need the bound entry's key, and only `bind_card`
+    // (run on every rebind, unlike `build_card`'s once-per-recycled-cell setup) knows it.
+    unsafe { card.set_data("row-key", row.key()) };
 
     cover_picture.set_paintable(None::<&gdk::Texture>);
     cover_picture.set_visible(false);

@@ -1,6 +1,7 @@
 //! PDF text extraction via PDFium (Milestone 4). Binding to the native PDFium library is
 //! resolved at runtime; nothing here needs PDFium present at build time.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use pdfium_render::prelude::{
@@ -39,6 +40,18 @@ pub fn bind_pdfium() -> Result<Pdfium> {
         message: e.to_string(),
     })?;
     Ok(Pdfium::new(bindings))
+}
+
+/// Sniff whether the file at `path` looks like a PDF — for a file whose name has no `.pdf`
+/// extension to go on. Just the header magic (`%PDF-`), read as a cheap few-byte peek rather
+/// than the whole file; good enough since a corrupt-past-that-point file would fail to parse
+/// later anyway rather than being silently misidentified as readable.
+pub fn looks_like_pdf(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 5];
+    file.read_exact(&mut magic).is_ok() && magic == *b"%PDF-"
 }
 
 /// Extracted text from a PDF, one `String` per page.
@@ -764,8 +777,26 @@ pub fn extract_text_from_file(pdfium: &Pdfium, path: &Path) -> Result<PdfText> {
 #[cfg(test)]
 mod tests {
     use super::{
-        blend_annotations, blend_highlights, find_doi, find_isbn, MarkupKind, RenderedPage,
+        blend_annotations, blend_highlights, find_doi, find_isbn, looks_like_pdf, MarkupKind,
+        RenderedPage,
     };
+
+    #[test]
+    fn looks_like_pdf_checks_header_magic_only() {
+        let dir =
+            std::env::temp_dir().join(format!("fond-doc-pdf-test-{}-sniff", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pdf = dir.join("no_extension_at_all");
+        std::fs::write(&pdf, b"%PDF-1.7\n%rest of file is irrelevant here").unwrap();
+        assert!(looks_like_pdf(&pdf));
+
+        let not_pdf = dir.join("some_file");
+        std::fs::write(&not_pdf, b"not a pdf").unwrap();
+        assert!(!looks_like_pdf(&not_pdf));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn finds_labeled_isbn13_with_hyphens() {

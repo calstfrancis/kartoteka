@@ -247,7 +247,13 @@ impl AnnotationSidecar {
     /// anchored, `page` always `None`) are ordered by chapter path, then creation time. The
     /// two anchor kinds are kept in separate blocks rather than interleaved by a shared sort
     /// key, since "page 3" and "chapter 3" have no meaningful relative order.
-    pub fn to_markdown(&self, entry_title: &str) -> String {
+    ///
+    /// `page_labels`, when given, is the PDF's own 0-based printed-page-number lookup (see
+    /// `fond_doc::pdf::page_labels`, or a `PageLabelOverride`'s applied form) — a PDF
+    /// annotation's heading shows that printed number instead of the raw file page whenever
+    /// one is defined for its page. `None` (or a page with no label defined) falls back to
+    /// the raw 1-based page number, matching every caller from before this parameter existed.
+    pub fn to_markdown(&self, entry_title: &str, page_labels: Option<&[Option<String>]>) -> String {
         let mut out = format!("# {entry_title}\n\n");
         if self.annotations.is_empty() {
             out.push_str("_No annotations._\n");
@@ -269,7 +275,12 @@ impl AnnotationSidecar {
 
         for annotation in pdf.into_iter().chain(epub) {
             let location = match (annotation.page, annotation.chapter.as_deref()) {
-                (Some(p), _) => format!("Page {p}"),
+                (Some(p), _) => {
+                    let printed = page_labels
+                        .and_then(|labels| labels.get((p as usize).saturating_sub(1)))
+                        .and_then(|l| l.clone());
+                    format!("Page {}", printed.unwrap_or_else(|| p.to_string()))
+                }
                 (None, Some(chapter)) => Path::new(chapter)
                     .file_name()
                     .map(|f| f.to_string_lossy().into_owned())
@@ -403,14 +414,14 @@ mod tests {
     #[test]
     fn markdown_export_is_empty_but_titled_with_no_annotations() {
         let sidecar = AnnotationSidecar::new("k");
-        let md = sidecar.to_markdown("A Book With No Marks");
+        let md = sidecar.to_markdown("A Book With No Marks", None);
         assert_eq!(md, "# A Book With No Marks\n\n_No annotations._\n");
     }
 
     #[test]
     fn markdown_export_renders_a_pdf_highlight_with_quote_and_note() {
         let sidecar = sample();
-        let md = sidecar.to_markdown("Black Theology and Black Power");
+        let md = sidecar.to_markdown("Black Theology and Black Power", None);
         assert_eq!(
             md,
             "# Black Theology and Black Power\n\n\
@@ -418,6 +429,18 @@ mod tests {
              > the gospel of Jesus is a gospel of liberation\n\n\
              core thesis\n"
         );
+    }
+
+    #[test]
+    fn markdown_export_uses_printed_page_label_when_given() {
+        // annotation.page is 1-based (raw file page 7); page_labels is 0-based, so index 6
+        // holds its printed number — here the document's front matter shifted numbering so
+        // raw page 7 is printed as "iii".
+        let sidecar = sample();
+        let mut labels = vec![None; 7];
+        labels[6] = Some("iii".to_string());
+        let md = sidecar.to_markdown("Black Theology and Black Power", Some(&labels));
+        assert!(md.starts_with("# Black Theology and Black Power\n\n## Page iii — Highlight\n\n"));
     }
 
     #[test]
@@ -437,7 +460,7 @@ mod tests {
             created: None,
             modified: None,
         });
-        let md = sidecar.to_markdown("Untitled");
+        let md = sidecar.to_markdown("Untitled", None);
         assert_eq!(md, "# Untitled\n\n## Page 2 — Note\n\njust a margin note\n");
     }
 
@@ -468,7 +491,7 @@ mod tests {
             None,
             None,
         ));
-        let md = sidecar.to_markdown("Mixed Formats");
+        let md = sidecar.to_markdown("Mixed Formats", None);
         let page2 = md.find("early pdf highlight").unwrap();
         let page9 = md.find("late pdf highlight").unwrap();
         let chapter = md.find("an epub highlight").unwrap();

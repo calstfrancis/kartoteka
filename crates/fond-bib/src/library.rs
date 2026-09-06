@@ -784,8 +784,104 @@ impl Library {
         Ok(())
     }
 
-    /// Delete a collection file. Missing is not an error.
+    /// Create a new collection named `name`, optionally nested under `parent` (a slug).
+    /// Slugified from `name` (`zotero::slugify`, the same routine Zotero-import collection
+    /// names already go through), with a numeric `-2`, `-3`, … suffix appended if that slug
+    /// is already taken — otherwise two differently-named collections that slugify the same
+    /// way (e.g. "Theology" and "theology!!") would silently overwrite one another, since the
+    /// slug alone is the filename. Returns the slug actually used.
+    pub fn create_collection(&self, name: &str, parent: Option<&str>) -> Result<String> {
+        let base = crate::zotero::slugify(name);
+        let base = if base.is_empty() {
+            "collection".to_string()
+        } else {
+            base
+        };
+        let existing = self.collection_slugs()?;
+        let mut slug = base.clone();
+        let mut n = 2;
+        while existing.iter().any(|s| s == &slug) {
+            slug = format!("{base}-{n}");
+            n += 1;
+        }
+        self.save_collection(
+            &slug,
+            &Collection {
+                name: name.to_string(),
+                description: None,
+                parent: parent.map(|s| s.to_string()),
+                keys: Vec::new(),
+            },
+        )?;
+        Ok(slug)
+    }
+
+    /// Rename a collection in place — the slug (and so its filename, and every other
+    /// collection's `parent` reference to it) is unaffected, since `name` and the on-disk
+    /// slug are independent (see `docs/DATA-MODEL.md`).
+    pub fn rename_collection(&self, slug: &str, new_name: &str) -> Result<()> {
+        let mut collection = self.load_collection(slug)?;
+        collection.name = new_name.to_string();
+        self.save_collection(slug, &collection)?;
+        Ok(())
+    }
+
+    /// Whether setting `slug`'s parent to `new_parent` would create a cycle — true when
+    /// `new_parent` is `slug` itself, or is currently one of `slug`'s own descendants
+    /// (walking `new_parent`'s parent chain upward and finding `slug` along the way means
+    /// `new_parent` sits *under* `slug` today, so making `slug` a child of it would loop).
+    /// `new_parent: None` (moving to top level) can never cycle.
+    pub fn would_create_cycle(&self, slug: &str, new_parent: Option<&str>) -> bool {
+        let mut current = new_parent.map(|s| s.to_string());
+        let mut steps = 0u32;
+        while let Some(c) = current {
+            if c == slug {
+                return true;
+            }
+            // Bound the walk in case of a pre-existing cycle from hand-edited files — this
+            // check exists precisely so the UI can't *create* one, but shouldn't itself hang
+            // if one already slipped in some other way.
+            steps += 1;
+            if steps > 10_000 {
+                return true;
+            }
+            current = self.load_collection(&c).ok().and_then(|col| col.parent);
+        }
+        false
+    }
+
+    /// Move a collection under a new parent (`None` for top level), rejecting a change that
+    /// would create a cycle (see `would_create_cycle`) — the one invariant `parent` must
+    /// hold that creation-time alone can't guarantee once re-parenting is possible.
+    pub fn reparent_collection(&self, slug: &str, new_parent: Option<&str>) -> Result<()> {
+        if new_parent == Some(slug) || self.would_create_cycle(slug, new_parent) {
+            return Err(BibError::Collection {
+                slug: slug.to_string(),
+                message: "would create a cycle".to_string(),
+            });
+        }
+        let mut collection = self.load_collection(slug)?;
+        collection.parent = new_parent.map(|s| s.to_string());
+        self.save_collection(slug, &collection)?;
+        Ok(())
+    }
+
+    /// Delete a collection file, promoting any of its child collections (ones whose `parent`
+    /// names this slug) to top-level first, so they aren't left pointing at a parent that no
+    /// longer exists. Membership (`keys`) in the deleted collection is simply discarded — the
+    /// entries themselves are untouched. Missing is not an error.
     pub fn delete_collection(&self, slug: &str) -> Result<()> {
+        for child_slug in self.collection_slugs()? {
+            if child_slug == slug {
+                continue;
+            }
+            if let Ok(mut child) = self.load_collection(&child_slug) {
+                if child.parent.as_deref() == Some(slug) {
+                    child.parent = None;
+                    self.save_collection(&child_slug, &child)?;
+                }
+            }
+        }
         let path = self.collection_path(slug);
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),

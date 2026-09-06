@@ -79,6 +79,15 @@ pub(crate) struct AppState {
     /// bulk action's completion, but *not* on an ordinary list refresh — an edit elsewhere
     /// shouldn't silently drop an in-progress bulk selection.
     bulk_selected: HashSet<String>,
+    /// Reader windows currently open, keyed by the attachment's content hash (`pdf_hash`/
+    /// `epub_hash` — content-addressed, so this is really "the same file", not just "the
+    /// same entry"). Lets a second attempt to open the same document surface the existing
+    /// window instead of opening a duplicate reader on it, which would otherwise race on the
+    /// same `annots/<key>.json`/`Progress` writes (each reader keeps its own in-memory
+    /// snapshot and overwrites the whole file on save). Removed on the reader's own
+    /// `close-request`. Two *different* documents open concurrently is unaffected — this only
+    /// dedupes opening the same one twice.
+    open_readers: HashMap<String, adw::Window>,
 }
 
 struct Widgets {
@@ -630,6 +639,35 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         });
     }
 
+    // Right-click a spreadsheet row for a context menu (Collections…/Create book
+    // part…/Delete…) — see `show_entry_context_menu`. `ColumnView` has no per-row widget to
+    // attach to directly, so the gesture lives on the view itself and resolves which row was
+    // clicked via `pick()` plus the "row-key" qdata each column's cell factory stashes.
+    {
+        let state = state.clone();
+        let widgets_for_click = widgets.clone();
+        let column_view_for_pick = widgets.column_view.clone();
+        let click = gtk4::GestureClick::new();
+        click.set_button(gdk::BUTTON_SECONDARY);
+        click.connect_pressed(move |_gesture, _n, x, y| {
+            let Some(picked) = column_view_for_pick.pick(x, y, gtk4::PickFlags::DEFAULT) else {
+                return;
+            };
+            let Some(key) = row_key_at(picked) else {
+                return;
+            };
+            show_entry_context_menu(
+                &state,
+                &widgets_for_click,
+                &column_view_for_pick,
+                &key,
+                x,
+                y,
+            );
+        });
+        widgets.column_view.add_controller(click);
+    }
+
     // Live filter.
     {
         let state = state.clone();
@@ -729,6 +767,29 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
                     show_detail(&state, &widgets, row.idx());
                 }
             });
+    }
+
+    // Right-click a book cover for the same context menu the spreadsheet offers (see
+    // `show_entry_context_menu`) — the Bookshelf grid previously had no right-click at all.
+    // `GridView`, like `ColumnView`, has no per-row widget to attach a gesture to directly,
+    // so this resolves the clicked card via `pick()` + the "row-key" qdata `bind_card`
+    // stashes on every card (the same idiom `row_key_at` already uses for the spreadsheet).
+    {
+        let state = state.clone();
+        let widgets_for_click = widgets.clone();
+        let scroller_for_pick = bookshelf_view.scroller.clone();
+        let click = gtk4::GestureClick::new();
+        click.set_button(gdk::BUTTON_SECONDARY);
+        click.connect_pressed(move |_gesture, _n, x, y| {
+            let Some(picked) = scroller_for_pick.pick(x, y, gtk4::PickFlags::DEFAULT) else {
+                return;
+            };
+            let Some(key) = row_key_at(picked) else {
+                return;
+            };
+            show_entry_context_menu(&state, &widgets_for_click, &scroller_for_pick, &key, x, y);
+        });
+        bookshelf_view.scroller.add_controller(click);
     }
 
     // Bulk actions: add a tag, add to a collection, or delete — applied to every currently
@@ -1034,6 +1095,9 @@ fn build_hamburger_popover(
     activate_row(&rows, &popover, "Save current search…", "win.save-search");
     activate_row(&rows, &popover, "Save a copy…", "win.save-copy").set_tooltip_text(Some(
         "Copy your whole library to a folder you choose — no setup required",
+    ));
+    activate_row(&rows, &popover, "Set up backup…", "win.backup-wizard").set_tooltip_text(Some(
+        "Guided setup: sign in to GitHub, then commit and push in one step",
     ));
     activate_row(&rows, &popover, "Back up (git commit)…", "win.backup").set_tooltip_text(Some(
         "Versioned backups with git — more powerful, but needs a one-time git setup",
@@ -1349,6 +1413,17 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("backup", None);
         action.connect_activate(move |_, _| show_backup_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let auto_backup_timer = auto_backup_timer.clone();
+        let action = gio::SimpleAction::new("backup-wizard", None);
+        action.connect_activate(move |_, _| {
+            show_backup_wizard(&state, &widgets, &config, &auto_backup_timer)
+        });
         window.add_action(&action);
     }
     {
@@ -3107,6 +3182,404 @@ fn move_library(
     });
 }
 
+/// A four-step wizard-container helper: a plain vertical `Box` with the same margins on
+/// every step page, so `show_backup_wizard`'s pages all line up without repeating the margin
+/// calls four times.
+fn wizard_step_box() -> gtk4::Box {
+    let b = gtk4::Box::new(Orientation::Vertical, 12);
+    b.set_margin_top(18);
+    b.set_margin_bottom(18);
+    b.set_margin_start(18);
+    b.set_margin_end(18);
+    b
+}
+
+/// Guided "set up backup" flow — sign in to GitHub (skipped if already signed in), choose a
+/// repository name/visibility and commit message, then commit and push in one sequence,
+/// finally offering to turn on automatic backups. This is a single entry point wrapping the
+/// same underlying calls the four separate "Sign in to GitHub…" / "Back up (git commit)…" /
+/// "Automatic backups…" menu items already use
+/// (`github::request_device_code`/`poll_for_access_token`, `secret_store::save_github_token`,
+/// `fond_vault::Vault::init`/`stage_all`/`commit`, `github::create_repo`, `Vault::set_remote`,
+/// `Vault::push_github`, `start_auto_backup_timer`) — just sequenced into one dialog instead
+/// of four menu actions a user has to find and run in the right order themselves. The four
+/// existing items are left in place unchanged, as power-user shortcuts once backup is already
+/// set up (e.g. a one-off commit with a custom message).
+#[allow(deprecated)]
+fn show_backup_wizard(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    config: &Rc<RefCell<Config>>,
+    timer: &Rc<RefCell<Option<glib::SourceId>>>,
+) {
+    let root = state
+        .borrow()
+        .library
+        .as_ref()
+        .map(|l| l.root().to_path_buf());
+    let Some(root) = root else {
+        toast(widgets, "Open a library first");
+        return;
+    };
+    if !github::is_configured() {
+        toast(widgets, "GitHub sign-in isn't configured yet");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Set up backup"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(440, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    header.pack_start(&cancel);
+    view.add_top_bar(&header);
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+
+    // Cancels an in-flight device-code poll if the wizard is closed mid-sign-in — same
+    // mechanism `present_device_dialog` uses.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let cancelled = cancelled.clone();
+        dialog.connect_close_request(move |_| {
+            cancelled.store(true, Ordering::Relaxed);
+            glib::Propagation::Proceed
+        });
+    }
+
+    let stack = gtk4::Stack::new();
+    stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
+
+    // ---- Step 1: sign in (skipped, after a quick username check, if already signed in) ----
+    let signin_page = wizard_step_box();
+    let signin_status = gtk4::Label::new(Some("Checking GitHub sign-in…"));
+    signin_status.set_wrap(true);
+    signin_status.set_xalign(0.0);
+    let signin_code = gtk4::Label::new(None);
+    signin_code.add_css_class("title-1");
+    signin_code.set_selectable(true);
+    signin_code.set_visible(false);
+    let signin_link =
+        gtk4::LinkButton::with_label("https://github.com/login/device", "Open GitHub");
+    signin_link.set_visible(false);
+    let signin_spinner = gtk4::Spinner::new();
+    signin_spinner.start();
+    signin_page.append(&signin_status);
+    signin_page.append(&signin_code);
+    signin_page.append(&signin_link);
+    signin_page.append(&signin_spinner);
+    stack.add_named(&signin_page, Some("signin"));
+
+    // ---- Step 2: repository name/visibility + commit message ----
+    let setup_page = wizard_step_box();
+    let setup_intro = gtk4::Label::new(None);
+    setup_intro.set_wrap(true);
+    setup_intro.set_xalign(0.0);
+    let repo_name_default = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("kartoteka-library")
+        .to_string();
+    let repo_name_entry = gtk4::Entry::builder().text(&repo_name_default).build();
+    let private_row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let private_label = gtk4::Label::new(Some("Private repository"));
+    private_label.set_xalign(0.0);
+    private_label.set_hexpand(true);
+    private_label.set_halign(gtk4::Align::Start);
+    let private_switch = gtk4::Switch::new();
+    private_switch.set_halign(gtk4::Align::End);
+    private_switch.set_active(true);
+    private_row.append(&private_label);
+    private_row.append(&private_switch);
+    let default_msg = glib::DateTime::now_local()
+        .ok()
+        .and_then(|d| d.format("Backup %Y-%m-%d %H:%M").ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "Backup".to_string());
+    let message_entry = gtk4::Entry::builder()
+        .text(&default_msg)
+        .activates_default(true)
+        .build();
+    let start_button = gtk4::Button::with_label("Back up now");
+    start_button.add_css_class("suggested-action");
+    start_button.set_halign(gtk4::Align::End);
+    setup_page.append(&setup_intro);
+    setup_page.append(&gtk4::Label::new(Some("Repository name")));
+    setup_page.append(&repo_name_entry);
+    setup_page.append(&private_row);
+    setup_page.append(&gtk4::Label::new(Some("Commit message")));
+    setup_page.append(&message_entry);
+    setup_page.append(&start_button);
+    stack.add_named(&setup_page, Some("setup"));
+
+    // ---- Step 3: progress ----
+    let progress_page = wizard_step_box();
+    let progress_label = gtk4::Label::new(Some("Backing up…"));
+    progress_label.set_wrap(true);
+    progress_label.set_xalign(0.0);
+    let progress_spinner = gtk4::Spinner::new();
+    progress_spinner.start();
+    progress_page.append(&progress_label);
+    progress_page.append(&progress_spinner);
+    stack.add_named(&progress_page, Some("progress"));
+
+    // ---- Step 4: done, offer automatic backups ----
+    let done_page = wizard_step_box();
+    let done_label = gtk4::Label::new(Some("Backed up and pushed to GitHub."));
+    done_label.set_wrap(true);
+    done_label.set_xalign(0.0);
+    let auto_row = gtk4::Box::new(Orientation::Horizontal, 8);
+    let auto_label = gtk4::Label::new(Some("Keep backing up automatically from now on"));
+    auto_label.set_wrap(true);
+    auto_label.set_xalign(0.0);
+    auto_label.set_hexpand(true);
+    auto_label.set_halign(gtk4::Align::Start);
+    let auto_switch = gtk4::Switch::new();
+    auto_switch.set_halign(gtk4::Align::End);
+    auto_switch.set_active(true);
+    auto_row.append(&auto_label);
+    auto_row.append(&auto_switch);
+    let interval_labels: Vec<&str> = AUTO_BACKUP_INTERVALS.iter().map(|(l, _)| *l).collect();
+    let interval_drop = gtk4::DropDown::from_strings(&interval_labels);
+    interval_drop.set_selected(1); // "Every 30 minutes" — same default as `show_auto_backup_dialog`
+    let finish_button = gtk4::Button::with_label("Finish");
+    finish_button.add_css_class("suggested-action");
+    finish_button.set_halign(gtk4::Align::End);
+    done_page.append(&done_label);
+    done_page.append(&auto_row);
+    done_page.append(&labeled("Interval", &interval_drop));
+    done_page.append(&finish_button);
+    stack.add_named(&done_page, Some("done"));
+
+    view.set_content(Some(&stack));
+    dialog.set_content(Some(&view));
+
+    // Step 2 -> 3 -> 4: commit (if there are changes), create the GitHub repo on first backup
+    // (same auto-creation logic as `push_to_github`), then push.
+    {
+        let widgets = widgets.clone();
+        let stack = stack.clone();
+        let progress_label = progress_label.clone();
+        let dialog = dialog.clone();
+        let root = root.clone();
+        start_button.connect_clicked(move |_| {
+            let repo_name = repo_name_entry.text().trim().to_string();
+            if repo_name.is_empty() {
+                toast(&widgets, "Enter a repository name");
+                return;
+            }
+            let private = private_switch.is_active();
+            let message = message_entry.text().to_string();
+            stack.set_visible_child_name("progress");
+            progress_label.set_text("Committing and pushing…");
+
+            let root_thread = root.clone();
+            let (sender, receiver) =
+                glib::MainContext::channel::<Result<(), String>>(glib::Priority::DEFAULT);
+            std::thread::spawn(move || {
+                let result = (|| -> Result<(), String> {
+                    let vault = fond_vault::Vault::open(&root_thread)
+                        .or_else(|_| fond_vault::Vault::init(&root_thread))
+                        .map_err(|e| e.to_string())?;
+                    let identity =
+                        fond_vault::Identity::from_git_config().map_err(|e| e.to_string())?;
+                    let status = vault.status().map_err(|e| e.to_string())?;
+                    if !status.is_clean() {
+                        vault.stage_all().map_err(|e| e.to_string())?;
+                        vault
+                            .commit(&message, &identity)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    let Some(token) = secret_store::load_github_token() else {
+                        return Err("not signed in to GitHub".to_string());
+                    };
+                    if vault.remote_url("origin").is_none() {
+                        let clone_url = github::create_repo(&token, &repo_name, private)
+                            .map_err(|e| e.to_string())?;
+                        vault
+                            .set_remote("origin", &clone_url)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    vault
+                        .push_github("origin", &token)
+                        .map_err(|e| e.to_string())
+                })();
+                let _ = sender.send(result);
+            });
+
+            let widgets = widgets.clone();
+            let stack = stack.clone();
+            let dialog = dialog.clone();
+            receiver.attach(None, move |result| {
+                match result {
+                    Ok(()) => stack.set_visible_child_name("done"),
+                    Err(e) => {
+                        toast(&widgets, &format!("Backup failed: {e}"));
+                        dialog.close();
+                    }
+                }
+                glib::ControlFlow::Break
+            });
+        });
+    }
+
+    // Step 4 -> close: persist the automatic-backup choice and (re)start the shared timer,
+    // same as `show_auto_backup_dialog`'s own Save button.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let config = config.clone();
+        let timer = timer.clone();
+        let dialog = dialog.clone();
+        finish_button.connect_clicked(move |_| {
+            let minutes = AUTO_BACKUP_INTERVALS
+                .get(interval_drop.selected() as usize)
+                .map(|(_, m)| *m)
+                .unwrap_or(30);
+            {
+                let mut c = config.borrow_mut();
+                c.auto_backup_enabled = auto_switch.is_active();
+                c.auto_backup_interval_mins = minutes;
+                c.save();
+            }
+            start_auto_backup_timer(&state, &widgets, &config, &timer);
+            toast(&widgets, "Backup set up");
+            dialog.close();
+        });
+    }
+
+    dialog.present();
+
+    // Kick off step 1: already signed in? Just confirm the token still works and skip
+    // straight to step 2. Otherwise run the device flow inline in the "signin" page —
+    // the same calls `present_device_dialog` makes, just landing in this wizard's own page
+    // instead of a second popup window.
+    stack.set_visible_child_name("signin");
+    if let Some(token) = secret_store::load_github_token() {
+        signin_status.set_text("Confirming GitHub sign-in…");
+        let (sender, receiver) =
+            glib::MainContext::channel::<Result<String, String>>(glib::Priority::DEFAULT);
+        std::thread::spawn(move || {
+            let _ = sender.send(github::fetch_username(&token).map_err(|e| e.to_string()));
+        });
+        let widgets = widgets.clone();
+        let stack = stack.clone();
+        let setup_intro = setup_intro.clone();
+        let dialog = dialog.clone();
+        receiver.attach(None, move |result| {
+            match result {
+                Ok(username) => {
+                    setup_intro.set_text(&format!(
+                        "Signed in as {username}. Choose a name for the GitHub repository \
+                         that will hold your library:"
+                    ));
+                    stack.set_visible_child_name("setup");
+                }
+                Err(e) => {
+                    toast(
+                        &widgets,
+                        &format!(
+                            "GitHub sign-in has expired ({e}) — sign in again from the \
+                             hamburger menu"
+                        ),
+                    );
+                    dialog.close();
+                }
+            }
+            glib::ControlFlow::Break
+        });
+    } else {
+        signin_status.set_text("Requesting a sign-in code from GitHub…");
+        let (sender, receiver) = glib::MainContext::channel::<
+            Result<github::DeviceCodeResponse, String>,
+        >(glib::Priority::DEFAULT);
+        std::thread::spawn(move || {
+            let _ = sender
+                .send(github::request_device_code(github::CLIENT_ID).map_err(|e| e.to_string()));
+        });
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let cancelled = cancelled.clone();
+        let signin_status = signin_status.clone();
+        let signin_code = signin_code.clone();
+        let signin_link = signin_link.clone();
+        let stack = stack.clone();
+        let setup_intro = setup_intro.clone();
+        receiver.attach(None, move |result| {
+            match result {
+                Ok(device) => {
+                    signin_status.set_text("Open the page below and enter this code:");
+                    signin_code.set_text(&device.user_code);
+                    signin_code.set_visible(true);
+                    signin_link.set_uri(&device.verification_uri);
+                    signin_link.set_label("Open GitHub");
+                    signin_link.set_visible(true);
+
+                    let (sender2, receiver2) = glib::MainContext::channel::<
+                        Result<(String, String), String>,
+                    >(glib::Priority::DEFAULT);
+                    {
+                        let cancelled = cancelled.clone();
+                        std::thread::spawn(move || {
+                            let result = github::poll_for_access_token(
+                                github::CLIENT_ID,
+                                &device,
+                                &cancelled,
+                            )
+                            .and_then(|token| {
+                                github::fetch_username(&token).map(|user| (token, user))
+                            })
+                            .map_err(|e| e.to_string());
+                            let _ = sender2.send(result);
+                        });
+                    }
+                    let widgets = widgets.clone();
+                    let dialog = dialog.clone();
+                    let stack = stack.clone();
+                    let setup_intro = setup_intro.clone();
+                    receiver2.attach(None, move |result| {
+                        match result {
+                            Ok((token, username)) => {
+                                if let Err(e) = secret_store::save_github_token(&token) {
+                                    toast(
+                                        &widgets,
+                                        &format!("Signed in, but couldn't store token: {e}"),
+                                    );
+                                }
+                                setup_intro.set_text(&format!(
+                                    "Signed in as {username}. Choose a name for the GitHub \
+                                     repository that will hold your library:"
+                                ));
+                                stack.set_visible_child_name("setup");
+                            }
+                            Err(e) if e.contains("cancelled") => {}
+                            Err(e) => {
+                                toast(&widgets, &format!("Sign-in failed: {e}"));
+                                dialog.close();
+                            }
+                        }
+                        glib::ControlFlow::Break
+                    });
+                }
+                Err(e) => {
+                    toast(&widgets, &format!("GitHub error: {e}"));
+                    dialog.close();
+                }
+            }
+            glib::ControlFlow::Break
+        });
+    }
+}
+
 fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let root = state
         .borrow()
@@ -4366,31 +4839,76 @@ fn refresh_collections(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             let state = state.clone();
             let widgets = widgets.clone();
             let slug = slug.clone();
+            // Accepts two kinds of drag: a bare citation key (dragged from the entries list
+            // or Bookshelf grid — adds that entry to this collection) and a
+            // `"collection:<slug>"`-prefixed string (dragged from another collection row
+            // below — reparents it under this one). Same `STRING` GType for both; the prefix
+            // is the only thing disambiguating them, since `ContentProvider::for_value` on
+            // the entry side is a bare key with no room to add a type tag without also
+            // touching that call site.
             let drop = gtk4::DropTarget::new(glib::types::Type::STRING, gdk::DragAction::COPY);
             drop.connect_drop(move |_, value, _, _| {
-                let Ok(key) = value.get::<String>() else {
+                let Ok(text) = value.get::<String>() else {
                     return false;
                 };
-                let result = {
+                let (result, moved_collection) = {
                     let s = state.borrow();
-                    s.library
-                        .as_ref()
-                        .map(|lib| lib.add_to_collection(&slug, &key))
+                    let Some(lib) = s.library.as_ref() else {
+                        return false;
+                    };
+                    match text.strip_prefix("collection:") {
+                        Some(dragged_slug) if dragged_slug == slug => (Ok(()), true),
+                        Some(dragged_slug) => {
+                            (lib.reparent_collection(dragged_slug, Some(&slug)), true)
+                        }
+                        None => (lib.add_to_collection(&slug, &text), false),
+                    }
                 };
                 match result {
-                    Some(Ok(())) => {
-                        refresh_list(&state, &widgets);
-                        toast(&widgets, "Added to collection");
+                    Ok(()) => {
+                        if moved_collection {
+                            refresh_collections(&state, &widgets);
+                            toast(&widgets, "Moved collection");
+                        } else {
+                            refresh_list(&state, &widgets);
+                            toast(&widgets, "Added to collection");
+                        }
                         true
                     }
-                    Some(Err(e)) => {
+                    Err(e) => {
                         toast(&widgets, &friendly::bib_error(&e));
                         false
                     }
-                    None => false,
                 }
             });
             row.add_controller(drop);
+        }
+        {
+            // Drag source so a collection can be dropped onto another one above to reparent
+            // it (see the `DropTarget` just above) — `MOVE` rather than `COPY` since
+            // re-parenting isn't a copy of anything.
+            let slug_for_drag = slug.clone();
+            let drag = gtk4::DragSource::new();
+            drag.set_actions(gdk::DragAction::MOVE);
+            drag.connect_prepare(move |_, _, _| {
+                Some(gdk::ContentProvider::for_value(
+                    &format!("collection:{slug_for_drag}").to_value(),
+                ))
+            });
+            row.add_controller(drag);
+        }
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let slug = slug.clone();
+            let name = name.clone();
+            let row_for_menu = row.clone();
+            let click = gtk4::GestureClick::new();
+            click.set_button(gdk::BUTTON_SECONDARY);
+            click.connect_pressed(move |_gesture, _n, x, y| {
+                show_collection_context_menu(&state, &widgets, &row_for_menu, &slug, &name, x, y);
+            });
+            row.add_controller(click);
         }
         lb.append(&row);
     }
@@ -4422,6 +4940,236 @@ fn collection_row(label: &str, icon: &str, depth: usize) -> gtk4::ListBoxRow {
     row.add_css_class("fond-row");
     row.set_child(Some(&hbox));
     row
+}
+
+/// Right-click menu on a real collection row (not "All entries" or a saved search):
+/// Edit…, New collection…, Delete…. Same hand-built `popover_menu`/`popover_button`
+/// pattern the PDF reader's own right-click menus use (`show_pdf_context_menu`).
+fn show_collection_context_menu(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    row: &gtk4::ListBoxRow,
+    slug: &str,
+    name: &str,
+    x: f64,
+    y: f64,
+) {
+    let (popover, rows) = popover_menu(200);
+    popover.set_parent(row);
+    popover.set_pointing_to(Some(&gdk::Rectangle::new(
+        x.round() as i32,
+        y.round() as i32,
+        1,
+        1,
+    )));
+    popover.set_has_arrow(true);
+
+    let edit_row = popover_button("Edit…", false);
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let popover = popover.clone();
+        let slug = slug.to_string();
+        edit_row.connect_clicked(move |_| {
+            popover.popdown();
+            edit_collection_dialog(&state, &widgets, &slug);
+        });
+    }
+    rows.append(&edit_row);
+
+    let new_row = popover_button("New collection…", false);
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let popover = popover.clone();
+        new_row.connect_clicked(move |_| {
+            popover.popdown();
+            new_collection_dialog(&state, &widgets);
+        });
+    }
+    rows.append(&new_row);
+
+    let delete_row = popover_button("Delete…", true);
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let popover = popover.clone();
+        let slug = slug.to_string();
+        let name = name.to_string();
+        delete_row.connect_clicked(move |_| {
+            popover.popdown();
+            confirm_delete_collection(&state, &widgets, &slug, &name);
+        });
+    }
+    rows.append(&delete_row);
+
+    popover.popup();
+}
+
+/// Rename and/or reparent an existing collection — the "beefed up" collection-editing
+/// surface, reachable from the sidebar's right-click menu. Reuses `new_collection_dialog`'s
+/// parent-dropdown construction, but excludes the collection itself and any of its current
+/// descendants (`Library::would_create_cycle` covers both) — `reparent_collection` enforces
+/// the same rule server-side, this just keeps the dropdown from offering an option that's
+/// guaranteed to be rejected.
+fn edit_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, slug: &str) {
+    let Some(lib) = state.borrow().library.clone() else {
+        return;
+    };
+    let Ok(current) = lib.load_collection(slug) else {
+        toast(widgets, "Could not load that collection");
+        return;
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Edit collection"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(380, -1);
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    let entry = gtk4::Entry::builder()
+        .placeholder_text("Collection name")
+        .text(&current.name)
+        .activates_default(true)
+        .build();
+    content.append(&entry);
+
+    let (parent_slugs, parent_labels, selected_index) = {
+        let slugs = lib.collection_slugs().unwrap_or_default();
+        let loaded: Vec<(String, fond_bib::Collection)> = slugs
+            .into_iter()
+            .map(|s| {
+                let coll = lib.load_collection(&s).unwrap_or_default();
+                (s, coll)
+            })
+            .collect();
+        let ordered = order_collection_tree(&loaded);
+        let mut slugs = vec![String::new()];
+        let mut labels = vec!["(top level)".to_string()];
+        for (s, name, depth) in ordered {
+            if s == slug || lib.would_create_cycle(slug, Some(&s)) {
+                continue;
+            }
+            slugs.push(s);
+            labels.push(format!("{}{}", "    ".repeat(depth), name));
+        }
+        let selected = current
+            .parent
+            .as_deref()
+            .and_then(|p| slugs.iter().position(|s| s == p))
+            .unwrap_or(0);
+        (slugs, labels, selected)
+    };
+    let parent_label_refs: Vec<&str> = parent_labels.iter().map(String::as_str).collect();
+    let parent_drop = gtk4::DropDown::from_strings(&parent_label_refs);
+    parent_drop.set_tooltip_text(Some("Parent collection (optional)"));
+    parent_drop.set_selected(selected_index as u32);
+    content.append(&parent_drop);
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let slug = slug.to_string();
+        save.connect_clicked(move |_| {
+            let name = entry.text().trim().to_string();
+            if name.is_empty() {
+                toast(&widgets, "Name can't be empty");
+                return;
+            }
+            let new_parent = parent_slugs
+                .get(parent_drop.selected() as usize)
+                .filter(|s| !s.is_empty())
+                .cloned();
+            let result = {
+                let s = state.borrow();
+                let Some(lib) = s.library.as_ref() else {
+                    return;
+                };
+                lib.rename_collection(&slug, &name)
+                    .and_then(|()| lib.reparent_collection(&slug, new_parent.as_deref()))
+            };
+            match result {
+                Ok(()) => {
+                    toast(&widgets, "Collection updated");
+                    dialog.close();
+                    refresh_collections(&state, &widgets);
+                }
+                Err(e) => toast(&widgets, &friendly::bib_error(&e)),
+            }
+        });
+    }
+    dialog.present();
+}
+
+/// Confirm and then delete a collection. Its child collections (if any) are promoted to top
+/// level rather than deleted with it (see `Library::delete_collection`) — only the entries'
+/// *membership* in this collection is discarded; the entries themselves are untouched.
+fn confirm_delete_collection(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    slug: &str,
+    name: &str,
+) {
+    let dialog = adw::MessageDialog::new(
+        Some(&widgets.window),
+        Some(&format!("Delete “{name}”?")),
+        Some(
+            "Entries stay in the library and any subcollections move to the top level — only \
+             this collection itself is removed.",
+        ),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("delete", "Delete");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+
+    let state = state.clone();
+    let widgets = widgets.clone();
+    let slug = slug.to_string();
+    dialog.connect_response(None, move |dlg, response| {
+        dlg.close();
+        if response != "delete" {
+            return;
+        }
+        let result = {
+            let s = state.borrow();
+            s.library.as_ref().map(|lib| lib.delete_collection(&slug))
+        };
+        match result {
+            Some(Ok(())) => {
+                toast(&widgets, "Collection deleted");
+                refresh_collections(&state, &widgets);
+                refresh_list(&state, &widgets);
+            }
+            Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
+            None => {}
+        }
+    });
+    dialog.present();
 }
 
 /// Append one card (title/key list + Merge button) per duplicate group to `list`.
@@ -6596,19 +7344,10 @@ fn new_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 .get(parent_drop.selected() as usize)
                 .filter(|s| !s.is_empty())
                 .cloned();
-            let slug = fond_bib::zotero::slugify(&name);
             let result = {
                 let s = state.borrow();
                 let lib = s.library.as_ref().expect("library open");
-                lib.save_collection(
-                    &slug,
-                    &fond_bib::Collection {
-                        name: name.clone(),
-                        description: None,
-                        parent,
-                        keys: Vec::new(),
-                    },
-                )
+                lib.create_collection(&name, parent.as_deref())
             };
             match result {
                 Ok(_) => {
@@ -6803,6 +7542,11 @@ fn add_text_column_with(
                 item.child().and_downcast::<gtk4::Label>(),
             ) {
                 label.set_text(&get(&row));
+                // So a right-click anywhere on the row (`row_key_at`, wired in `build()`)
+                // can resolve which entry was clicked regardless of which column it landed
+                // on — `GtkColumnView`'s row widget is a private type with no public way to
+                // ask "what item is this", so each cell carries its own key instead.
+                unsafe { label.set_data("row-key", row.key()) };
             }
         });
     }
@@ -6811,7 +7555,14 @@ fn add_text_column_with(
     if spec.width > 0 {
         column.set_fixed_width(spec.width);
     }
-    column.set_resizable(true);
+    // An expanding column (currently just Title) fills whatever space the fixed-width
+    // columns around it don't use, so it shouldn't also be independently draggable — the two
+    // sizing modes fight each other: `GtkColumnView` keeps recomputing an expand column's
+    // width from leftover space on every relayout, so a manual drag on *its* border gets
+    // overridden mid-drag and reads as the column moving opposite to the pointer. Only the
+    // fixed columns are user-resizable; resizing one of those changes how much room is left
+    // for Title to expand into, which is the correct (and non-fighting) way to affect it.
+    column.set_resizable(!spec.expand);
     let sorter = gtk4::CustomSorter::new(move |a, b| {
         let a = a
             .downcast_ref::<EntryRow>()
@@ -6892,6 +7643,7 @@ fn build_entries_column_view() -> (
                 "Citation key — a short ID for this reference, used to cite it in Typst \
                  documents. Also its file name on disk.",
             ));
+            unsafe { label.set_data("row-key", row.key()) };
         }
     });
     let key_column = gtk4::ColumnViewColumn::new(Some("Key"), Some(key_factory));
@@ -6993,6 +7745,7 @@ fn build_entries_column_view() -> (
         while let Some(child) = b.first_child() {
             b.remove(&child);
         }
+        unsafe { b.set_data("row-key", row.key()) };
         if row.has_pdf() {
             let icon = gtk4::Image::from_icon_name("x-office-document-symbolic");
             icon.set_pixel_size(14);
@@ -7336,18 +8089,16 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     let readable_attachment_of = |wanted: ReaderAttachmentKind| {
         note.as_ref().and_then(|n| {
             n.frontmatter.attachments.iter().find_map(|att| {
-                let kind = ReaderAttachmentKind::from_filename(&att.filename)?;
-                if kind != wanted {
-                    return None;
-                }
                 let hex = att
                     .hash
                     .split_once(':')
                     .map(|(_, h)| h)
                     .unwrap_or(&att.hash);
                 let path = library.attachment_blob_path(hex);
-                path.exists()
-                    .then(|| (path, att.filename.clone(), att.hash.clone()))
+                if !path.exists() || detect_attachment_kind(&att.filename, &path) != Some(wanted) {
+                    return None;
+                }
+                Some((path, att.filename.clone(), att.hash.clone()))
             })
         })
     };
@@ -8290,6 +9041,25 @@ impl ReaderAttachmentKind {
     }
 }
 
+/// Detect an attachment's kind: by filename extension first (cheap, no I/O — covers the
+/// common case, including `book.kepub.epub`, since `Path::extension()` reads the trailing
+/// `.epub` regardless of the `.kepub` in front of it and Kartoteka's EPUB reader is generic
+/// ZIP+XML that already tolerates KEPUB's extra Kobo markup with no changes). Falls back to
+/// sniffing the blob's own bytes when the extension doesn't say — the one real remaining gap,
+/// an extensionless KEPUB as sometimes downloaded raw from Kobo's store. `blob` must already
+/// be known to exist (every caller checks `attachment_blob_path(hex).exists()` first).
+fn detect_attachment_kind(filename: &str, blob: &std::path::Path) -> Option<ReaderAttachmentKind> {
+    ReaderAttachmentKind::from_filename(filename).or_else(|| {
+        if fond_doc::looks_like_pdf(blob) {
+            Some(ReaderAttachmentKind::Pdf)
+        } else if fond_doc::looks_like_epub(blob) {
+            Some(ReaderAttachmentKind::Epub)
+        } else {
+            None
+        }
+    })
+}
+
 /// Whether a (possibly absent) note has a readable (present-on-disk) PDF and/or EPUB
 /// attachment — same detection `show_detail` uses for its own Read button, factored out so
 /// the entry list's row icon (`EntrySummary::has_pdf`/`has_epub`) can reuse it. Takes an
@@ -8299,14 +9069,13 @@ fn attachment_presence(library: &Library, note: Option<&fond_bib::Note>) -> (boo
     let has = |wanted: ReaderAttachmentKind| {
         note.is_some_and(|n| {
             n.frontmatter.attachments.iter().any(|att| {
-                ReaderAttachmentKind::from_filename(&att.filename) == Some(wanted) && {
-                    let hex = att
-                        .hash
-                        .split_once(':')
-                        .map(|(_, h)| h)
-                        .unwrap_or(&att.hash);
-                    library.attachment_blob_path(hex).exists()
-                }
+                let hex = att
+                    .hash
+                    .split_once(':')
+                    .map(|(_, h)| h)
+                    .unwrap_or(&att.hash);
+                let blob = library.attachment_blob_path(hex);
+                blob.exists() && detect_attachment_kind(&att.filename, &blob) == Some(wanted)
             })
         })
     };
@@ -8357,6 +9126,31 @@ fn show_annotations_dialog(
         return;
     };
 
+    // The PDF's own printed page numbers, if any — same resolution `show_pdf_reader` uses
+    // (native `/PageLabels` first, falling back to a manual `page_label_override` on the
+    // entry's note when the PDF declares none), so a "Page N" here always matches what the
+    // reader itself shows. Best-effort: any failure to open the PDF just leaves this empty,
+    // and every row/export falls back to the raw page number as before.
+    let page_labels: Vec<Option<String>> = pdf_attachment
+        .as_ref()
+        .and_then(|(_, blob)| {
+            let bytes = std::fs::read(blob).ok()?;
+            let pdfium = fond_doc::bind_pdfium().ok()?;
+            let native = fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
+            if native.iter().any(|l| l.is_some()) {
+                return Some(native);
+            }
+            let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(0);
+            let override_value = state
+                .borrow()
+                .library
+                .as_ref()
+                .and_then(|lib| lib.load_note(key).ok().flatten())
+                .and_then(|n| n.frontmatter.page_label_override);
+            Some(override_value.map(|ov| ov.apply(count)).unwrap_or(native))
+        })
+        .unwrap_or_default();
+
     let dialog = adw::Window::new();
     dialog.set_title(Some("Annotations"));
     dialog.set_modal(true);
@@ -8379,6 +9173,7 @@ fn show_annotations_dialog(
         let widgets = widgets.clone();
         let key = key.to_string();
         let reader_title = reader_title.to_string();
+        let page_labels = page_labels.clone();
         export_button.connect_clicked(move |_| {
             // Reload fresh rather than reuse the dialog's own `sidecar` capture — the list
             // above can go stale if a note was edited or an annotation deleted earlier in
@@ -8394,7 +9189,7 @@ fn show_annotations_dialog(
                 toast(&widgets, "No annotations for this entry");
                 return;
             };
-            let markdown = sidecar.to_markdown(&reader_title);
+            let markdown = sidecar.to_markdown(&reader_title, Some(&page_labels));
 
             let default_name = format!("{key}-annotations.md");
             let save = gtk4::FileDialog::builder()
@@ -8453,7 +9248,12 @@ fn show_annotations_dialog(
         // always has `chapter` (shown as just the chapter's filename, not the full
         // zip-internal path — plenty to recognize which chapter, without the clutter).
         let location = match (annotation.page, annotation.chapter.as_deref()) {
-            (Some(p), _) => format!("Page {p}"),
+            (Some(p), _) => {
+                let printed = page_labels
+                    .get((p as usize).saturating_sub(1))
+                    .and_then(|l| l.clone());
+                format!("Page {}", printed.unwrap_or_else(|| p.to_string()))
+            }
             (None, Some(chapter)) => std::path::Path::new(chapter)
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
@@ -8640,9 +9440,12 @@ struct ReaderState {
     /// entry — a drag copies the covered text to the clipboard instead of saving an
     /// annotation.
     draw_kind: Option<fond_bib::AnnotationKind>,
-    /// The most recent "Select text" copy — page (0-based) and text — so the next note added
-    /// on that same page can quote it instead of starting blank. Cleared once consumed.
-    last_selection: Option<(u16, String)>,
+    /// The most recent "Select text" copy — page (0-based), text, and quadpoints — so the
+    /// next note added on that same page can quote it (and carry its real on-page region)
+    /// instead of starting blank, and so `render_pdf_page_texture` can keep showing it
+    /// highlighted after the drag ends instead of the selection just vanishing (see
+    /// `SELECTION_RGBA`). Cleared once consumed by a note, or replaced by the next selection.
+    last_selection: Option<(u16, String, Vec<[f64; 8]>)>,
     /// Every match from the last search (empty if none run yet, or the last search found
     /// nothing), and which one is "current" — `render()` blends that one's quads in a
     /// distinct colour when the current page matches, and prev/next-match cycle this index.
@@ -8918,10 +9721,13 @@ fn render_pdf_page_texture(
     let mut rp = fond_doc::render_page(&r.pdfium, &r.bytes, page, width).ok()?;
     let current_page = page as u32 + 1;
 
-    // Note has no quad to draw (it's marginal, not on-page) — only the three drawable kinds
-    // get blended. Each annotation keeps its own colour (from the colour picker at draw
-    // time), so this blends per-annotation rather than batching every quad on the page into
-    // one shared-colour call.
+    // A freestanding Note (no quadpoints — added via the "Note…" button on blank page) is
+    // already excluded by the `!quadpoints.is_empty()` filter above; a Note created *from a
+    // text selection* ("Create note from…", see `show_pdf_context_menu`) does carry real
+    // quadpoints and is blended here like a highlight, so it stays visible on the page and
+    // not just listed in the sidebar. Each annotation keeps its own colour (from the colour
+    // picker at draw time, or the default amber for a Note, which has none), so this blends
+    // per-annotation rather than batching every quad on the page into one shared-colour call.
     for a in r
         .annotations
         .annotations
@@ -8929,10 +9735,11 @@ fn render_pdf_page_texture(
         .filter(|a| a.page == Some(current_page) && !a.quadpoints.is_empty())
     {
         let kind = match a.kind {
-            fond_bib::AnnotationKind::Highlight => fond_doc::MarkupKind::Highlight,
+            fond_bib::AnnotationKind::Highlight | fond_bib::AnnotationKind::Note => {
+                fond_doc::MarkupKind::Highlight
+            }
             fond_bib::AnnotationKind::Underline => fond_doc::MarkupKind::Underline,
             fond_bib::AnnotationKind::Strikeout => fond_doc::MarkupKind::Strikeout,
-            fond_bib::AnnotationKind::Note => continue,
         };
         let items: Vec<(fond_doc::MarkupKind, [f64; 8])> =
             a.quadpoints.iter().map(|q| (kind, *q)).collect();
@@ -8956,6 +9763,17 @@ fn render_pdf_page_texture(
                 &current.quads,
                 SEARCH_MATCH_RGBA,
             );
+        }
+    }
+
+    // A "Select text" drag's selection, if it's on this page — kept visible after the drag
+    // ends (previously it vanished the instant you released the mouse, leaving only the
+    // clipboard copy as any trace) until a new selection replaces it or it's consumed by
+    // "Create note from…". Uses the live drag-preview's own colour so a selection looks the
+    // same while dragging and once settled.
+    if let Some((sel_page, _, quads)) = &r.last_selection {
+        if *sel_page == page {
+            fond_doc::blend_highlights(&mut rp, page_pts.0, page_pts.1, quads, SELECTION_RGBA);
         }
     }
 
@@ -9022,16 +9840,19 @@ fn drag_pdf_points(geom: &DragGeometry) -> Option<((f64, f64), (f64, f64))> {
 }
 
 /// Copies the text under a "Select text" mode drag to the clipboard instead of saving an
-/// annotation — the drag-to-annotate gesture's other mode. Remembers the selection (page +
-/// text) on `reader` so a note added right after can quote it — see `last_selection`.
+/// annotation — the drag-to-annotate gesture's other mode. Remembers the selection (page,
+/// text, and quadpoints) on `reader` so it stays visibly highlighted on the page (the caller
+/// re-renders after this returns) and so a note added right after can quote it and carry the
+/// real on-page region — see `last_selection`. Returns whether a selection was actually made,
+/// so the caller knows whether a re-render is worth doing.
 fn copy_drag_selection(
     widgets: &Rc<Widgets>,
     reader: &Rc<RefCell<ReaderState>>,
     page: u16,
     geom: &DragGeometry,
-) {
+) -> bool {
     let Some((start, end)) = drag_pdf_points(geom) else {
-        return;
+        return false;
     };
     let selection = {
         let r = reader.borrow();
@@ -9052,10 +9873,14 @@ fn copy_drag_selection(
             if let Some(display) = gdk::Display::default() {
                 display.clipboard().set_text(&sel.text);
             }
-            reader.borrow_mut().last_selection = Some((page, sel.text));
+            reader.borrow_mut().last_selection = Some((page, sel.text, sel.quads));
             toast(widgets, "Copied to clipboard");
+            true
         }
-        _ => toast(widgets, "No text found in selection"),
+        _ => {
+            toast(widgets, "No text found in selection");
+            false
+        }
     }
 }
 
@@ -9234,6 +10059,7 @@ fn show_pdf_context_menu(
     redo_button: &gtk4::Button,
     page: u16,
     geom: ClickGeometry,
+    reader_window: &adw::Window,
 ) {
     let ClickGeometry {
         render_w,
@@ -9391,7 +10217,24 @@ fn show_pdf_context_menu(
             rows.append(&delete_button);
         }
         None => {
-            let add_note = popover_button("Add note here", false);
+            // "Create note from selection…" instead of the generic "Add note here" when
+            // there's an active "Select text" drag on this page (see `last_selection`) —
+            // same underlying dialog either way (it already pre-fills from the selection and
+            // carries its quadpoints when present), just a label that says what's actually
+            // about to happen instead of always the generic one.
+            let has_selection_here = reader
+                .borrow()
+                .last_selection
+                .as_ref()
+                .is_some_and(|(sel_page, _, _)| *sel_page == page);
+            let add_note = popover_button(
+                if has_selection_here {
+                    "Create note from selection…"
+                } else {
+                    "Add note here"
+                },
+                false,
+            );
             {
                 let state = state.clone();
                 let widgets = widgets.clone();
@@ -9401,6 +10244,8 @@ fn show_pdf_context_menu(
                 let redo_button = redo_button.clone();
                 let popover = popover.clone();
                 let rebuild_notes = rebuild_notes.clone();
+                let reader_window = reader_window.clone();
+                let refresh = refresh.clone();
                 add_note.connect_clicked(move |_| {
                     show_pdf_note_dialog(
                         &state,
@@ -9410,6 +10255,8 @@ fn show_pdf_context_menu(
                         &undo_button,
                         &redo_button,
                         rebuild_notes.clone(),
+                        &reader_window,
+                        refresh.clone(),
                     );
                     popover.popdown();
                 });
@@ -9447,6 +10294,7 @@ fn build_continuous_view(
     undo_button: &gtk4::Button,
     redo_button: &gtk4::Button,
     rebuild_notes: &Rc<dyn Fn()>,
+    reader_window: &adw::Window,
 ) {
     if !reader.borrow().continuous_pictures.is_empty() {
         return;
@@ -9554,7 +10402,9 @@ fn build_continuous_view(
                         end_y,
                     };
                     if reader.borrow().draw_kind.is_none() {
-                        copy_drag_selection(&widgets, &reader, page, &geom);
+                        if copy_drag_selection(&widgets, &reader, page, &geom) {
+                            render_continuous_page(&reader, page);
+                        }
                         return;
                     }
                     let saved =
@@ -9583,6 +10433,7 @@ fn build_continuous_view(
             let undo_button = undo_button.clone();
             let redo_button = redo_button.clone();
             let rebuild_notes = rebuild_notes.clone();
+            let reader_window = reader_window.clone();
             click.connect_pressed(move |_gesture, _n, x, y| {
                 let render_w = this_picture.width().max(0) as u32;
                 let render_h = this_picture.height().max(0) as u32;
@@ -9613,6 +10464,7 @@ fn build_continuous_view(
                         click_x: x,
                         click_y: y,
                     },
+                    &reader_window,
                 );
             });
             picture.add_controller(click);
@@ -9677,6 +10529,7 @@ fn rebuild_continuous_view_for_zoom(
     undo_button: &gtk4::Button,
     redo_button: &gtk4::Button,
     rebuild_notes: &Rc<dyn Fn()>,
+    reader_window: &adw::Window,
 ) {
     if reader.borrow().continuous_pictures.is_empty() {
         return;
@@ -9699,6 +10552,7 @@ fn rebuild_continuous_view_for_zoom(
         undo_button,
         redo_button,
         rebuild_notes,
+        reader_window,
     );
 }
 
@@ -9824,6 +10678,13 @@ fn show_pdf_reader(
     start_page: u32,
 ) {
     let window = &widgets.window;
+    // Already open? Surface it instead of opening a duplicate reader on the same file — two
+    // readers on the same document would each keep their own in-memory annotations/progress
+    // snapshot and clobber each other's saves. See `AppState.open_readers`.
+    if let Some(existing) = state.borrow().open_readers.get(pdf_hash) {
+        existing.present();
+        return;
+    }
     let bytes = match std::fs::read(blob) {
         Ok(b) => b,
         Err(e) => {
@@ -9851,8 +10712,25 @@ fn show_pdf_reader(
     // button below only appears when there's actually something to jump to.
     let outline_entries = fond_doc::outline(&pdfium, &bytes).unwrap_or_default();
     // Likewise empty for most PDFs (no custom /PageLabels) — falls back to the raw page
-    // number wherever it's displayed.
-    let page_labels = fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
+    // number wherever it's displayed. When the PDF declares nothing of its own, fall back to
+    // a manually-set `page_label_override` on the entry's note (see "Set page numbering…"
+    // below) — this is the only way to get printed-page-number navigation on the common case
+    // of a scanned or older PDF with no `/PageLabels` dictionary at all.
+    let native_page_labels = fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
+    let has_native_page_labels = native_page_labels.iter().any(|l| l.is_some());
+    let page_label_override = state
+        .borrow()
+        .library
+        .as_ref()
+        .and_then(|lib| lib.load_note(key).ok().flatten())
+        .and_then(|n| n.frontmatter.page_label_override);
+    let page_labels = if has_native_page_labels {
+        native_page_labels
+    } else {
+        page_label_override
+            .map(|ov| ov.apply(count))
+            .unwrap_or(native_page_labels)
+    };
 
     let annotations = state
         .borrow()
@@ -9890,6 +10768,10 @@ fn show_pdf_reader(
     dialog.set_title(Some(title));
     dialog.set_transient_for(Some(window));
     dialog.set_default_size(900, 820);
+    state
+        .borrow_mut()
+        .open_readers
+        .insert(pdf_hash.to_string(), dialog.clone());
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -9930,6 +10812,20 @@ fn show_pdf_reader(
     let note_button = gtk4::Button::with_label("Note…");
     note_button.set_tooltip_text(Some("Add a marginal note on the current page"));
 
+    // Lets the current physical page be anchored to its own printed number when the PDF
+    // declares no `/PageLabels` of its own (common for scanned or older PDFs) — the manual
+    // counterpart to the automatic `/PageLabels` read above. Disabled when the PDF already
+    // has native labels, since those are authoritative and an override on top would be
+    // silently ignored (see the `page_labels` fallback above) — better to say so up front
+    // than let the user set something with no visible effect.
+    let page_num_button = gtk4::Button::with_label("Page #…");
+    if has_native_page_labels {
+        page_num_button.set_sensitive(false);
+        page_num_button.set_tooltip_text(Some("This PDF already declares its own page numbers"));
+    } else {
+        page_num_button.set_tooltip_text(Some("Set the printed page number for this page"));
+    }
+
     let mode_labels: Vec<&str> = DRAW_KIND_OPTIONS.iter().map(|(l, _)| *l).collect();
     let mode_drop = gtk4::DropDown::from_strings(&mode_labels);
     mode_drop.set_tooltip_text(Some("What a drag on the page does"));
@@ -9966,6 +10862,18 @@ fn show_pdf_reader(
     continuous_toggle.set_tooltip_text(Some(
         "Scroll continuously through every page, instead of one page at a time",
     ));
+    // Mutually exclusive with `continuous_toggle` (each deactivates the other on activate,
+    // wired below) rather than a single 3-way control, so every existing
+    // `continuous_toggle.is_active()` check elsewhere keeps meaning exactly what it always
+    // did with no changes needed at those call sites. Reuses the single-page view's own
+    // `view_stack` child and `render()` (extended to also fill `right_picture`) rather than
+    // being a separate mode with its own render path, so navigation/zoom/search/outline/
+    // notes-sidebar jumps all stay in sync with two-page mode for free.
+    let two_page_toggle = gtk4::ToggleButton::with_label("Two-page");
+    two_page_toggle.set_tooltip_text(Some(
+        "Show two facing pages side by side, like an open book. Drawing a new highlight or \
+         note still needs single-page or Continuous mode.",
+    ));
 
     let undo_button = gtk4::Button::from_icon_name("edit-undo-symbolic");
     undo_button.set_tooltip_text(Some("Undo (Ctrl+Z)"));
@@ -9976,16 +10884,18 @@ fn show_pdf_reader(
 
     // pack_end order is the reverse of visual order (last-packed ends up leftmost) — same
     // gotcha CLAUDE.md notes for the hamburger menu. Visual order here, left to right:
-    // Continuous, mode picker, colour picker, Note. The Contents/Notes sidebar toggles and
-    // Undo/Redo live at the *start* of the headerbar instead (house style for the sidebar
-    // toggle; Undo/Redo follow it for the same "persistent chrome, not a per-mode control"
-    // reasoning). Page nav and zoom move to the bottom status bar (below) so the headerbar's
-    // title-widget slot stays free for the document's own name — a wide title plus this many
-    // controls didn't fit together.
+    // Two-page, Continuous, mode picker, colour picker, Note, Page #. The Contents/Notes
+    // sidebar toggles and Undo/Redo live at the *start* of the headerbar instead (house style
+    // for the sidebar toggle; Undo/Redo follow it for the same "persistent chrome, not a
+    // per-mode control" reasoning). Page nav and zoom move to the bottom status bar (below)
+    // so the headerbar's title-widget slot stays free for the document's own name — a wide
+    // title plus this many controls didn't fit together.
+    header.pack_end(&page_num_button);
     header.pack_end(&note_button);
     header.pack_end(&color_drop);
     header.pack_end(&mode_drop);
     header.pack_end(&continuous_toggle);
+    header.pack_end(&two_page_toggle);
     if let Some(sidebar_toggle) = &sidebar_toggle {
         header.pack_start(sidebar_toggle);
     }
@@ -10044,8 +10954,21 @@ fn show_pdf_reader(
     };
     picture_overlay.set_halign(gtk4::Align::Center);
     picture_overlay.set_valign(gtk4::Align::Start);
+    // "Two-page" mode's facing page — sits beside `picture_overlay` in `spread_box`, hidden
+    // (and left unrendered) outside that mode. View-only for now: no drag/click gesture
+    // controllers of its own, so a highlight/note is still made via the left page (or by
+    // switching to single-page/Continuous) — `render()` below is what actually keeps this in
+    // sync with `picture`, so both stay one page apart with no separate render path to drift.
+    let right_picture = gtk4::Picture::new();
+    right_picture.set_halign(gtk4::Align::Center);
+    right_picture.set_valign(gtk4::Align::Start);
+    right_picture.set_visible(false);
+    let spread_box = gtk4::Box::new(Orientation::Horizontal, 12);
+    spread_box.set_halign(gtk4::Align::Center);
+    spread_box.append(&picture_overlay);
+    spread_box.append(&right_picture);
     let scroll = gtk4::ScrolledWindow::new();
-    scroll.set_child(Some(&picture_overlay));
+    scroll.set_child(Some(&spread_box));
     scroll.set_vexpand(true);
     scroll.set_hexpand(true);
 
@@ -10075,10 +10998,16 @@ fn show_pdf_reader(
     dialog.set_content(Some(&view));
 
     // Render the current page into the Picture (via the shared helper both this view and
-    // continuous-scroll mode use), and refresh the page label.
+    // continuous-scroll mode use), and refresh the page label. Also fills `right_picture`
+    // with the facing page when Two-page mode is on (hidden otherwise) — every existing
+    // caller of `render()` (nav buttons, zoom, search, outline/notes-sidebar jumps, page
+    // entry) gets two-page-aware rendering for free this way, with no changes needed at any
+    // of those call sites.
     let render = {
         let reader = reader.clone();
         let picture = picture.clone();
+        let right_picture = right_picture.clone();
+        let two_page_toggle = two_page_toggle.clone();
         let page_entry = page_entry.clone();
         let page_of_label = page_of_label.clone();
         let prev = prev.clone();
@@ -10093,6 +11022,24 @@ fn show_pdf_reader(
                     picture.set_size_request(w as i32, h as i32);
                 }
                 None => picture.set_paintable(gdk::Paintable::NONE),
+            }
+            if two_page_toggle.is_active() {
+                let right_page = r.page + 1;
+                if right_page < r.count {
+                    match render_pdf_page_texture(&r, right_page) {
+                        Some((texture, w, h, _)) => {
+                            right_picture.set_paintable(Some(&texture));
+                            right_picture.set_size_request(w as i32, h as i32);
+                            right_picture.set_visible(true);
+                        }
+                        None => right_picture.set_visible(false),
+                    }
+                } else {
+                    // Odd page count: the last spread has no facing page.
+                    right_picture.set_visible(false);
+                }
+            } else {
+                right_picture.set_visible(false);
             }
             update_page_display(
                 &page_entry,
@@ -10324,11 +11271,19 @@ fn show_pdf_reader(
             let last = all.len().saturating_sub(1);
             for (i, annotation) in all.into_iter().enumerate() {
                 let page_num = annotation.page.unwrap_or(1);
+                // Same printed-label lookup the page-number entry itself uses (`page_labels`
+                // is 0-based, `page_num` is the annotation's raw 1-based file page).
+                let printed = reader
+                    .borrow()
+                    .page_labels
+                    .get((page_num as usize).saturating_sub(1))
+                    .and_then(|l| l.clone());
+                let page_label = printed.unwrap_or_else(|| page_num.to_string());
                 let outer = gtk4::Box::new(Orientation::Vertical, 2);
 
                 let header_box = gtk4::Box::new(Orientation::Horizontal, 6);
                 let header_label =
-                    gtk4::Label::new(Some(&format!("p.{page_num} — {:?}", annotation.kind)));
+                    gtk4::Label::new(Some(&format!("p.{page_label} — {:?}", annotation.kind)));
                 header_label.set_xalign(0.0);
                 header_label.set_hexpand(true);
                 header_label.add_css_class("dim-label");
@@ -10625,7 +11580,10 @@ fn show_pdf_reader(
                     end_y,
                 };
                 if reader.borrow().draw_kind.is_none() {
-                    copy_drag_selection(&widgets, &reader, page, &geom);
+                    if copy_drag_selection(&widgets, &reader, page, &geom) {
+                        render();
+                        render_continuous_page(&reader, page);
+                    }
                     return;
                 }
                 let saved = save_drag_annotation(&state, &widgets, &reader, &pdf_hash, page, geom);
@@ -10658,6 +11616,7 @@ fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
+        let dialog_for_menu = dialog.clone();
         click.connect_pressed(move |_gesture, _n, x, y| {
             let (page, render_w, render_h, page_w_pts, page_h_pts) = {
                 let r = reader.borrow();
@@ -10697,6 +11656,7 @@ fn show_pdf_reader(
                     click_x: x,
                     click_y: y,
                 },
+                &dialog_for_menu,
             );
         });
         picture.add_controller(click);
@@ -10707,17 +11667,19 @@ fn show_pdf_reader(
         let render = render.clone();
         let continuous_toggle = continuous_toggle.clone();
         let continuous_scroll = continuous_scroll.clone();
+        let two_page_toggle = two_page_toggle.clone();
         prev.connect_clicked(move |_| {
             if continuous_toggle.is_active() {
                 let target = reader.borrow().page.saturating_sub(1);
                 scroll_continuous_to_page(&reader, &continuous_scroll, target);
                 return;
             }
+            // Two-page mode steps by a whole spread, not one page, so Prev/Next always land
+            // back on a left-hand page.
+            let step = if two_page_toggle.is_active() { 2 } else { 1 };
             {
                 let mut r = reader.borrow_mut();
-                if r.page > 0 {
-                    r.page -= 1;
-                }
+                r.page = r.page.saturating_sub(step);
             }
             render();
         });
@@ -10727,6 +11689,7 @@ fn show_pdf_reader(
         let render = render.clone();
         let continuous_toggle = continuous_toggle.clone();
         let continuous_scroll = continuous_scroll.clone();
+        let two_page_toggle = two_page_toggle.clone();
         next.connect_clicked(move |_| {
             if continuous_toggle.is_active() {
                 let target = {
@@ -10736,10 +11699,11 @@ fn show_pdf_reader(
                 scroll_continuous_to_page(&reader, &continuous_scroll, target);
                 return;
             }
+            let step = if two_page_toggle.is_active() { 2 } else { 1 };
             {
                 let mut r = reader.borrow_mut();
-                if r.page + 1 < r.count {
-                    r.page += 1;
+                if r.page + step < r.count {
+                    r.page += step;
                 }
             }
             render();
@@ -10757,6 +11721,7 @@ fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
+        let dialog = dialog.clone();
         zoom_in.connect_clicked(move |_| {
             {
                 let mut r = reader.borrow_mut();
@@ -10772,6 +11737,7 @@ fn show_pdf_reader(
                 &undo_button,
                 &redo_button,
                 &rebuild_notes,
+                &dialog,
             );
             if continuous_toggle.is_active() {
                 let page = reader.borrow().page;
@@ -10791,6 +11757,7 @@ fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
+        let dialog = dialog.clone();
         zoom_out.connect_clicked(move |_| {
             {
                 let mut r = reader.borrow_mut();
@@ -10806,6 +11773,7 @@ fn show_pdf_reader(
                 &undo_button,
                 &redo_button,
                 &rebuild_notes,
+                &dialog,
             );
             if continuous_toggle.is_active() {
                 let page = reader.borrow().page;
@@ -10857,8 +11825,11 @@ fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
+        let dialog = dialog.clone();
+        let two_page_toggle = two_page_toggle.clone();
         continuous_toggle.connect_toggled(move |btn| {
             if btn.is_active() {
+                two_page_toggle.set_active(false);
                 build_continuous_view(
                     &state,
                     &widgets,
@@ -10868,6 +11839,7 @@ fn show_pdf_reader(
                     &undo_button,
                     &redo_button,
                     &rebuild_notes,
+                    &dialog,
                 );
                 view_stack.set_visible_child_name("continuous");
                 let page = reader.borrow().page;
@@ -10880,6 +11852,21 @@ fn show_pdf_reader(
         // Continuous scrolling is the default reading mode; `set_active` fires the handler
         // above, which builds the continuous view and switches the stack to it.
         continuous_toggle.set_active(true);
+    }
+    {
+        let render = render.clone();
+        let view_stack = view_stack.clone();
+        let continuous_toggle = continuous_toggle.clone();
+        two_page_toggle.connect_toggled(move |btn| {
+            if btn.is_active() {
+                // Deactivating Continuous (if it was on) runs its own handler above, which
+                // switches `view_stack` to "paged" — the single view both single-page and
+                // two-page mode share — before `render()` fills `right_picture` too.
+                continuous_toggle.set_active(false);
+                view_stack.set_visible_child_name("paged");
+            }
+            render();
+        });
     }
     // Typing a page number (the document's own printed label, or a raw file page number —
     // see `find_page_by_label`) and pressing Enter jumps there, the way Zotero's reader lets
@@ -10973,6 +11960,16 @@ fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
+        let dialog = dialog.clone();
+        let refresh: Rc<dyn Fn()> = {
+            let reader = reader.clone();
+            let render = render.clone();
+            Rc::new(move || {
+                render();
+                let page = reader.borrow().page;
+                render_continuous_page(&reader, page);
+            })
+        };
         note_button.connect_clicked(move |_| {
             show_pdf_note_dialog(
                 &state,
@@ -10982,6 +11979,32 @@ fn show_pdf_reader(
                 &undo_button,
                 &redo_button,
                 rebuild_notes.clone(),
+                &dialog,
+                refresh.clone(),
+            );
+        });
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let reader = reader.clone();
+        let key = key.to_string();
+        let page_entry = page_entry.clone();
+        let page_of_label = page_of_label.clone();
+        let prev = prev.clone();
+        let next = next.clone();
+        let dialog = dialog.clone();
+        page_num_button.connect_clicked(move |_| {
+            show_page_number_dialog(
+                &state,
+                &widgets,
+                &reader,
+                &key,
+                &page_entry,
+                &page_of_label,
+                &prev,
+                &next,
+                &dialog,
             );
         });
     }
@@ -11139,13 +12162,14 @@ fn show_pdf_reader(
     {
         let state = state.clone();
         let key = key.to_string();
+        let pdf_hash = pdf_hash.to_string();
         let reader = reader.clone();
         dialog.connect_close_request(move |_| {
             let (page, count) = {
                 let r = reader.borrow();
                 (r.page as u32 + 1, r.count as u32)
             };
-            let s = state.borrow();
+            let mut s = state.borrow_mut();
             if let Some(library) = s.library.as_ref() {
                 if let Ok(Some(mut note)) = library.load_note(&key) {
                     note.frontmatter.progress = Some(fond_bib::Progress {
@@ -11156,7 +12180,141 @@ fn show_pdf_reader(
                     let _ = library.write_note(&key, &note);
                 }
             }
+            s.open_readers.remove(&pdf_hash);
             glib::Propagation::Proceed
+        });
+    }
+
+    dialog.present();
+}
+
+/// A small modal that anchors the reader's *current* physical page to its own printed page
+/// number — the manual counterpart to the automatic `/PageLabels` read in `show_pdf_reader`,
+/// for a PDF that declares no page labels of its own (see `fond_bib::PageLabelOverride`).
+/// Leaving the entry blank and confirming clears any existing override, reverting to raw file
+/// page numbers. Writes straight to `notes/<key>.md` (same `load_note`/`write_note` pattern
+/// as `Progress`) and updates the live reader in place, so the change is visible immediately
+/// without reopening the document.
+#[allow(clippy::too_many_arguments)]
+fn show_page_number_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    reader: &Rc<RefCell<ReaderState>>,
+    key: &str,
+    page_entry: &gtk4::Entry,
+    page_of_label: &gtk4::Label,
+    prev: &gtk4::Button,
+    next: &gtk4::Button,
+    reader_window: &adw::Window,
+) {
+    let (page, count) = {
+        let r = reader.borrow();
+        (r.page, r.count)
+    };
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Set page numbering"));
+    dialog.set_modal(true);
+    // Modal against the reader window, not the main library window — see the same note on
+    // `show_pdf_note_dialog`.
+    dialog.set_transient_for(Some(reader_window));
+    dialog.set_default_size(380, -1);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let set_button = gtk4::Button::with_label("Set");
+    set_button.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&set_button);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    let hint = gtk4::Label::new(Some(&format!(
+        "This is file page {} of {count}. What number is printed on it? Later pages count up \
+         from here; earlier ones are left unlabeled.",
+        page + 1
+    )));
+    hint.add_css_class("dim-label");
+    hint.set_xalign(0.0);
+    hint.set_wrap(true);
+    let entry = gtk4::Entry::builder()
+        .placeholder_text("e.g. 1 — leave blank to clear")
+        .activates_default(true)
+        .build();
+    content.append(&entry);
+    content.append(&hint);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let reader = reader.clone();
+        let key = key.to_string();
+        let page_entry = page_entry.clone();
+        let page_of_label = page_of_label.clone();
+        let prev = prev.clone();
+        let next = next.clone();
+        set_button.connect_clicked(move |_| {
+            let text = entry.text().trim().to_string();
+            let override_value = if text.is_empty() {
+                None
+            } else {
+                match text.parse::<i64>() {
+                    Ok(n) => Some(fond_bib::PageLabelOverride {
+                        start_page: page as u32 + 1,
+                        start_label: n,
+                    }),
+                    Err(_) => {
+                        toast(&widgets, "Enter a whole number, or leave blank to clear");
+                        return;
+                    }
+                }
+            };
+
+            {
+                let s = state.borrow();
+                if let Some(library) = s.library.as_ref() {
+                    if let Ok(Some(mut note)) = library.load_note(&key) {
+                        note.frontmatter.page_label_override = override_value;
+                        let _ = library.write_note(&key, &note);
+                    }
+                }
+            }
+
+            let new_labels = override_value.map(|ov| ov.apply(count)).unwrap_or_default();
+            reader.borrow_mut().page_labels = new_labels.clone();
+            update_page_display(
+                &page_entry,
+                &page_of_label,
+                &prev,
+                &next,
+                page,
+                count,
+                &new_labels,
+            );
+            toast(
+                &widgets,
+                if override_value.is_some() {
+                    "Page numbering set"
+                } else {
+                    "Page numbering cleared"
+                },
+            );
+            dialog.close();
         });
     }
 
@@ -11167,7 +12325,10 @@ fn show_pdf_reader(
 /// PDF reader's *current* page — unlike Highlight/Underline/Strikeout, a note isn't tied to
 /// a drawn region, so there's no drag gesture for it, just this prompt. Saves straight into
 /// `reader`'s in-memory sidecar and to disk, the same `annots/<key>.json` the drag gesture
-/// writes; doesn't need to trigger a re-render, since a note has no on-page mark to draw.
+/// writes. When opened right after a "Select text" drag on this page, the note carries that
+/// selection's real quadpoints (see `last_selection`), so — unlike a plain marginal note on
+/// blank page — it does need a re-render (`refresh`) afterward to show up on the page.
+#[allow(clippy::too_many_arguments)]
 fn show_pdf_note_dialog(
     state: &Rc<RefCell<AppState>>,
     widgets: &Rc<Widgets>,
@@ -11176,13 +12337,19 @@ fn show_pdf_note_dialog(
     undo_button: &gtk4::Button,
     redo_button: &gtk4::Button,
     rebuild_notes: Rc<dyn Fn()>,
+    reader_window: &adw::Window,
+    refresh: Rc<dyn Fn()>,
 ) {
     let current_page = reader.borrow().page as u32 + 1;
 
     let dialog = adw::Window::new();
     dialog.set_title(Some(&format!("Note on page {current_page}")));
     dialog.set_modal(true);
-    dialog.set_transient_for(Some(&widgets.window));
+    // Modal against the reader window itself, not the main library window — otherwise
+    // opening this from within the reader leaves the reader interactive but blocks the
+    // library behind it, which is backwards and is what "the reader blocks the library"
+    // reports were actually seeing (the reader's own top-level window was never modal).
+    dialog.set_transient_for(Some(reader_window));
     dialog.set_default_size(420, 260);
 
     let view = adw::ToolbarView::new();
@@ -11206,20 +12373,22 @@ fn show_pdf_note_dialog(
 
     // Pre-fill with the last "Select text" copy, quoted with its page number, if it was made
     // on this same page — consumed either way so a stale selection from another page doesn't
-    // linger into some later, unrelated note.
-    let selection_for_this_page = {
+    // linger into some later, unrelated note. Its quadpoints (if any) carry over onto the
+    // created annotation too, so the note anchors to — and stays visibly marked at — the
+    // actual selected text on the page, rather than being a page-only marginal note.
+    let selection_quads = {
         let mut r = reader.borrow_mut();
         match r.last_selection.take() {
-            Some((sel_page, text)) if sel_page == r.page => Some(text),
-            _ => None,
+            Some((sel_page, text, quads)) if sel_page == r.page => {
+                let buffer = text_view.buffer();
+                buffer.set_text(&format!("p. {current_page}: \"{text}\"\n\n"));
+                let end = buffer.end_iter();
+                buffer.place_cursor(&end);
+                quads
+            }
+            _ => Vec::new(),
         }
     };
-    if let Some(sel_text) = selection_for_this_page {
-        let buffer = text_view.buffer();
-        buffer.set_text(&format!("p. {current_page}: \"{sel_text}\"\n\n"));
-        let end = buffer.end_iter();
-        buffer.place_cursor(&end);
-    }
 
     let scrolled = gtk4::ScrolledWindow::new();
     scrolled.set_vexpand(true);
@@ -11251,10 +12420,11 @@ fn show_pdf_note_dialog(
                 return;
             }
 
+            let has_region = !selection_quads.is_empty();
             let annotation = fond_bib::Annotation::drawn(
                 fond_bib::AnnotationKind::Note,
                 current_page,
-                Vec::new(),
+                selection_quads.clone(),
                 None,
                 Some(text),
                 None,
@@ -11273,6 +12443,9 @@ fn show_pdf_note_dialog(
             };
             match write_result {
                 Some(Ok(_)) => {
+                    if has_region {
+                        refresh();
+                    }
                     sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                     rebuild_notes();
                     toast(&widgets, "Note added");
@@ -11659,6 +12832,12 @@ fn show_epub_reader(
     start_progress: Option<fond_bib::Progress>,
 ) {
     let window = &widgets.window;
+    // Already open? Surface it instead of opening a duplicate reader on the same file — see
+    // the identical check (and `AppState.open_readers`'s doc comment) in `show_pdf_reader`.
+    if let Some(existing) = state.borrow().open_readers.get(hash) {
+        existing.present();
+        return;
+    }
 
     let book = match fond_doc::open_book(blob) {
         Ok(b) => b,
@@ -11732,6 +12911,10 @@ fn show_epub_reader(
     dialog.set_title(Some(title));
     dialog.set_transient_for(Some(window));
     dialog.set_default_size(1000, 820);
+    state
+        .borrow_mut()
+        .open_readers
+        .insert(hash.to_string(), dialog.clone());
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -12748,9 +13931,11 @@ fn show_epub_reader(
     {
         let state = state.clone();
         let key = key.to_string();
+        let hash = hash.to_string();
         let reader = reader.clone();
         let view = web_view.clone();
         dialog.connect_close_request(move |_| {
+            state.borrow_mut().open_readers.remove(&hash);
             let (chapter_num, chapter_count) = {
                 let r = reader.borrow();
                 (r.index as u32 + 1, r.spine.len() as u32)
@@ -13157,6 +14342,107 @@ fn group_relations_display(
             (label.to_string(), names)
         })
         .collect()
+}
+
+/// Walk up from `widget` (the leaf cell a right-click landed on — a `Label` for most
+/// spreadsheet columns, a `Box` for the Files column) to find the citation key stashed as
+/// qdata during bind (see `add_text_column_with`, and the Key/Files factories in
+/// `build_entries_column_view`). `GtkColumnView`'s row container is a private type with no
+/// public "what item is this" API, so every cell carries its own copy of the key instead of
+/// relying on one shared row widget to ask.
+fn row_key_at(widget: gtk4::Widget) -> Option<String> {
+    let mut current = Some(widget);
+    while let Some(w) = current {
+        if let Some(key) = unsafe { w.data::<String>("row-key") } {
+            return Some(unsafe { key.as_ref() }.clone());
+        }
+        current = w.parent();
+    }
+    None
+}
+
+/// Right-click menu for one entry — shared by the spreadsheet (resolved via `row_key_at` +
+/// `ColumnView::pick`) and the Bookshelf grid (which already has the key in hand at bind
+/// time). Selects the entry first, so the detail pane matches whatever the menu ends up
+/// acting on. Deliberately a subset of the detail pane's "More" popover, not a duplicate of
+/// every row action there: Collections… (the existing membership dialog), Create book
+/// part… (book/anthology entries only, mirroring the same condition `show_detail`'s "More"
+/// popover already uses for it), and Delete… — the handful of actions worth not opening the
+/// detail pane first for.
+fn show_entry_context_menu(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    parent: &impl IsA<gtk4::Widget>,
+    key: &str,
+    x: f64,
+    y: f64,
+) {
+    select_key(state, widgets, key);
+
+    let (title, entry_type) = {
+        let s = state.borrow();
+        match s.library.as_ref().and_then(|lib| lib.load_entry(key).ok()) {
+            Some(parsed) => (
+                bibentry::title_string(&parsed.entry).unwrap_or_else(|| key.to_string()),
+                format!("{:?}", parsed.entry.entry_type()).to_lowercase(),
+            ),
+            None => (key.to_string(), String::new()),
+        }
+    };
+
+    let (popover, rows) = popover_menu(200);
+    popover.set_parent(parent);
+    popover.set_pointing_to(Some(&gdk::Rectangle::new(
+        x.round() as i32,
+        y.round() as i32,
+        1,
+        1,
+    )));
+    popover.set_has_arrow(true);
+
+    let collections_row = popover_button("Collections…", false);
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let popover = popover.clone();
+        let key = key.to_string();
+        collections_row.connect_clicked(move |_| {
+            popover.popdown();
+            membership_dialog(&state, &widgets, &key);
+        });
+    }
+    rows.append(&collections_row);
+
+    if matches!(entry_type.as_str(), "book" | "anthology") {
+        let part_row = popover_button("Create book part…", false);
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let popover = popover.clone();
+            let key = key.to_string();
+            part_row.connect_clicked(move |_| {
+                popover.popdown();
+                show_create_book_part_dialog(&state, &widgets, key.clone());
+            });
+        }
+        rows.append(&part_row);
+    }
+
+    let delete_row = popover_button("Delete…", true);
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let popover = popover.clone();
+        let key = key.to_string();
+        let title = title.clone();
+        delete_row.connect_clicked(move |_| {
+            popover.popdown();
+            confirm_delete_entry(&state, &widgets, &key, &title);
+        });
+    }
+    rows.append(&delete_row);
+
+    popover.popup();
 }
 
 /// Rebuild the search index quietly (no toast) so newly created/edited nodes and entries are

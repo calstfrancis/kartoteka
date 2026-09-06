@@ -49,6 +49,35 @@ pub struct Progress {
     pub chapter_percent: Option<u8>,
 }
 
+/// Manual override for printed page numbering, for a PDF with no `/PageLabels` dictionary of
+/// its own — common, since most scanned or older PDFs declare none, unlike what
+/// `fond_doc::pdf::page_labels` reads natively from a PDF that does. Anchors one raw 1-based
+/// file page to the printed number that appears on it; every later page counts up from there,
+/// and every earlier page (covers, front matter) is left unlabeled, the same as a PDF-native
+/// `None` label would be. Set from the reader's "Set page numbering…" action; ignored when the
+/// PDF already declares its own labels, since those are authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct PageLabelOverride {
+    pub start_page: u32,
+    pub start_label: i64,
+}
+
+impl PageLabelOverride {
+    /// Apply this override across `count` raw pages, producing one label per 0-based page
+    /// index (the same indexing `fond_doc::pdf::page_labels` uses). Pages before
+    /// `start_page` come back `None`; `start_page` and later count up from `start_label`.
+    pub fn apply(&self, count: u16) -> Vec<Option<String>> {
+        (0..count)
+            .map(|i| {
+                let raw = i as u32 + 1;
+                (raw >= self.start_page)
+                    .then(|| (self.start_label + (raw - self.start_page) as i64).to_string())
+            })
+            .collect()
+    }
+}
+
 /// Per-entry citation preferences (§13). `preferred_style` is advisory to export; `short`
 /// is a hand-authored short form. Citation *history* is derived UI state, not stored here.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +135,11 @@ pub struct NoteFrontmatter {
     /// Coarse reading position (§8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// Manual printed-page-numbering override (see `PageLabelOverride`), for a PDF the
+    /// reader's automatic `/PageLabels` read finds nothing on. `None` means "use whatever
+    /// the PDF itself declares, if anything."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_label_override: Option<PageLabelOverride>,
     /// Per-entry citation preferences (§13).
     #[serde(default, skip_serializing_if = "CitePrefs::is_empty")]
     pub cite: CitePrefs,
@@ -233,6 +267,53 @@ mod tests {
         assert_eq!(split_facet("christology"), (None, "christology"));
         // A leading colon is not a facet.
         assert_eq!(split_facet(":weird"), (None, ":weird"));
+    }
+
+    #[test]
+    fn page_label_override_applies_from_start_page() {
+        let ov = PageLabelOverride {
+            start_page: 3,
+            start_label: 1,
+        };
+        let labels = ov.apply(5);
+        assert_eq!(
+            labels,
+            vec![
+                None,
+                None,
+                Some("1".into()),
+                Some("2".into()),
+                Some("3".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn page_label_override_can_start_above_one() {
+        // "Sometimes page numbering starts at 2" — the printed number on the anchor page
+        // need not be 1.
+        let ov = PageLabelOverride {
+            start_page: 1,
+            start_label: 2,
+        };
+        assert_eq!(
+            ov.apply(3),
+            vec![Some("2".into()), Some("3".into()), Some("4".into())]
+        );
+    }
+
+    #[test]
+    fn round_trips_page_label_override() {
+        let text = "---\npage-label-override:\n  start-page: 3\n  start-label: 1\n---\nBody.\n";
+        let note = Note::parse(text, &p()).unwrap();
+        assert_eq!(
+            note.frontmatter.page_label_override,
+            Some(PageLabelOverride {
+                start_page: 3,
+                start_label: 1
+            })
+        );
+        assert_eq!(Note::parse(&note.to_text().unwrap(), &p()).unwrap(), note);
     }
 
     #[test]

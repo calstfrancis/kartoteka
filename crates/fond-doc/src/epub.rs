@@ -45,6 +45,33 @@ pub struct EpubMetadata {
     pub isbn: Option<String>,
 }
 
+/// Sniff whether the file at `path` looks like an EPUB (or an EPUB variant, e.g. Kobo's
+/// KEPUB — still an ordinary EPUB/ZIP container underneath, just with extra Kobo-injected
+/// markup inside its chapter files, which this module's generic ZIP+XML reading already
+/// tolerates) — for a file whose name has no `.epub` extension to go on, e.g. an
+/// extensionless KEPUB as sometimes downloaded raw from Kobo's store. Checks the ZIP
+/// local-file-header magic first (a cheap few-byte peek, so an unrelated attachment isn't
+/// read in full just to rule it out), then the EPUB spec's own required first entry: a
+/// stored `mimetype` file containing exactly `application/epub+zip`. Best-effort — any I/O
+/// or parse failure just means "no".
+pub fn looks_like_epub(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 4];
+    if file.read_exact(&mut magic).is_err() || magic != *b"PK\x03\x04" {
+        return false;
+    }
+    let Ok(mut zip) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
+        return false;
+    };
+    let Ok(mut mimetype) = zip.by_name("mimetype") else {
+        return false;
+    };
+    let mut contents = String::new();
+    mimetype.read_to_string(&mut contents).is_ok() && contents.trim() == "application/epub+zip"
+}
+
 /// Read metadata from the EPUB at `path`. Errors only on a structurally broken file (not a
 /// ZIP, no container, no OPF); a valid EPUB that simply lacks a field yields that field empty.
 pub fn extract_metadata(path: &Path) -> Result<EpubMetadata> {
@@ -1040,6 +1067,49 @@ mod tests {
             first_idx < second_idx,
             "chapters must appear in spine order"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // -- looks_like_epub ----------------------------------------------------------------
+
+    #[test]
+    fn looks_like_epub_true_for_a_real_epub_with_no_extension() {
+        // An extensionless KEPUB downloaded raw from Kobo's store is exactly this shape: a
+        // real EPUB/ZIP container, just without the filename to give it away.
+        let bytes = write_zip(&[("mimetype", "application/epub+zip")]);
+        let dir = std::env::temp_dir().join(format!(
+            "fond-doc-epub-test-{}-{}",
+            std::process::id(),
+            "sniff_true"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("no_extension_at_all");
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert!(looks_like_epub(&path));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn looks_like_epub_false_for_a_plain_zip_or_non_zip_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "fond-doc-epub-test-{}-{}",
+            std::process::id(),
+            "sniff_false"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A ZIP with no `mimetype` entry at all — e.g. a plain archive, not an EPUB.
+        let plain_zip = dir.join("archive");
+        std::fs::write(&plain_zip, write_zip(&[("readme.txt", "hello")])).unwrap();
+        assert!(!looks_like_epub(&plain_zip));
+
+        // Not a ZIP at all.
+        let not_zip = dir.join("some_file");
+        std::fs::write(&not_zip, b"just some bytes, not a zip").unwrap();
+        assert!(!looks_like_epub(&not_zip));
 
         std::fs::remove_dir_all(&dir).ok();
     }

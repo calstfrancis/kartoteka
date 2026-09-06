@@ -2,6 +2,120 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.10.0] "Open Folio" — 2026-09-06 — Two-page reader view, guided backup, collection editing, and page-number fixes
+
+**New "Two-page" view in the PDF reader**, alongside the existing single-page and Continuous
+modes — shows two facing pages side by side, like an open book. Navigation, zoom, search,
+and jumping from the outline/notes sidebar all carry over automatically. Drawing a new
+highlight or note still needs single-page or Continuous mode for now — Two-page is read-only
+for creating new marks in this first pass.
+
+**KEPUB (Kobo's EPUB variant) now opens correctly, including with no file extension.** A
+`.kepub.epub` file already worked (the trailing `.epub` was enough to recognize it, and
+Kartoteka's EPUB reader is generic ZIP+XML that already tolerates Kobo's extra markup with
+no changes needed) — but a KEPUB downloaded with no extension at all, as sometimes happens
+straight from Kobo's store, wasn't recognized as anything readable. Attachment-type
+detection now falls back to sniffing the file's own bytes (ZIP magic + EPUB's `mimetype`
+entry) when the filename doesn't say.
+
+MOBI/AZW is not supported yet — unlike EPUB (which Kartoteka already parses by hand) it's a
+completely different binary container needing a new dependency and a new reader module, and
+the available Rust MOBI crate is thin and noticeably worse at preserving formatting than
+EPUB's clean XHTML. Scoped as a separate follow-up rather than started here.
+
+**A "Select text" drag now stays visibly highlighted after you release the mouse.**
+Previously the selection vanished the instant the drag ended, leaving only a clipboard copy
+as any trace it happened. It now stays marked on the page (in the same colour as the live
+drag preview) until you make a new selection or turn it into a note.
+
+**Right-click a selection for "Create note from selection…".** The reader's right-click menu
+now offers this in place of the generic "Add note here" whenever there's an active selection
+on the page — same note dialog either way, pre-filled with the quoted text as before, but
+the resulting note now also carries the selection's real on-page region (previously a note
+was always placed with no page mark at all, effectively invisible except in the sidebar
+list). It shows up both in the "Notes and highlights" sidebar and as a highlight-style mark
+on the page itself.
+
+**Fixed: opening "Note…" or "Page #…" from inside the PDF reader blocked the main library
+window instead of the reader itself.** The reader's own window was never modal — multiple
+different documents could already be read side by side — but these two small dialogs it
+opens were modal against the main library window rather than the reader, so using either one
+left the reader interactive while blocking the library behind it. This is almost certainly
+what read as "the reader forces itself over the library." Both are now modal against the
+reader window they were opened from.
+
+**Fixed: opening the same PDF/EPUB a second time now surfaces the existing reader instead of
+opening a duplicate.** Two readers on the same file each kept their own in-memory
+annotations/reading-progress snapshot and overwrote the whole file on save, so the second
+window's save could silently clobber a highlight the first one just added. Trying to open a
+document that's already open in a reader now just brings that window to the front. Opening
+two *different* documents at once is unaffected and continues to work exactly as before.
+
+**New "Set up backup…" wizard**, in the hamburger menu above the existing backup items.
+GitHub sign-in, git commit, and push to GitHub already existed as three separate menu
+actions the user had to find and run in the right order ("Sign in to GitHub…", then "Back
+up (git commit)…" with its push switch); the wizard is a single guided dialog that does the
+same thing as one flow — sign in (skipped if already signed in), choose a repository name
+and visibility, commit and push, then offers to turn on automatic backups on the spot. The
+four existing menu items are unchanged and still there as power-user shortcuts (e.g. a
+one-off commit with a custom message without going through the whole wizard). No backend
+changes — the wizard sequences the same `fond-vault`/GitHub OAuth calls those items already
+use.
+
+Restoring a library from GitHub onto a new machine is still not possible — `fond-vault` has
+no pull/fetch/clone yet, only push. That's scoped as a separate follow-up, since it's the
+first code path that could actually conflict or lose data, unlike everything above.
+
+**New: right-click an entry in either the spreadsheet or the Bookshelf grid for a context
+menu** — Collections…, Create book part… (book/anthology entries only), and Delete…. Neither
+view had any right-click behavior before.
+
+**Fixed: dragging a spreadsheet column border to resize it behaved backwards on the borders
+next to Title.** The Title column was both `expand` (grows to fill leftover space) and
+user-resizable — `GtkColumnView` keeps recomputing an expand column's width from leftover
+space on every relayout, so a manual drag on its border got overridden mid-drag and read as
+the column moving opposite to the pointer. Title no longer has its own drag handle; resizing
+the fixed columns around it (Key, Author, Year, …) changes how much room Title has to expand
+into, which is the correct and non-fighting way to affect its width.
+
+**Collections can now be renamed, reparented, and deleted from the sidebar.** Right-click a
+collection for a new menu: "Edit…" (rename and/or move it under a different parent, or back
+to top level), "New collection…", and "Delete…" (its entries stay in the library and any
+subcollections move to the top level — only the collection itself goes). None of this existed
+before; a collection's name and parent were previously fixed once created.
+
+**Drag a collection onto another to nest it.** Collection rows are now both drag sources and
+drop targets for each other, so re-parenting is a drag rather than only possible at creation
+time. Reparenting is rejected (with a toast) if it would nest a collection inside itself or
+one of its own subcollections.
+
+**The Bookshelf grid can now drag books onto collections, matching the spreadsheet.** Book
+covers had no drag-and-drop at all before; dragging one onto a collection in the sidebar now
+adds it, the same as dragging a row's Key column already did in the spreadsheet view.
+
+**Fixed: creating two collections whose names produced the same slug used to silently
+overwrite the first one.** "Theology" and "theology!!" both slugify to `theology`, and
+`collections/theology.yml` would just get clobbered by whichever was created second, with no
+warning. New collections now get a `-2`, `-3`, … suffix on a colliding slug instead.
+
+**"Page N" now means the same thing everywhere annotations are shown, not just in the
+reader's jump-to-page box.** The reader already resolved a PDF's own printed page numbers
+(`/PageLabels`) for its bottom-left page-jump control; that same resolution — including a
+manual `page_label_override` (see below) — now also drives the whole-library "Annotations…"
+dialog (both the on-screen list and the exported Markdown) and the in-reader Notes/highlights
+sidebar, plus `kartoteka annots` on the CLI. Previously these four spots always showed the
+raw physical page position, which could disagree with what the reader itself displayed.
+
+**New: manual page-numbering override for PDFs with no `/PageLabels` of their own.** Most
+scanned or older PDFs declare no printed-page-number dictionary at all, so the reader had
+no way to show anything but the raw file position for them. A new "Page #…" button in the
+reader (next to "Note…") lets you tell it what number is printed on the current page —
+every later page counts up from there, and earlier pages (covers, front matter) are left
+unlabeled — the same idea as Zotero's page mapping, and it correctly handles numbering that
+starts somewhere other than 1. Disabled when the PDF already has its own `/PageLabels`,
+since those are authoritative. Stored per-entry as `page-label-override` in
+`notes/<key>.md`.
+
 ## [0.9.1] "Clean Copy" — 2026-09-04 — Documentation maintenance
 
 No functional or user-visible changes. Internal planning docs (`docs/M4-SPEC.md`,

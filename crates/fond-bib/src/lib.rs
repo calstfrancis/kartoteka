@@ -34,7 +34,8 @@ pub use import::{ImportOptions, ImportReport};
 pub use library::{DeleteReport, FsckReport, Library, RelationReconcile, Target, UsageMap};
 pub use node::{Node, NodeFrontmatter, NodeType};
 pub use note::{
-    split_facet, Attachment, CitePrefs, Note, NoteFrontmatter, Progress, ReadStatus, Task,
+    split_facet, Attachment, CitePrefs, Note, NoteFrontmatter, PageLabelOverride, Progress,
+    ReadStatus, Task,
 };
 pub use project::Project;
 pub use relation::{Predicate, Relation, TargetKind};

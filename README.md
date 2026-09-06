@@ -10,7 +10,7 @@ opaque database. The search index and metadata cache are disposable and rebuild 
 files with one command. `library.yml` is regenerated on every write, so
 `#bibliography("library.yml")` in Typst is always current.
 
-> Status: **0.8.0 "Dust Jacket"**, released 2026-09-03. A full GTK4/libadwaita desktop app
+> Status: **0.10.0 "Open Folio"**, released 2026-09-06. A full GTK4/libadwaita desktop app
 > (`kartoteka-ui-gtk`) ships alongside the headless CLI, distributed as a flatpak — see
 > **Install** below. See `docs/ROADMAP.md` for what's still ahead.
 
@@ -27,7 +27,15 @@ files with one command. `library.yml` is regenerated on every write, so
 - Import from Zotero (BetterBibTeX and the Zotero SQLite store), or acquire references by
   DOI, arXiv, or ISBN. Drop a PDF or EPUB in and it identifies itself.
 - Built-in PDF and EPUB readers with highlighting, underline/strikeout, freestanding
-  notes, in-document and whole-book search, reading-position resume, and undo/redo.
+  notes, in-document and whole-book search, reading-position resume, undo/redo, and a
+  two-page facing-pages view for PDFs. Reads KEPUB (Kobo's EPUB variant) even with no
+  file extension.
+- Nestable collections you can rename, reparent, and delete from the sidebar, with
+  drag-and-drop to file entries into them from either the spreadsheet or Bookshelf view.
+- A guided "Set up backup…" wizard walks through GitHub sign-in, repository creation,
+  and enabling automatic backups in one flow.
+- Consistent printed-page numbering (with a manual override for scans with no embedded
+  page labels) across the reader, the Annotations dialog, and the CLI.
 - Typed relations and a knowledge-graph layer — link entries to people, concepts, and
   schools of thought, not just to each other — visualized as an interactive relations
   map, either centered on one entry or across the whole library, with most-connected/

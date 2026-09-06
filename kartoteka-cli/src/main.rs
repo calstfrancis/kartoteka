@@ -567,6 +567,32 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                     if json {
                         print!("{}", sidecar.to_json()?);
                     } else {
+                        // Best-effort: resolve the PDF's own printed page numbers (native
+                        // /PageLabels, or a manual page-label-override on the note) the same
+                        // way the GUI reader does, so `p7` here matches what it shows.
+                        // Silently falls back to the raw page number if the PDF blob isn't
+                        // present or PDFium can't be loaded — this command works fine either
+                        // way, unlike `pdf-text`/`import-annots`, which need the PDF itself.
+                        let page_labels: Vec<Option<String>> = pdf_attachment(&library, &key)
+                            .ok()
+                            .and_then(|(blob, _hash)| {
+                                let bytes = std::fs::read(&blob).ok()?;
+                                let pdfium = fond_doc::bind_pdfium().ok()?;
+                                let native =
+                                    fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
+                                if native.iter().any(|l| l.is_some()) {
+                                    return Some(native);
+                                }
+                                let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(0);
+                                let override_value = library
+                                    .load_note(&key)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|n| n.frontmatter.page_label_override);
+                                Some(override_value.map(|ov| ov.apply(count)).unwrap_or(native))
+                            })
+                            .unwrap_or_default();
+
                         println!(
                             "{} annotation(s) for {key}{}",
                             sidecar.annotations.len(),
@@ -579,7 +605,12 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                         for a in &sidecar.annotations {
                             let label = a.snippet.as_deref().or(a.note.as_deref()).unwrap_or("");
                             let location = match (a.page, a.chapter.as_deref()) {
-                                (Some(p), _) => format!("p{p}"),
+                                (Some(p), _) => {
+                                    let printed = page_labels
+                                        .get((p as usize).saturating_sub(1))
+                                        .and_then(|l| l.clone());
+                                    format!("p{}", printed.unwrap_or_else(|| p.to_string()))
+                                }
                                 (None, Some(c)) => c.to_string(),
                                 (None, None) => String::from("?"),
                             };
