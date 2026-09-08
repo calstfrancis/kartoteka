@@ -10,3 +10,8 @@ Plans/
 # Editor swap files
 *.kate-swp
 *~
+
+# Planning docs (local only, not for the public repo)
+EPUB-READER-PLAN.md
+docs/M2-GUI-PLAN.md
+docs/ROADMAP.md
