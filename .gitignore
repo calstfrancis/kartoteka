@@ -1,6 +1,10 @@
 # Build output
 /target
 
+# flatpak-builder working dirs — large, regenerable, never committed
+/.flatpak-builder
+/build-flatpak
+
 # Vendored native libraries (PDFium prebuilt binary — not redistributed in-repo)
 /vendor
 
