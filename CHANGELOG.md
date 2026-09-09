@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [dev] — Multiple notes per entry
+## [0.12.0] "Loose Leaf" — 2026-09-09 — Multiple notes per entry
 
 **An entry can now have more than one note.** Menu → "Edit note…" opens a small "Notes" list
 instead of jumping straight to the note editor: "Primary note" (unchanged — reading progress,

@@ -45,6 +45,20 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.12.0" date="2026-09-09">
+      <description>
+        <p>0.12.0 "Loose Leaf" — an entry can now have more than one note.</p>
+        <ul>
+          <li>"Edit note…" opens a Notes list: the primary note first, then any child notes
+          you've added, each titled from its own first line.</li>
+          <li>Child notes carry just tags and a Markdown body, live in a new
+          notes/&lt;key&gt;/ directory, are covered by fsck, and are indexed for search
+          individually — so a hit points at which note matched, not just the entry.</li>
+          <li>Upgraded to gtk4 0.11, libadwaita 0.9 and webkit6 0.6. Nothing looks or
+          behaves differently; the flatpak runtime is unchanged.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.11.0" date="2026-09-06">
       <description>
         <p>0.11.0 "Wide Margin" — the PDF and EPUB readers' Notes/highlights list is now a
