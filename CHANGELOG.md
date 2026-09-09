@@ -17,6 +17,14 @@ Standalone notes (not attached to any entry) are also supported at the data-mode
 search-index layer, but have no creation UI yet — that's coming with a dedicated library-wide
 Notes browsing view. See `docs/NOTES-SPEC.md` for the fuller plan this is Tier 1 of.
 
+**Under the hood: upgraded to gtk4 0.11, libadwaita 0.9, glib 0.22 and webkit6 0.6.** Nothing
+should look or behave differently — this moves Kartoteka onto the same GTK bindings Zerkalo
+already uses, which is what lets the two share a reader later. It's a Rust-bindings change
+only: the flatpak runtime is unchanged, so the actual GTK and WebKitGTK libraries are the same
+ones as before. The one API that had to move was the worker-thread handoff every background
+operation uses (`glib::MainContext::channel`, removed upstream), now a small `ui::worker` shim
+with the same behaviour.
+
 ## [0.11.0] "Wide Margin" — 2026-09-06 — Notes sidebar moved to its own right-hand panel
 
 **The PDF and EPUB readers' Notes/highlights list is now a separate sidebar on the right,
