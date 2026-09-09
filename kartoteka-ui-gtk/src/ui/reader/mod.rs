@@ -13,9 +13,19 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use gtk4::prelude::*;
+use gtk4::Orientation;
 use libadwaita as adw;
-use libadwaita::prelude::*;
+
+pub(crate) mod annotations;
+pub(crate) mod epub;
+pub(crate) mod pdf;
+
+/// A slot holding a "rebuild this list" closure, filled in after the widgets it rebuilds
+/// exist. Shared by both readers' notes sidebars.
+pub(crate) type RebuildCell = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 /// Everything the reader needs from whoever embedded it.
 ///
@@ -90,4 +100,30 @@ pub(crate) fn register_window(hash: &str, window: &adw::Window) {
 
 pub(crate) fn unregister_window(hash: &str) {
     OPEN_READERS.with(|r| r.borrow_mut().remove(hash));
+}
+
+/// A flat, left-aligned popover row. Deliberately a copy of `app_window`'s helper of the
+/// same name rather than a shared import: this module is on its way into its own crate, and
+/// an eighteen-line button helper is not worth a dependency back on the application. If the
+/// two ever need to differ, they already can.
+pub(crate) fn popover_button(label: &str, destructive: bool) -> gtk4::Button {
+    let button = gtk4::Button::new();
+    button.add_css_class("flat");
+    if destructive {
+        button.add_css_class("destructive-action");
+    }
+    let lbl = gtk4::Label::new(Some(label));
+    lbl.set_xalign(0.0);
+    lbl.set_halign(gtk4::Align::Start);
+    button.set_child(Some(&lbl));
+    button
+}
+
+/// The margined rule between logical groups of popover rows. Copied for the same reason as
+/// [`popover_button`].
+pub(crate) fn popover_separator() -> gtk4::Separator {
+    let sep = gtk4::Separator::new(Orientation::Horizontal);
+    sep.set_margin_top(4);
+    sep.set_margin_bottom(4);
+    sep
 }

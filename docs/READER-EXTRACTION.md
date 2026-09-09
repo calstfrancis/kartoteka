@@ -134,17 +134,33 @@ show_epub_reader(host, parent, hash, blob, title, start_annotation_id, start_pro
 
 ## 4. Planned module layout
 
+Done (steps 1.2–1.3):
+
 ```
-kartoteka-ui-gtk/src/ui/reader/     ← step 1.3, in place, no behaviour change
-├── mod.rs          ReaderHost, the open-window registry, shared constants, colour helpers
-├── pdf.rs          ReaderState and the PDF reader
-├── epub.rs         EpubReaderState and the EPUB reader
-└── annotations.rs  the annotations dialog
+kartoteka-ui-gtk/src/ui/reader/
+├── mod.rs           93 lines — ReaderHost, the open-window registry, shared helpers
+├── pdf.rs        2,946 lines — ReaderState and the PDF reader
+├── epub.rs       1,511 lines — EpubReaderState and the EPUB reader
+└── annotations.rs  304 lines — the annotations dialog
 ```
+
+`app_window.rs` went from 15,825 to 10,973 lines. The relocation was verified to be
+content-identical: the extracted region at the previous commit diffs to zero against the
+concatenated new files, modulo blank lines and the `pub(crate)` markers added for the four
+cross-module items (`show_pdf_reader`, `show_epub_reader`, `show_annotations_dialog`, and
+the constants `epub.rs` shares with `pdf.rs`).
+
+`popover_button` and `popover_separator` are deliberately *copied* into `mod.rs` rather
+than imported from `app_window` — eighteen lines is not worth a dependency back on the
+application from a module whose whole point is leaving it.
 
 Step 1.4 is then `git mv` of this directory into `crates/fond-read-gtk/src/`, with
 Kartoteka consuming it by path. License: **proprietary** (`LicenseRef-Proprietary`), per
 Cal's decision 2026-09-09 — see the `fond-` prefix note in `docs/LICENSES.md`.
+
+The one thing 1.4 still has to solve: these modules are `pub(crate)` and reference
+`fond_bib` types directly. As a separate crate they become `pub`, and the annotation types
+(`AnnotationSidecar`, `Progress`, `PageLabelOverride`) come from `fond-bib` — see §6.
 
 ---
 
