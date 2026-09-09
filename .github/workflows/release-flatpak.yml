@@ -98,7 +98,10 @@ jobs:
           # serving a Packages.gz whose hash does not match its Release file, which
           # fails `apt-get update` outright — nothing to do with this project, and it
           # blocked a release. We need only Ubuntu's own archives here, so drop it.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          # Matched by content, not filename: runners use both the old .list form and
+          # the deb822 .sources form, and removing only one of them missed it.
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -f
           APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
           sudo apt-get update $APT_OPTS
           sudo apt-get install -y $APT_OPTS flatpak flatpak-builder

@@ -41,7 +41,10 @@ jobs:
           # serving a Packages.gz whose hash does not match its Release file, which
           # fails `apt-get update` outright — nothing to do with this project, and it
           # blocked a release. We need only Ubuntu's own archives here, so drop it.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          # Matched by content, not filename: runners use both the old .list form and
+          # the deb822 .sources form, and removing only one of them missed it.
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev
       - name: Format check
