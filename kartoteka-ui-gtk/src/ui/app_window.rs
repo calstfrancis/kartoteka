@@ -18,6 +18,7 @@ use webkit6::prelude::*;
 use fond_bib::{entry as bibentry, Library};
 
 use crate::config::Config;
+use crate::ui::reader::{self, ReaderHost};
 use crate::ui::{bookshelf, friendly, worker};
 use crate::{github, secret_store, webdav};
 
@@ -79,15 +80,6 @@ pub(crate) struct AppState {
     /// bulk action's completion, but *not* on an ordinary list refresh — an edit elsewhere
     /// shouldn't silently drop an in-progress bulk selection.
     bulk_selected: HashSet<String>,
-    /// Reader windows currently open, keyed by the attachment's content hash (`pdf_hash`/
-    /// `epub_hash` — content-addressed, so this is really "the same file", not just "the
-    /// same entry"). Lets a second attempt to open the same document surface the existing
-    /// window instead of opening a duplicate reader on it, which would otherwise race on the
-    /// same `annots/<key>.json`/`Progress` writes (each reader keeps its own in-memory
-    /// snapshot and overwrites the whole file on save). Removed on the reader's own
-    /// `close-request`. Two *different* documents open concurrently is unaffected — this only
-    /// dedupes opening the same one twice.
-    open_readers: HashMap<String, adw::Window>,
 }
 
 struct Widgets {
@@ -8129,12 +8121,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             } else {
                 "Open the built-in PDF reader"
             }));
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.clone();
+            let host = KartotekaReaderHost::for_entry(state, widgets, &key);
+            let window = widgets.window.clone();
             let title = title_text.to_string();
             read_button.connect_clicked(move |_| {
-                show_pdf_reader(&state, &widgets, &key, &hash, &path, &title, start_page)
+                show_pdf_reader(&host, &window, &hash, &path, &title, start_page)
             });
             actions.append(&read_button);
         }
@@ -8148,21 +8139,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             } else {
                 "Open the built-in EPUB reader"
             }));
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.clone();
+            let host = KartotekaReaderHost::for_entry(state, widgets, &key);
+            let window = widgets.window.clone();
             let title = title_text.to_string();
             read_button.connect_clicked(move |_| {
-                show_epub_reader(
-                    &state,
-                    &widgets,
-                    &key,
-                    &hash,
-                    &path,
-                    &title,
-                    None,
-                    start_progress,
-                );
+                show_epub_reader(&host, &window, &hash, &path, &title, None, start_progress);
             });
             actions.append(&read_button);
         }
@@ -8181,15 +8162,12 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             let row = popover_button(&format!("PDF — {pdf_filename}"), false);
             {
                 let popover = popover.clone();
-                let state = state.clone();
-                let widgets = widgets.clone();
-                let key = key.clone();
+                let host = KartotekaReaderHost::for_entry(state, widgets, &key);
+                let window = widgets.window.clone();
                 let title = title_text.to_string();
                 row.connect_clicked(move |_| {
                     popover.popdown();
-                    show_pdf_reader(
-                        &state, &widgets, &key, &pdf_hash, &pdf_path, &title, start_page,
-                    );
+                    show_pdf_reader(&host, &window, &pdf_hash, &pdf_path, &title, start_page);
                 });
             }
             rows.append(&row);
@@ -8197,16 +8175,14 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             let row = popover_button(&format!("EPUB — {epub_filename}"), false);
             {
                 let popover = popover.clone();
-                let state = state.clone();
-                let widgets = widgets.clone();
-                let key = key.clone();
+                let host = KartotekaReaderHost::for_entry(state, widgets, &key);
+                let window = widgets.window.clone();
                 let title = title_text.to_string();
                 row.connect_clicked(move |_| {
                     popover.popdown();
                     show_epub_reader(
-                        &state,
-                        &widgets,
-                        &key,
+                        &host,
+                        &window,
                         &epub_hash,
                         &epub_path,
                         &title,
@@ -8342,12 +8318,15 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 let epub = epub_attachment
                     .clone()
                     .map(|(path, _filename, hash)| (hash, path));
+                let host = KartotekaReaderHost::for_entry(&state, &widgets, &key);
+                let window = widgets.window.clone();
+                let document_id = key.clone();
                 row.connect_clicked(move |_| {
                     popover.popdown();
                     show_annotations_dialog(
-                        &state,
-                        &widgets,
-                        &key,
+                        &host,
+                        &window,
+                        &document_id,
                         pdf.clone(),
                         epub.clone(),
                         &title,
@@ -9079,13 +9058,102 @@ fn open_pdf(window: &adw::ApplicationWindow, blob: &std::path::Path, filename: &
     launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
 }
 
+/// Kartoteka's implementation of the reader's [`ReaderHost`] boundary: it resolves a
+/// citation key against whatever library is currently open, and routes notifications to the
+/// main window's toast overlay.
+///
+/// The library is looked up per call rather than captured once, deliberately — that is what
+/// the reader did inline before this boundary existed, and it means a reader left open
+/// across a library switch keeps writing to the library that is open *now*. Preserved as-is
+/// here so the extraction changes no behaviour; whether it is the right behaviour is a
+/// separate question (see `docs/READER-EXTRACTION.md`).
+struct KartotekaReaderHost {
+    state: Rc<RefCell<AppState>>,
+    widgets: Rc<Widgets>,
+    key: String,
+}
+
+impl KartotekaReaderHost {
+    fn for_entry(
+        state: &Rc<RefCell<AppState>>,
+        widgets: &Rc<Widgets>,
+        key: &str,
+    ) -> Rc<dyn ReaderHost> {
+        Rc::new(KartotekaReaderHost {
+            state: state.clone(),
+            widgets: widgets.clone(),
+            key: key.to_string(),
+        })
+    }
+
+    /// Run `f` against the open library, if there is one. Every method here is a no-op
+    /// without one, matching the `if let Some(library) = …` guards this replaced.
+    fn with_library<T>(&self, f: impl FnOnce(&Library) -> T) -> Option<T> {
+        self.state.borrow().library.as_ref().map(f)
+    }
+
+    /// Read-modify-write the entry's note frontmatter. Used for the only two fields the
+    /// reader touches: reading progress and the page-numbering override.
+    fn edit_note(&self, f: impl FnOnce(&mut fond_bib::Note)) {
+        self.with_library(|library| {
+            if let Ok(Some(mut note)) = library.load_note(&self.key) {
+                f(&mut note);
+                let _ = library.write_note(&self.key, &note);
+            }
+        });
+    }
+}
+
+impl ReaderHost for KartotekaReaderHost {
+    fn load_annotations(&self) -> fond_bib::AnnotationSidecar {
+        // Absent, unreadable, and "no library open" all collapse to an empty sidecar —
+        // exactly what the `.ok().flatten().unwrap_or_else(…)` at each call site did before
+        // this boundary existed.
+        self.with_library(|library| library.load_annotations(&self.key).ok().flatten())
+            .flatten()
+            .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(&self.key))
+    }
+
+    fn save_annotations(&self, sidecar: &fond_bib::AnnotationSidecar) -> Result<(), String> {
+        // "No library open" becomes an Err rather than a silent Ok. The call sites this
+        // replaced had a distinct `None` arm reporting exactly that, and collapsing it into
+        // success would mean telling the user an annotation was saved when it was not.
+        match self.with_library(|library| library.write_annotations(sidecar)) {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Err("No open library".to_string()),
+        }
+    }
+
+    fn save_progress(&self, progress: fond_bib::Progress) {
+        self.edit_note(|note| note.frontmatter.progress = Some(progress));
+    }
+
+    fn page_label_override(&self) -> Option<fond_bib::PageLabelOverride> {
+        self.with_library(|library| library.load_note(&self.key).ok().flatten())
+            .flatten()
+            .and_then(|note| note.frontmatter.page_label_override)
+    }
+
+    fn set_page_label_override(&self, value: Option<fond_bib::PageLabelOverride>) {
+        self.edit_note(|note| note.frontmatter.page_label_override = value);
+    }
+
+    fn notify(&self, message: &str) {
+        toast(&self.widgets, message);
+    }
+}
+
 /// List an entry's annotations — page, kind, note — so each can be jumped to in the reader,
 /// have its note edited, or be deleted. Reads and writes the same `annots/<key>.json`
 /// sidecar `show_pdf_reader`'s drag-to-highlight writes to.
 fn show_annotations_dialog(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
-    key: &str,
+    host: &Rc<dyn ReaderHost>,
+    parent: &adw::ApplicationWindow,
+    // Filename stem for an exported annotation file, and nothing else — the reader never
+    // interprets it. Kartoteka passes the citation key; Sputnik will pass whatever names
+    // the document on its side.
+    document_id: &str,
     // Independent per-format attachment info (hash, blob path) — an entry can have both a
     // PDF and an EPUB attached, so each annotation row's "Go to" routes to whichever of these
     // matches that specific annotation's anchor (`page` → PDF, `chapter` → EPUB), not a
@@ -9094,16 +9162,15 @@ fn show_annotations_dialog(
     epub_attachment: Option<(String, std::path::PathBuf)>,
     reader_title: &str,
 ) {
-    let sidecar = {
-        let s = state.borrow();
-        s.library
-            .as_ref()
-            .and_then(|lib| lib.load_annotations(key).ok().flatten())
-    };
-    let Some(sidecar) = sidecar else {
-        toast(widgets, "No annotations for this entry");
+    // An absent sidecar and one with every annotation deleted are both "nothing to show"
+    // here. Before the `ReaderHost` boundary these were distinguishable (a missing file gave
+    // this toast; an empty file opened an empty dialog); now both give the toast, since the
+    // host reports "no sidecar yet" as an empty one so the readers don't have to care.
+    let sidecar = host.load_annotations();
+    if sidecar.annotations.is_empty() {
+        host.notify("No annotations for this entry");
         return;
-    };
+    }
 
     // The PDF's own printed page numbers, if any — same resolution `show_pdf_reader` uses
     // (native `/PageLabels` first, falling back to a manual `page_label_override` on the
@@ -9120,12 +9187,7 @@ fn show_annotations_dialog(
                 return Some(native);
             }
             let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(0);
-            let override_value = state
-                .borrow()
-                .library
-                .as_ref()
-                .and_then(|lib| lib.load_note(key).ok().flatten())
-                .and_then(|n| n.frontmatter.page_label_override);
+            let override_value = host.page_label_override();
             Some(override_value.map(|ov| ov.apply(count)).unwrap_or(native))
         })
         .unwrap_or_default();
@@ -9133,7 +9195,7 @@ fn show_annotations_dialog(
     let dialog = adw::Window::new();
     dialog.set_title(Some("Annotations"));
     dialog.set_modal(true);
-    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_transient_for(Some(parent));
     dialog.set_default_size(480, 560);
 
     let view = adw::ToolbarView::new();
@@ -9148,9 +9210,9 @@ fn show_annotations_dialog(
     let export_button = gtk4::Button::with_label("Export…");
     export_button.set_tooltip_text(Some("Save these annotations as a portable Markdown file"));
     {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let key = key.to_string();
+        let host = host.clone();
+        let document_id = document_id.to_string();
+        let parent = parent.clone();
         let reader_title = reader_title.to_string();
         let page_labels = page_labels.clone();
         export_button.connect_clicked(move |_| {
@@ -9158,31 +9220,25 @@ fn show_annotations_dialog(
             // above can go stale if a note was edited or an annotation deleted earlier in
             // this same dialog session (each of those reloads independently, not through
             // this closure's binding), so an export should reflect what's actually on disk.
-            let sidecar = {
-                let s = state.borrow();
-                s.library
-                    .as_ref()
-                    .and_then(|lib| lib.load_annotations(&key).ok().flatten())
-            };
-            let Some(sidecar) = sidecar else {
-                toast(&widgets, "No annotations for this entry");
+            let sidecar = host.load_annotations();
+            if sidecar.annotations.is_empty() {
+                host.notify("No annotations for this entry");
                 return;
-            };
+            }
             let markdown = sidecar.to_markdown(&reader_title, Some(&page_labels));
 
-            let default_name = format!("{key}-annotations.md");
+            let default_name = format!("{document_id}-annotations.md");
             let save = gtk4::FileDialog::builder()
                 .title("Export annotations")
                 .initial_name(&default_name)
                 .build();
-            let widgets = widgets.clone();
-            let parent = widgets.window.clone();
+            let host = host.clone();
             save.save(Some(&parent), gio::Cancellable::NONE, move |result| {
                 if let Ok(file) = result {
                     if let Some(path) = file.path() {
                         match std::fs::write(&path, &markdown) {
-                            Ok(()) => toast(&widgets, &format!("Exported to {}", path.display())),
-                            Err(e) => toast(&widgets, &format!("Could not write file: {e}")),
+                            Ok(()) => host.notify(&format!("Exported to {}", path.display())),
+                            Err(e) => host.notify(&format!("Could not write file: {e}")),
                         }
                     }
                 }
@@ -9260,9 +9316,8 @@ fn show_annotations_dialog(
         };
         match attachment_for_row {
             Some((hash, blob)) => {
-                let state = state.clone();
-                let widgets = widgets.clone();
-                let key = key.to_string();
+                let host = host.clone();
+                let parent = parent.clone();
                 let title = reader_title.to_string();
                 let page = annotation.page;
                 let annotation_id = annotation.id.clone();
@@ -9270,20 +9325,11 @@ fn show_annotations_dialog(
                     if is_pdf {
                         // `page` is always `Some` for a PDF-anchored annotation;
                         // `unwrap_or(1)` is just a defensive fallback, not an expected path.
-                        show_pdf_reader(
-                            &state,
-                            &widgets,
-                            &key,
-                            &hash,
-                            &blob,
-                            &title,
-                            page.unwrap_or(1),
-                        )
+                        show_pdf_reader(&host, &parent, &hash, &blob, &title, page.unwrap_or(1))
                     } else {
                         show_epub_reader(
-                            &state,
-                            &widgets,
-                            &key,
+                            &host,
+                            &parent,
                             &hash,
                             &blob,
                             &title,
@@ -9322,26 +9368,17 @@ fn show_annotations_dialog(
         // Note edits save on Enter or when the field loses focus, matching the rest of the
         // app's "save as you go" dialogs rather than needing an explicit Save button.
         let save_note = {
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.to_string();
+            let host = host.clone();
             let id = annotation.id.clone();
             move |text: &str| {
                 let text = text.trim();
-                let s = state.borrow();
-                let Some(library) = s.library.as_ref() else {
-                    return;
-                };
-                let Ok(Some(mut sidecar)) = library.load_annotations(&key) else {
-                    return;
-                };
+                let mut sidecar = host.load_annotations();
                 let Some(a) = sidecar.annotations.iter_mut().find(|a| a.id == id) else {
                     return;
                 };
                 a.note = (!text.is_empty()).then(|| text.to_string());
-                if let Err(e) = library.write_annotations(&sidecar) {
-                    drop(s);
-                    toast(&widgets, &friendly::bib_error(&e));
+                if let Err(e) = host.save_annotations(&sidecar) {
+                    host.notify(&e);
                 }
             }
         };
@@ -9362,28 +9399,22 @@ fn show_annotations_dialog(
         }
 
         {
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let key = key.to_string();
+            let host = host.clone();
             let id = annotation.id.clone();
             let list = list.clone();
             let row = row.clone();
             delete_button.connect_clicked(move |_| {
                 let result = {
-                    let s = state.borrow();
-                    s.library.as_ref().and_then(|library| {
-                        let mut sidecar = library.load_annotations(&key).ok().flatten()?;
-                        sidecar.annotations.retain(|a| a.id != id);
-                        Some(library.write_annotations(&sidecar))
-                    })
+                    let mut sidecar = host.load_annotations();
+                    sidecar.annotations.retain(|a| a.id != id);
+                    host.save_annotations(&sidecar)
                 };
                 match result {
-                    Some(Ok(_)) => {
+                    Ok(()) => {
                         list.remove(&row);
-                        toast(&widgets, "Annotation deleted");
+                        host.notify("Annotation deleted");
                     }
-                    Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                    None => toast(&widgets, "No open library"),
+                    Err(e) => host.notify(&e),
                 }
             });
         }
@@ -9825,7 +9856,7 @@ fn drag_pdf_points(geom: &DragGeometry) -> Option<((f64, f64), (f64, f64))> {
 /// real on-page region — see `last_selection`. Returns whether a selection was actually made,
 /// so the caller knows whether a re-render is worth doing.
 fn copy_drag_selection(
-    widgets: &Rc<Widgets>,
+    host: &Rc<dyn ReaderHost>,
     reader: &Rc<RefCell<ReaderState>>,
     page: u16,
     geom: &DragGeometry,
@@ -9853,19 +9884,18 @@ fn copy_drag_selection(
                 display.clipboard().set_text(&sel.text);
             }
             reader.borrow_mut().last_selection = Some((page, sel.text, sel.quads));
-            toast(widgets, "Copied to clipboard");
+            host.notify("Copied to clipboard");
             true
         }
         _ => {
-            toast(widgets, "No text found in selection");
+            host.notify("No text found in selection");
             false
         }
     }
 }
 
 fn save_drag_annotation(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
+    host: &Rc<dyn ReaderHost>,
     reader: &Rc<RefCell<ReaderState>>,
     pdf_hash: &str,
     page: u16,
@@ -9931,29 +9961,20 @@ fn save_drag_annotation(
         r.annotations.upsert(annotation);
     }
 
-    let write_result = {
-        let s = state.borrow();
-        s.library
-            .as_ref()
-            .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-    };
+    let write_result = host.save_annotations(&reader.borrow().annotations);
     match write_result {
-        Some(Ok(_)) => {
+        Ok(()) => {
             let label = match draw_kind {
                 fond_bib::AnnotationKind::Highlight => "Highlight added",
                 fond_bib::AnnotationKind::Underline => "Underline added",
                 fond_bib::AnnotationKind::Strikeout => "Strikeout added",
                 fond_bib::AnnotationKind::Note => "Annotation added",
             };
-            toast(widgets, label);
+            host.notify(label);
             true
         }
-        Some(Err(e)) => {
-            toast(widgets, &friendly::bib_error(&e));
-            false
-        }
-        None => {
-            toast(widgets, "No open library — not saved");
+        Err(e) => {
+            host.notify(&e);
             false
         }
     }
@@ -10027,8 +10048,7 @@ struct ClickGeometry {
 /// deleting now happens at the annotation itself instead of a separate list.
 #[allow(clippy::too_many_arguments)]
 fn show_pdf_context_menu(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
+    host: &Rc<dyn ReaderHost>,
     reader: &Rc<RefCell<ReaderState>>,
     pdf_hash: &str,
     parent: &gtk4::Picture,
@@ -10097,8 +10117,7 @@ fn show_pdf_context_menu(
             rows.append(&note_entry);
 
             let save_note = {
-                let state = state.clone();
-                let widgets = widgets.clone();
+                let host = host.clone();
                 let reader = reader.clone();
                 let id = id.clone();
                 let undo_button = undo_button.clone();
@@ -10123,19 +10142,13 @@ fn show_pdf_context_menu(
                             a.note = (!text.is_empty()).then(|| text.to_string());
                         }
                     }
-                    let write_result = {
-                        let s = state.borrow();
-                        s.library
-                            .as_ref()
-                            .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-                    };
+                    let write_result = host.save_annotations(&reader.borrow().annotations);
                     match write_result {
-                        Some(Ok(_)) => {
+                        Ok(()) => {
                             sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                             rebuild_notes();
                         }
-                        Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                        None => toast(&widgets, "No open library"),
+                        Err(e) => host.notify(&e),
                     }
                 }
             };
@@ -10158,8 +10171,7 @@ fn show_pdf_context_menu(
             rows.append(&popover_separator());
             let delete_button = popover_button("Delete annotation", true);
             {
-                let state = state.clone();
-                let widgets = widgets.clone();
+                let host = host.clone();
                 let reader = reader.clone();
                 let refresh = refresh.clone();
                 let rebuild_notes = rebuild_notes.clone();
@@ -10174,21 +10186,15 @@ fn show_pdf_context_menu(
                         .annotations
                         .annotations
                         .retain(|a| a.id != id);
-                    let write_result = {
-                        let s = state.borrow();
-                        s.library
-                            .as_ref()
-                            .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-                    };
+                    let write_result = host.save_annotations(&reader.borrow().annotations);
                     match write_result {
-                        Some(Ok(_)) => {
+                        Ok(()) => {
                             refresh();
                             sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                             rebuild_notes();
-                            toast(&widgets, "Annotation deleted");
+                            host.notify("Annotation deleted");
                         }
-                        Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                        None => toast(&widgets, "No open library"),
+                        Err(e) => host.notify(&e),
                     }
                     popover.popdown();
                 });
@@ -10215,8 +10221,7 @@ fn show_pdf_context_menu(
                 false,
             );
             {
-                let state = state.clone();
-                let widgets = widgets.clone();
+                let host = host.clone();
                 let reader = reader.clone();
                 let pdf_hash = pdf_hash.to_string();
                 let undo_button = undo_button.clone();
@@ -10227,8 +10232,7 @@ fn show_pdf_context_menu(
                 let refresh = refresh.clone();
                 add_note.connect_clicked(move |_| {
                     show_pdf_note_dialog(
-                        &state,
-                        &widgets,
+                        &host,
                         &reader,
                         &pdf_hash,
                         &undo_button,
@@ -10265,8 +10269,7 @@ fn show_pdf_context_menu(
 /// cost anything on an explicit toggle-on, rare enough not to notice).
 #[allow(clippy::too_many_arguments)]
 fn build_continuous_view(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
+    host: &Rc<dyn ReaderHost>,
     reader: &Rc<RefCell<ReaderState>>,
     pdf_hash: &str,
     continuous_box: &gtk4::Box,
@@ -10318,8 +10321,7 @@ fn build_continuous_view(
         // value, so (unlike a recycled `ListView` row) it can never go stale.
         {
             let drag = gtk4::GestureDrag::new();
-            let state = state.clone();
-            let widgets = widgets.clone();
+            let host = host.clone();
             let reader = reader.clone();
             let pdf_hash = pdf_hash.to_string();
             let this_picture = picture.clone();
@@ -10381,13 +10383,12 @@ fn build_continuous_view(
                         end_y,
                     };
                     if reader.borrow().draw_kind.is_none() {
-                        if copy_drag_selection(&widgets, &reader, page, &geom) {
+                        if copy_drag_selection(&host, &reader, page, &geom) {
                             render_continuous_page(&reader, page);
                         }
                         return;
                     }
-                    let saved =
-                        save_drag_annotation(&state, &widgets, &reader, &pdf_hash, page, geom);
+                    let saved = save_drag_annotation(&host, &reader, &pdf_hash, page, geom);
                     if saved {
                         render_continuous_page(&reader, page);
                         sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
@@ -10404,8 +10405,7 @@ fn build_continuous_view(
         {
             let click = gtk4::GestureClick::new();
             click.set_button(gdk::BUTTON_SECONDARY);
-            let state = state.clone();
-            let widgets = widgets.clone();
+            let host = host.clone();
             let reader = reader.clone();
             let pdf_hash = pdf_hash.to_string();
             let this_picture = picture.clone();
@@ -10425,8 +10425,7 @@ fn build_continuous_view(
                     Rc::new(move || render_continuous_page(&reader, page))
                 };
                 show_pdf_context_menu(
-                    &state,
-                    &widgets,
+                    &host,
                     &reader,
                     &pdf_hash,
                     &this_picture,
@@ -10500,8 +10499,7 @@ fn schedule_continuous_render(reader: Rc<RefCell<ReaderState>>, order: Vec<u16>,
 /// keep in sync.
 #[allow(clippy::too_many_arguments)]
 fn rebuild_continuous_view_for_zoom(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
+    host: &Rc<dyn ReaderHost>,
     reader: &Rc<RefCell<ReaderState>>,
     pdf_hash: &str,
     continuous_box: &gtk4::Box,
@@ -10523,8 +10521,7 @@ fn rebuild_continuous_view_for_zoom(
         r.continuous_rendered.clear();
     }
     build_continuous_view(
-        state,
-        widgets,
+        host,
         reader,
         pdf_hash,
         continuous_box,
@@ -10648,20 +10645,17 @@ fn find_page_by_label(page_labels: &[Option<String>], text: &str) -> Option<u16>
 /// `start_page` is 1-based (matching `Annotation.page`), clamped into range; pass `1` to
 /// just open at the first page.
 fn show_pdf_reader(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
-    key: &str,
+    host: &Rc<dyn ReaderHost>,
+    window: &adw::ApplicationWindow,
     pdf_hash: &str,
     blob: &std::path::Path,
     title: &str,
     start_page: u32,
 ) {
-    let window = &widgets.window;
     // Already open? Surface it instead of opening a duplicate reader on the same file — two
     // readers on the same document would each keep their own in-memory annotations/progress
-    // snapshot and clobber each other's saves. See `AppState.open_readers`.
-    if let Some(existing) = state.borrow().open_readers.get(pdf_hash) {
-        existing.present();
+    // snapshot and clobber each other's saves. See `reader::OPEN_READERS`.
+    if reader::present_existing(pdf_hash) {
         return;
     }
     let bytes = match std::fs::read(blob) {
@@ -10697,12 +10691,7 @@ fn show_pdf_reader(
     // of a scanned or older PDF with no `/PageLabels` dictionary at all.
     let native_page_labels = fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
     let has_native_page_labels = native_page_labels.iter().any(|l| l.is_some());
-    let page_label_override = state
-        .borrow()
-        .library
-        .as_ref()
-        .and_then(|lib| lib.load_note(key).ok().flatten())
-        .and_then(|n| n.frontmatter.page_label_override);
+    let page_label_override = host.page_label_override();
     let page_labels = if has_native_page_labels {
         native_page_labels
     } else {
@@ -10711,12 +10700,7 @@ fn show_pdf_reader(
             .unwrap_or(native_page_labels)
     };
 
-    let annotations = state
-        .borrow()
-        .library
-        .as_ref()
-        .and_then(|lib| lib.load_annotations(key).ok().flatten())
-        .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(key));
+    let annotations = host.load_annotations();
 
     let start_page = start_page
         .saturating_sub(1)
@@ -10747,10 +10731,7 @@ fn show_pdf_reader(
     dialog.set_title(Some(title));
     dialog.set_transient_for(Some(window));
     dialog.set_default_size(900, 820);
-    state
-        .borrow_mut()
-        .open_readers
-        .insert(pdf_hash.to_string(), dialog.clone());
+    reader::register_window(pdf_hash, &dialog);
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -11049,8 +11030,7 @@ fn show_pdf_reader(
     };
     let undo = {
         let reader = reader.clone();
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let rerender_all_pages = rerender_all_pages.clone();
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
@@ -11068,30 +11048,23 @@ fn show_pdf_reader(
                 }
             };
             if !popped {
-                toast(&widgets, "Nothing to undo");
+                host.notify("Nothing to undo");
                 return;
             }
-            let write_result = {
-                let s = state.borrow();
-                s.library
-                    .as_ref()
-                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-            };
+            let write_result = host.save_annotations(&reader.borrow().annotations);
             match write_result {
-                Some(Ok(_)) => {
+                Ok(()) => {
                     rerender_all_pages();
-                    toast(&widgets, "Undid last annotation change");
+                    host.notify("Undid last annotation change");
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not undo: {e}")),
-                None => toast(&widgets, "No open library"),
+                Err(e) => host.notify(&format!("Could not undo: {e}")),
             }
             sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
         })
     };
     let redo = {
         let reader = reader.clone();
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let rerender_all_pages = rerender_all_pages.clone();
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
@@ -11109,22 +11082,16 @@ fn show_pdf_reader(
                 }
             };
             if !popped {
-                toast(&widgets, "Nothing to redo");
+                host.notify("Nothing to redo");
                 return;
             }
-            let write_result = {
-                let s = state.borrow();
-                s.library
-                    .as_ref()
-                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-            };
+            let write_result = host.save_annotations(&reader.borrow().annotations);
             match write_result {
-                Some(Ok(_)) => {
+                Ok(()) => {
                     rerender_all_pages();
-                    toast(&widgets, "Redid annotation change");
+                    host.notify("Redid annotation change");
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not redo: {e}")),
-                None => toast(&widgets, "No open library"),
+                Err(e) => host.notify(&format!("Could not redo: {e}")),
             }
             sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
         })
@@ -11217,8 +11184,7 @@ fn show_pdf_reader(
     let rebuild_notes_cell: RebuildNotesCell = Rc::new(RefCell::new(None));
     {
         let notes_rows = notes_rows.clone();
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let reader = reader.clone();
         let render = render.clone();
         let continuous_toggle = continuous_toggle.clone();
@@ -11311,8 +11277,7 @@ fn show_pdf_reader(
                 outer.append(&note_entry);
 
                 let save_note = {
-                    let state = state.clone();
-                    let widgets = widgets.clone();
+                    let host = host.clone();
                     let reader = reader.clone();
                     let id = annotation.id.clone();
                     let undo_button = undo_button.clone();
@@ -11338,18 +11303,12 @@ fn show_pdf_reader(
                                 a.note = (!text.is_empty()).then(|| text.to_string());
                             }
                         }
-                        let write_result = {
-                            let s = state.borrow();
-                            s.library
-                                .as_ref()
-                                .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-                        };
+                        let write_result = host.save_annotations(&reader.borrow().annotations);
                         match write_result {
-                            Some(Ok(_)) => {
+                            Ok(()) => {
                                 sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                             }
-                            Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                            None => toast(&widgets, "No open library"),
+                            Err(e) => host.notify(&e),
                         }
                     }
                 };
@@ -11370,8 +11329,7 @@ fn show_pdf_reader(
                 }
 
                 {
-                    let state = state.clone();
-                    let widgets = widgets.clone();
+                    let host = host.clone();
                     let reader = reader.clone();
                     let render = render.clone();
                     let id = annotation.id.clone();
@@ -11385,27 +11343,21 @@ fn show_pdf_reader(
                             .annotations
                             .annotations
                             .retain(|a| a.id != id);
-                        let write_result = {
-                            let s = state.borrow();
-                            s.library
-                                .as_ref()
-                                .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-                        };
+                        let write_result = host.save_annotations(&reader.borrow().annotations);
                         match write_result {
-                            Some(Ok(_)) => {
+                            Ok(()) => {
                                 render();
                                 render_continuous_page(
                                     &reader,
                                     (page_num.saturating_sub(1)) as u16,
                                 );
                                 sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
-                                toast(&widgets, "Annotation deleted");
+                                host.notify("Annotation deleted");
                                 if let Some(f) = rebuild_notes_cell.borrow().as_ref() {
                                     f();
                                 }
                             }
-                            Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                            None => toast(&widgets, "No open library"),
+                            Err(e) => host.notify(&e),
                         }
                     });
                 }
@@ -11502,8 +11454,7 @@ fn show_pdf_reader(
         let drag = gtk4::GestureDrag::new();
         let reader = reader.clone();
         let render = render.clone();
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let pdf_hash = pdf_hash.to_string();
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
@@ -11568,13 +11519,13 @@ fn show_pdf_reader(
                     end_y,
                 };
                 if reader.borrow().draw_kind.is_none() {
-                    if copy_drag_selection(&widgets, &reader, page, &geom) {
+                    if copy_drag_selection(&host, &reader, page, &geom) {
                         render();
                         render_continuous_page(&reader, page);
                     }
                     return;
                 }
-                let saved = save_drag_annotation(&state, &widgets, &reader, &pdf_hash, page, geom);
+                let saved = save_drag_annotation(&host, &reader, &pdf_hash, page, geom);
                 if saved {
                     render();
                     // Keep continuous mode's copy of this page in sync too, in case it was
@@ -11595,8 +11546,7 @@ fn show_pdf_reader(
     {
         let click = gtk4::GestureClick::new();
         click.set_button(gdk::BUTTON_SECONDARY);
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let reader = reader.clone();
         let render = render.clone();
         let pdf_hash = pdf_hash.to_string();
@@ -11626,8 +11576,7 @@ fn show_pdf_reader(
                 })
             };
             show_pdf_context_menu(
-                &state,
-                &widgets,
+                &host,
                 &reader,
                 &pdf_hash,
                 &picture_for_menu,
@@ -11698,8 +11647,7 @@ fn show_pdf_reader(
         });
     }
     {
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let reader = reader.clone();
         let render = render.clone();
         let pdf_hash = pdf_hash.to_string();
@@ -11717,8 +11665,7 @@ fn show_pdf_reader(
             }
             render();
             rebuild_continuous_view_for_zoom(
-                &state,
-                &widgets,
+                &host,
                 &reader,
                 &pdf_hash,
                 &continuous_box,
@@ -11734,8 +11681,7 @@ fn show_pdf_reader(
         });
     }
     {
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let reader = reader.clone();
         let render = render.clone();
         let pdf_hash = pdf_hash.to_string();
@@ -11753,8 +11699,7 @@ fn show_pdf_reader(
             }
             render();
             rebuild_continuous_view_for_zoom(
-                &state,
-                &widgets,
+                &host,
                 &reader,
                 &pdf_hash,
                 &continuous_box,
@@ -11802,8 +11747,7 @@ fn show_pdf_reader(
             });
     }
     {
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let reader = reader.clone();
         let render = render.clone();
         let pdf_hash = pdf_hash.to_string();
@@ -11819,8 +11763,7 @@ fn show_pdf_reader(
             if btn.is_active() {
                 two_page_toggle.set_active(false);
                 build_continuous_view(
-                    &state,
-                    &widgets,
+                    &host,
                     &reader,
                     &pdf_hash,
                     &continuous_box,
@@ -11862,7 +11805,7 @@ fn show_pdf_reader(
     {
         let reader = reader.clone();
         let render = render.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let page_entry = page_entry.clone();
         let page_of_label = page_of_label.clone();
         let prev = prev.clone();
@@ -11885,7 +11828,7 @@ fn show_pdf_reader(
                     }
                 }
                 _ => {
-                    toast(&widgets, "No such page");
+                    host.notify("No such page");
                     // Revert to the current page's actual label/number rather than leaving
                     // the entry showing whatever unresolvable text was typed.
                     let (page, count) = {
@@ -11941,8 +11884,7 @@ fn show_pdf_reader(
         });
     }
     {
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let reader = reader.clone();
         let pdf_hash = pdf_hash.to_string();
         let undo_button = undo_button.clone();
@@ -11960,8 +11902,7 @@ fn show_pdf_reader(
         };
         note_button.connect_clicked(move |_| {
             show_pdf_note_dialog(
-                &state,
-                &widgets,
+                &host,
                 &reader,
                 &pdf_hash,
                 &undo_button,
@@ -11973,10 +11914,8 @@ fn show_pdf_reader(
         });
     }
     {
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let reader = reader.clone();
-        let key = key.to_string();
         let page_entry = page_entry.clone();
         let page_of_label = page_of_label.clone();
         let prev = prev.clone();
@@ -11984,10 +11923,8 @@ fn show_pdf_reader(
         let dialog = dialog.clone();
         page_num_button.connect_clicked(move |_| {
             show_page_number_dialog(
-                &state,
-                &widgets,
+                &host,
                 &reader,
-                &key,
                 &page_entry,
                 &page_of_label,
                 &prev,
@@ -12148,8 +12085,7 @@ fn show_pdf_reader(
     // out of `reader` up front since the RefCell isn't needed once we're just writing to the
     // library.
     {
-        let state = state.clone();
-        let key = key.to_string();
+        let host = host.clone();
         let pdf_hash = pdf_hash.to_string();
         let reader = reader.clone();
         dialog.connect_close_request(move |_| {
@@ -12157,18 +12093,12 @@ fn show_pdf_reader(
                 let r = reader.borrow();
                 (r.page as u32 + 1, r.count as u32)
             };
-            let mut s = state.borrow_mut();
-            if let Some(library) = s.library.as_ref() {
-                if let Ok(Some(mut note)) = library.load_note(&key) {
-                    note.frontmatter.progress = Some(fond_bib::Progress {
-                        page,
-                        of: count,
-                        chapter_percent: None,
-                    });
-                    let _ = library.write_note(&key, &note);
-                }
-            }
-            s.open_readers.remove(&pdf_hash);
+            host.save_progress(fond_bib::Progress {
+                page,
+                of: count,
+                chapter_percent: None,
+            });
+            reader::unregister_window(&pdf_hash);
             glib::Propagation::Proceed
         });
     }
@@ -12185,10 +12115,8 @@ fn show_pdf_reader(
 /// without reopening the document.
 #[allow(clippy::too_many_arguments)]
 fn show_page_number_dialog(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
+    host: &Rc<dyn ReaderHost>,
     reader: &Rc<RefCell<ReaderState>>,
-    key: &str,
     page_entry: &gtk4::Entry,
     page_of_label: &gtk4::Label,
     prev: &gtk4::Button,
@@ -12247,11 +12175,9 @@ fn show_page_number_dialog(
         cancel.connect_clicked(move |_| dialog.close());
     }
     {
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let dialog = dialog.clone();
         let reader = reader.clone();
-        let key = key.to_string();
         let page_entry = page_entry.clone();
         let page_of_label = page_of_label.clone();
         let prev = prev.clone();
@@ -12267,21 +12193,13 @@ fn show_page_number_dialog(
                         start_label: n,
                     }),
                     Err(_) => {
-                        toast(&widgets, "Enter a whole number, or leave blank to clear");
+                        host.notify("Enter a whole number, or leave blank to clear");
                         return;
                     }
                 }
             };
 
-            {
-                let s = state.borrow();
-                if let Some(library) = s.library.as_ref() {
-                    if let Ok(Some(mut note)) = library.load_note(&key) {
-                        note.frontmatter.page_label_override = override_value;
-                        let _ = library.write_note(&key, &note);
-                    }
-                }
-            }
+            host.set_page_label_override(override_value);
 
             let new_labels = override_value.map(|ov| ov.apply(count)).unwrap_or_default();
             reader.borrow_mut().page_labels = new_labels.clone();
@@ -12294,14 +12212,11 @@ fn show_page_number_dialog(
                 count,
                 &new_labels,
             );
-            toast(
-                &widgets,
-                if override_value.is_some() {
-                    "Page numbering set"
-                } else {
-                    "Page numbering cleared"
-                },
-            );
+            host.notify(if override_value.is_some() {
+                "Page numbering set"
+            } else {
+                "Page numbering cleared"
+            });
             dialog.close();
         });
     }
@@ -12318,8 +12233,7 @@ fn show_page_number_dialog(
 /// blank page — it does need a re-render (`refresh`) afterward to show up on the page.
 #[allow(clippy::too_many_arguments)]
 fn show_pdf_note_dialog(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
+    host: &Rc<dyn ReaderHost>,
     reader: &Rc<RefCell<ReaderState>>,
     pdf_hash: &str,
     undo_button: &gtk4::Button,
@@ -12390,8 +12304,8 @@ fn show_pdf_note_dialog(
     }
     {
         let dialog = dialog.clone();
-        let widgets = widgets.clone();
-        let state = state.clone();
+        let host = host.clone();
+        let host = host.clone();
         let reader = reader.clone();
         let pdf_hash = pdf_hash.to_string();
         let text_view = text_view.clone();
@@ -12404,7 +12318,7 @@ fn show_pdf_note_dialog(
                 .trim()
                 .to_string();
             if text.is_empty() {
-                toast(&widgets, "Note is empty");
+                host.notify("Note is empty");
                 return;
             }
 
@@ -12423,24 +12337,18 @@ fn show_pdf_note_dialog(
                 r.annotations.pdf_hash = Some(pdf_hash.clone());
                 r.annotations.upsert(annotation);
             }
-            let write_result = {
-                let s = state.borrow();
-                s.library
-                    .as_ref()
-                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-            };
+            let write_result = host.save_annotations(&reader.borrow().annotations);
             match write_result {
-                Some(Ok(_)) => {
+                Ok(()) => {
                     if has_region {
                         refresh();
                     }
                     sync_undo_redo_buttons(&reader, &undo_button, &redo_button);
                     rebuild_notes();
-                    toast(&widgets, "Note added");
+                    host.notify("Note added");
                     dialog.close();
                 }
-                Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                None => toast(&widgets, "No open library — note not saved"),
+                Err(e) => host.notify(&e),
             }
         });
     }
@@ -12810,20 +12718,17 @@ fn epub_apply_highlights(
 /// `start_page` resume, using the chapter+percent shape `fond_bib::Progress` gained for it.
 #[allow(clippy::too_many_arguments)]
 fn show_epub_reader(
-    state: &Rc<RefCell<AppState>>,
-    widgets: &Rc<Widgets>,
-    key: &str,
+    host: &Rc<dyn ReaderHost>,
+    window: &adw::ApplicationWindow,
     hash: &str,
     blob: &std::path::Path,
     title: &str,
     start_annotation_id: Option<&str>,
     start_progress: Option<fond_bib::Progress>,
 ) {
-    let window = &widgets.window;
     // Already open? Surface it instead of opening a duplicate reader on the same file — see
-    // the identical check (and `AppState.open_readers`'s doc comment) in `show_pdf_reader`.
-    if let Some(existing) = state.borrow().open_readers.get(hash) {
-        existing.present();
+    // the identical check (and `reader::OPEN_READERS`'s doc comment) in `show_pdf_reader`.
+    if reader::present_existing(hash) {
         return;
     }
 
@@ -12858,12 +12763,7 @@ fn show_epub_reader(
         }
     }
 
-    let annotations = state
-        .borrow()
-        .library
-        .as_ref()
-        .and_then(|lib| lib.load_annotations(key).ok().flatten())
-        .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(key));
+    let annotations = host.load_annotations();
 
     let start_index = start_annotation_id
         .and_then(|id| annotations.annotations.iter().find(|a| a.id == id))
@@ -12899,10 +12799,7 @@ fn show_epub_reader(
     dialog.set_title(Some(title));
     dialog.set_transient_for(Some(window));
     dialog.set_default_size(1000, 820);
-    state
-        .borrow_mut()
-        .open_readers
-        .insert(hash.to_string(), dialog.clone());
+    reader::register_window(hash, &dialog);
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -13143,8 +13040,7 @@ fn show_epub_reader(
     let rebuild_notes_cell: RebuildCell = Rc::new(RefCell::new(None));
     {
         let notes_rows = notes_rows.clone();
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let reader = reader.clone();
         let view = web_view.clone();
         let prev = prev.clone();
@@ -13249,8 +13145,7 @@ fn show_epub_reader(
                 outer.append(&note_entry);
 
                 let save_note = {
-                    let state = state.clone();
-                    let widgets = widgets.clone();
+                    let host = host.clone();
                     let reader = reader.clone();
                     let id = annotation.id.clone();
                     move |text: &str| {
@@ -13274,14 +13169,8 @@ fn show_epub_reader(
                                 a.note = (!text.is_empty()).then(|| text.to_string());
                             }
                         }
-                        let write_result = {
-                            let s = state.borrow();
-                            s.library
-                                .as_ref()
-                                .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-                        };
-                        if let Some(Err(e)) = write_result {
-                            toast(&widgets, &friendly::bib_error(&e));
+                        if let Err(e) = host.save_annotations(&reader.borrow().annotations) {
+                            host.notify(&e);
                         }
                     }
                 };
@@ -13302,8 +13191,7 @@ fn show_epub_reader(
                 }
 
                 {
-                    let state = state.clone();
-                    let widgets = widgets.clone();
+                    let host = host.clone();
                     let reader = reader.clone();
                     let view = view.clone();
                     let id = annotation.id.clone();
@@ -13315,22 +13203,16 @@ fn show_epub_reader(
                             .annotations
                             .annotations
                             .retain(|a| a.id != id);
-                        let write_result = {
-                            let s = state.borrow();
-                            s.library
-                                .as_ref()
-                                .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-                        };
+                        let write_result = host.save_annotations(&reader.borrow().annotations);
                         match write_result {
-                            Some(Ok(_)) => {
+                            Ok(()) => {
                                 epub_apply_highlights(&view, &reader, None);
-                                toast(&widgets, "Annotation deleted");
+                                host.notify("Annotation deleted");
                                 if let Some(f) = rebuild_notes_cell.borrow().as_ref() {
                                     f();
                                 }
                             }
-                            Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                            None => toast(&widgets, "No open library"),
+                            Err(e) => host.notify(&e),
                         }
                     });
                 }
@@ -13387,8 +13269,7 @@ fn show_epub_reader(
     // continuous mode has.
     let epub_undo = {
         let reader = reader.clone();
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let view = web_view.clone();
         let rebuild_notes = rebuild_notes.clone();
         let undo_button = undo_button.clone();
@@ -13407,31 +13288,24 @@ fn show_epub_reader(
                 }
             };
             if !popped {
-                toast(&widgets, "Nothing to undo");
+                host.notify("Nothing to undo");
                 return;
             }
-            let write_result = {
-                let s = state.borrow();
-                s.library
-                    .as_ref()
-                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-            };
+            let write_result = host.save_annotations(&reader.borrow().annotations);
             match write_result {
-                Some(Ok(_)) => {
+                Ok(()) => {
                     epub_apply_highlights(&view, &reader, None);
                     rebuild_notes();
-                    toast(&widgets, "Undid last annotation change");
+                    host.notify("Undid last annotation change");
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not undo: {e}")),
-                None => toast(&widgets, "No open library"),
+                Err(e) => host.notify(&format!("Could not undo: {e}")),
             }
             sync_epub_undo_redo_buttons(&reader, &undo_button, &redo_button);
         })
     };
     let epub_redo = {
         let reader = reader.clone();
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let view = web_view.clone();
         let rebuild_notes = rebuild_notes.clone();
         let undo_button = undo_button.clone();
@@ -13450,23 +13324,17 @@ fn show_epub_reader(
                 }
             };
             if !popped {
-                toast(&widgets, "Nothing to redo");
+                host.notify("Nothing to redo");
                 return;
             }
-            let write_result = {
-                let s = state.borrow();
-                s.library
-                    .as_ref()
-                    .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-            };
+            let write_result = host.save_annotations(&reader.borrow().annotations);
             match write_result {
-                Some(Ok(_)) => {
+                Ok(()) => {
                     epub_apply_highlights(&view, &reader, None);
                     rebuild_notes();
-                    toast(&widgets, "Redid annotation change");
+                    host.notify("Redid annotation change");
                 }
-                Some(Err(e)) => toast(&widgets, &format!("Could not redo: {e}")),
-                None => toast(&widgets, "No open library"),
+                Err(e) => host.notify(&format!("Could not redo: {e}")),
             }
             sync_epub_undo_redo_buttons(&reader, &undo_button, &redo_button);
         })
@@ -13824,16 +13692,14 @@ fn show_epub_reader(
     {
         let reader = reader.clone();
         let view = web_view.clone();
-        let state = state.clone();
-        let widgets = widgets.clone();
+        let host = host.clone();
         let mode_drop = mode_drop.clone();
         let color_drop = color_drop.clone();
         let rebuild_notes = rebuild_notes.clone();
         apply_button.connect_clicked(move |_| {
             let reader = reader.clone();
             let view_for_apply = view.clone();
-            let state = state.clone();
-            let widgets = widgets.clone();
+            let host = host.clone();
             let kind = EPUB_MARK_KIND_OPTIONS
                 .get(mode_drop.selected() as usize)
                 .map(|(_, k)| *k)
@@ -13851,20 +13717,20 @@ fn show_epub_reader(
                     let raw = match result {
                         Ok(v) => v.to_str().to_string(),
                         Err(e) => {
-                            toast(&widgets, &format!("Could not read selection: {e}"));
+                            host.notify(&format!("Could not read selection: {e}"));
                             return;
                         }
                     };
                     let capture: EpubSelectionCapture = match serde_json::from_str(&raw) {
                         Ok(c) => c,
                         Err(_) => {
-                            toast(&widgets, "Could not read selection");
+                            host.notify("Could not read selection");
                             return;
                         }
                     };
                     let snippet = capture.text.filter(|t| !t.trim().is_empty());
                     let Some(snippet) = (!capture.empty).then_some(snippet).flatten() else {
-                        toast(&widgets, "Select some text first");
+                        host.notify("Select some text first");
                         return;
                     };
 
@@ -13891,20 +13757,14 @@ fn show_epub_reader(
                     push_epub_undo_snapshot(&reader);
                     reader.borrow_mut().annotations.upsert(annotation);
 
-                    let write_result = {
-                        let s = state.borrow();
-                        s.library
-                            .as_ref()
-                            .map(|lib| lib.write_annotations(&reader.borrow().annotations))
-                    };
+                    let write_result = host.save_annotations(&reader.borrow().annotations);
                     match write_result {
-                        Some(Ok(_)) => {
+                        Ok(()) => {
                             epub_apply_highlights(&view_for_apply, &reader, Some(&id));
-                            toast(&widgets, "Added");
+                            host.notify("Added");
                             rebuild_notes();
                         }
-                        Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
-                        None => toast(&widgets, "No open library — not saved"),
+                        Err(e) => host.notify(&e),
                     }
                 },
             );
@@ -13919,36 +13779,28 @@ fn show_epub_reader(
     // the note in the callback — nothing after that write depends on the dialog still being
     // open, it just needs `state`/`key`, both cheap `Rc`/`String` clones.
     {
-        let state = state.clone();
-        let key = key.to_string();
+        let host = host.clone();
         let hash = hash.to_string();
         let reader = reader.clone();
         let view = web_view.clone();
         dialog.connect_close_request(move |_| {
-            state.borrow_mut().open_readers.remove(&hash);
+            reader::unregister_window(&hash);
             let (chapter_num, chapter_count) = {
                 let r = reader.borrow();
                 (r.index as u32 + 1, r.spine.len() as u32)
             };
-            let state = state.clone();
-            let key = key.clone();
+            let host = host.clone();
             let script = "(function() {\n  var el = document.documentElement;\n  var range = el.scrollHeight - el.clientHeight;\n  return range > 0 ? Math.round((el.scrollTop / range) * 100) : 0;\n})()";
             view.evaluate_javascript(script, None, None, gio::Cancellable::NONE, move |result| {
                 let percent: u8 = result
                     .ok()
                     .map(|v| v.to_int32().clamp(0, 100) as u8)
                     .unwrap_or(0);
-                let s = state.borrow();
-                if let Some(library) = s.library.as_ref() {
-                    if let Ok(Some(mut note)) = library.load_note(&key) {
-                        note.frontmatter.progress = Some(fond_bib::Progress {
-                            page: chapter_num,
-                            of: chapter_count,
-                            chapter_percent: Some(percent),
-                        });
-                        let _ = library.write_note(&key, &note);
-                    }
-                }
+                host.save_progress(fond_bib::Progress {
+                    page: chapter_num,
+                    of: chapter_count,
+                    chapter_percent: Some(percent),
+                });
             });
             glib::Propagation::Proceed
         });
