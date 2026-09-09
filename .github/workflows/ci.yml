@@ -37,6 +37,11 @@ jobs:
         # fond-vault, kartoteka-cli) are plain cross-platform Rust and don't need this.
         if: runner.os == 'Linux'
         run: |
+          # The runner ships a preinstalled Google Chrome apt source that has been
+          # serving a Packages.gz whose hash does not match its Release file, which
+          # fails `apt-get update` outright — nothing to do with this project, and it
+          # blocked a release. We need only Ubuntu's own archives here, so drop it.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev
       - name: Format check
