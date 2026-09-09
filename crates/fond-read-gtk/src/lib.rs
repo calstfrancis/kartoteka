@@ -1,15 +1,17 @@
-//! The PDF and EPUB readers.
+//! GTK4/libadwaita PDF and EPUB readers, shared across the Fond suite.
 //!
-//! This module is on its way out of the application: it is being lifted into a
-//! `fond-read-gtk` crate shared with Sputnik, so the reader is never written twice (see
-//! `docs/READER-EXTRACTION.md`). It is therefore written as if it were already a separate
-//! crate — it must not reach into `AppState`, `Widgets`, `Library`, or anything else the
-//! application owns. Everything it needs from its embedder comes through [`ReaderHost`].
+//! Rendering, text extraction, search and the annotation schema come from `fond-doc` and
+//! `fond-bib`; this crate is the widget layer over them — paged and continuous PDF views,
+//! drag-to-annotate, EPUB chapter navigation, undo/redo, and the annotations dialog.
 //!
-//! Concretely: nothing in here may learn what a citation key is. Kartoteka identifies a
-//! document by one; Sputnik will identify course materials by content hash instead
-//! (`sputnik/docs/ARCHITECTURE.md` §3). The reader is handed a blob path and a host, and
-//! that is all it knows.
+//! The crate knows nothing about how the embedding application identifies a document.
+//! Everything it needs comes through [`ReaderHost`]: Kartoteka's implementation resolves a
+//! citation key against an open library, and Sputnik's routes a library reading and a local
+//! course material to two different places behind the same methods. Nothing here may learn
+//! what a citation key is — it is handed a blob path and a host, and that is all it knows.
+//!
+//! Extracted from Kartoteka's `app_window.rs`; see that repo's `docs/READER-EXTRACTION.md`
+//! for the boundary survey this shape came from.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,13 +21,13 @@ use gtk4::prelude::*;
 use gtk4::Orientation;
 use libadwaita as adw;
 
-pub(crate) mod annotations;
-pub(crate) mod epub;
-pub(crate) mod pdf;
+pub mod annotations;
+pub mod epub;
+pub mod pdf;
 
 /// A slot holding a "rebuild this list" closure, filled in after the widgets it rebuilds
 /// exist. Shared by both readers' notes sidebars.
-pub(crate) type RebuildCell = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+pub type RebuildCell = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 /// Everything the reader needs from whoever embedded it.
 ///
@@ -34,7 +36,7 @@ pub(crate) type RebuildCell = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 /// Kartoteka's implementation closes over an open `Library` and a citation key, and
 /// Sputnik's will route a library reading and a local course material to two different
 /// places behind the same six methods.
-pub(crate) trait ReaderHost {
+pub trait ReaderHost {
     /// The document's annotation sidecar — an empty one if it has none yet, or if it
     /// could not be read. Infallible by design: the empty fallback has to be built by the
     /// host, because a sidecar is born knowing the key it will be written back to, and that
@@ -79,12 +81,12 @@ thread_local! {
 }
 
 /// The reader already open on `hash`, if there is one.
-pub(crate) fn existing_window(hash: &str) -> Option<adw::Window> {
+pub fn existing_window(hash: &str) -> Option<adw::Window> {
     OPEN_READERS.with(|r| r.borrow().get(hash).cloned())
 }
 
 /// Surface the reader already open on `hash`, reporting whether there was one.
-pub(crate) fn present_existing(hash: &str) -> bool {
+pub fn present_existing(hash: &str) -> bool {
     match existing_window(hash) {
         Some(window) => {
             window.present();
@@ -94,11 +96,11 @@ pub(crate) fn present_existing(hash: &str) -> bool {
     }
 }
 
-pub(crate) fn register_window(hash: &str, window: &adw::Window) {
+pub fn register_window(hash: &str, window: &adw::Window) {
     OPEN_READERS.with(|r| r.borrow_mut().insert(hash.to_string(), window.clone()));
 }
 
-pub(crate) fn unregister_window(hash: &str) {
+pub fn unregister_window(hash: &str) {
     OPEN_READERS.with(|r| r.borrow_mut().remove(hash));
 }
 
@@ -106,7 +108,7 @@ pub(crate) fn unregister_window(hash: &str) {
 /// same name rather than a shared import: this module is on its way into its own crate, and
 /// an eighteen-line button helper is not worth a dependency back on the application. If the
 /// two ever need to differ, they already can.
-pub(crate) fn popover_button(label: &str, destructive: bool) -> gtk4::Button {
+pub fn popover_button(label: &str, destructive: bool) -> gtk4::Button {
     let button = gtk4::Button::new();
     button.add_css_class("flat");
     if destructive {
@@ -121,7 +123,7 @@ pub(crate) fn popover_button(label: &str, destructive: bool) -> gtk4::Button {
 
 /// The margined rule between logical groups of popover rows. Copied for the same reason as
 /// [`popover_button`].
-pub(crate) fn popover_separator() -> gtk4::Separator {
+pub fn popover_separator() -> gtk4::Separator {
     let sep = gtk4::Separator::new(Orientation::Horizontal);
     sep.set_margin_top(4);
     sep.set_margin_bottom(4);

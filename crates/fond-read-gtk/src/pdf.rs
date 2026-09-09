@@ -12,7 +12,7 @@ use gtk4::{gdk, glib, Orientation};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
-use crate::ui::reader::{self, popover_button, popover_separator, ReaderHost};
+use crate::{popover_button, popover_separator, ReaderHost};
 
 /// Live state of an open PDF reader window.
 struct ReaderState {
@@ -1230,7 +1230,7 @@ fn find_page_by_label(page_labels: &[Option<String>], text: &str) -> Option<u16>
 /// import/export touched it.
 /// `start_page` is 1-based (matching `Annotation.page`), clamped into range; pass `1` to
 /// just open at the first page.
-pub(crate) fn show_pdf_reader(
+pub fn show_pdf_reader(
     host: &Rc<dyn ReaderHost>,
     window: &adw::ApplicationWindow,
     pdf_hash: &str,
@@ -1240,8 +1240,8 @@ pub(crate) fn show_pdf_reader(
 ) {
     // Already open? Surface it instead of opening a duplicate reader on the same file — two
     // readers on the same document would each keep their own in-memory annotations/progress
-    // snapshot and clobber each other's saves. See `reader::OPEN_READERS`.
-    if reader::present_existing(pdf_hash) {
+    // snapshot and clobber each other's saves. See `crate::OPEN_READERS`.
+    if crate::present_existing(pdf_hash) {
         return;
     }
     let bytes = match std::fs::read(blob) {
@@ -1317,7 +1317,7 @@ pub(crate) fn show_pdf_reader(
     dialog.set_title(Some(title));
     dialog.set_transient_for(Some(window));
     dialog.set_default_size(900, 820);
-    reader::register_window(pdf_hash, &dialog);
+    crate::register_window(pdf_hash, &dialog);
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -2684,7 +2684,7 @@ pub(crate) fn show_pdf_reader(
                 of: count,
                 chapter_percent: None,
             });
-            reader::unregister_window(&pdf_hash);
+            crate::unregister_window(&pdf_hash);
             glib::Propagation::Proceed
         });
     }

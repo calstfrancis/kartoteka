@@ -1,0 +1,20 @@
+Kartoteka — Proprietary License
+
+Copyright (c) 2026 Cal St Francis. All rights reserved.
+
+This license applies to this crate, `fond-read-gtk`. It is shared across the Fond
+suite but is not MIT, unlike its `fond-*` neighbours — the `fond-` prefix marks a
+crate as shared, with the license stated per crate. See `docs/LICENSES.md`.
+
+The source code of these crates is made available for reference only. No permission
+is granted to use, copy, modify, merge, publish, distribute, sublicense, or sell
+copies of these crates or any derivative works, in whole or in part, without the
+prior written permission of the copyright holder.
+
+The shared library crates under `crates/fond-*` (fond-bib, fond-vault, fond-doc,
+fond-index) are licensed separately under the MIT License; see the LICENSE file in
+each of those crate directories.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT.

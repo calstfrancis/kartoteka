@@ -4,6 +4,7 @@ members = [
     "crates/fond-bib",
     "crates/fond-vault",
     "crates/fond-doc",
+    "crates/fond-read-gtk",
     "crates/fond-index",
     "kartoteka-cli",
     "kartoteka-ui-gtk",

@@ -1090,6 +1090,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fond-read-gtk"
+version = "0.1.0"
+dependencies = [
+ "fond-bib",
+ "fond-doc",
+ "glib",
+ "gtk4",
+ "libadwaita",
+ "serde",
+ "serde_json",
+ "webkit6",
+]
+
+[[package]]
 name = "fond-vault"
 version = "0.1.0"
 dependencies = [
@@ -2121,6 +2135,7 @@ dependencies = [
  "fond-bib",
  "fond-doc",
  "fond-index",
+ "fond-read-gtk",
  "fond-vault",
  "glib",
  "gtk4",

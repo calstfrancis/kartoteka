@@ -15,8 +15,8 @@ use libadwaita::prelude::*;
 use webkit6::prelude::*;
 
 use super::pdf::{COLOR_PRESETS, EPUB_MARK_KIND_OPTIONS, UNDO_HISTORY_LIMIT};
-use crate::ui::reader::RebuildCell;
-use crate::ui::reader::{self, popover_button, popover_separator, ReaderHost};
+use crate::RebuildCell;
+use crate::{popover_button, popover_separator, ReaderHost};
 
 /// Live state of an open EPUB reader window: the chapter list, current position, and this
 /// entry's annotation sidecar (loaded once at open and rewritten to disk on every highlight
@@ -379,7 +379,7 @@ fn epub_apply_highlights(
 /// restore once that chapter finishes loading. The EPUB equivalent of the PDF reader's own
 /// `start_page` resume, using the chapter+percent shape `fond_bib::Progress` gained for it.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn show_epub_reader(
+pub fn show_epub_reader(
     host: &Rc<dyn ReaderHost>,
     window: &adw::ApplicationWindow,
     hash: &str,
@@ -389,8 +389,8 @@ pub(crate) fn show_epub_reader(
     start_progress: Option<fond_bib::Progress>,
 ) {
     // Already open? Surface it instead of opening a duplicate reader on the same file — see
-    // the identical check (and `reader::OPEN_READERS`'s doc comment) in `show_pdf_reader`.
-    if reader::present_existing(hash) {
+    // the identical check (and `crate::OPEN_READERS`'s doc comment) in `show_pdf_reader`.
+    if crate::present_existing(hash) {
         return;
     }
 
@@ -461,7 +461,7 @@ pub(crate) fn show_epub_reader(
     dialog.set_title(Some(title));
     dialog.set_transient_for(Some(window));
     dialog.set_default_size(1000, 820);
-    reader::register_window(hash, &dialog);
+    crate::register_window(hash, &dialog);
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -1446,7 +1446,7 @@ pub(crate) fn show_epub_reader(
         let reader = reader.clone();
         let view = web_view.clone();
         dialog.connect_close_request(move |_| {
-            reader::unregister_window(&hash);
+            crate::unregister_window(&hash);
             let (chapter_num, chapter_count) = {
                 let r = reader.borrow();
                 (r.index as u32 + 1, r.spine.len() as u32)

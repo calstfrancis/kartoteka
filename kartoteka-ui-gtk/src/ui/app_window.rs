@@ -18,12 +18,12 @@ use webkit6::prelude::*;
 use fond_bib::{entry as bibentry, Library};
 
 use crate::config::Config;
-use crate::ui::reader::annotations::show_annotations_dialog;
-use crate::ui::reader::epub::show_epub_reader;
-use crate::ui::reader::pdf::show_pdf_reader;
-use crate::ui::reader::ReaderHost;
 use crate::ui::{bookshelf, friendly, worker};
 use crate::{github, secret_store, webdav};
+use fond_read_gtk::annotations::show_annotations_dialog;
+use fond_read_gtk::epub::show_epub_reader;
+use fond_read_gtk::pdf::show_pdf_reader;
+use fond_read_gtk::ReaderHost;
 
 /// Which kind of identifier the acquire dialog is looking up.
 #[derive(Clone, Copy)]

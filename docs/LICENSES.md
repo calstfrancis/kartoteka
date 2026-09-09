@@ -7,13 +7,23 @@ compiled into `kartoteka-cli`/`-ui` must permit proprietary, closed-source distr
 This document lists every proposed dependency, its licence, and whether it permits that.
 Anything ambiguous is flagged rather than assumed.
 
-**Project licence split** (per the architecture decision): the shared `fond-*` crates are
-**MIT** (so Zerkalo/Skrizhal can consume them); the `kartoteka-*` app crates are
-**proprietary/all-rights-reserved**. The current repo-root `LICENSE` is MIT — it should be
-replaced with a proprietary licence for the app, with the MIT text retained for the
-`crates/fond-*` members (recommended: per-crate `LICENSE` files, or a `license` field in
-each `Cargo.toml`). **This relicensing is a required pre-implementation step and is
-flagged for Cal's confirmation.**
+**Project licence split** (per the architecture decision): the `kartoteka-*` app crates are
+**proprietary/all-rights-reserved**; the repo-root `LICENSE` carries that proprietary text.
+
+**The `fond-` prefix means "shared across the Fond suite", not "MIT".** The licence is
+stated per crate, in its `Cargo.toml` `license` field and its own `LICENSE` file:
+
+| Crate | Licence | Why |
+|---|---|---|
+| `fond-bib` | MIT | Consumed by Zerkalo and Skrizhal. |
+| `fond-vault` | MIT | Consumed by Zerkalo. |
+| `fond-doc` | MIT | Document primitives; no UI. |
+| `fond-index` | MIT | Search; no UI. |
+| `fond-read-gtk` | **Proprietary** | The reader UI, extracted 2026-09-09 for Sputnik to share (`docs/READER-EXTRACTION.md`). It is a large part of what makes Kartoteka the paid product, so it is shared without being open — Cal's decision. |
+
+The consequence to remember: **any application linking `fond-read-gtk` cannot itself be
+distributed under MIT.** Sputnik's repo root is currently MIT and will need the same split
+Kartoteka has (an MIT core crate, a proprietary UI crate) before its reader milestone.
 
 Legend: ✅ permits proprietary distribution · ⚠️ permits it but with a condition to honour
 · ⛔ incompatible, do not use.

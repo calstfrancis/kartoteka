@@ -14,12 +14,12 @@ use libadwaita::prelude::*;
 
 use super::epub::show_epub_reader;
 use super::pdf::show_pdf_reader;
-use crate::ui::reader::ReaderHost;
+use crate::ReaderHost;
 
 /// List an entry's annotations — page, kind, note — so each can be jumped to in the reader,
 /// have its note edited, or be deleted. Reads and writes the same `annots/<key>.json`
 /// sidecar `show_pdf_reader`'s drag-to-highlight writes to.
-pub(crate) fn show_annotations_dialog(
+pub fn show_annotations_dialog(
     host: &Rc<dyn ReaderHost>,
     parent: &adw::ApplicationWindow,
     // Filename stem for an exported annotation file, and nothing else — the reader never

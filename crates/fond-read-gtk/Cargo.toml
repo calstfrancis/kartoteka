@@ -1,0 +1,23 @@
+[package]
+name = "fond-read-gtk"
+version = "0.1.0"
+description = "GTK4/libadwaita PDF and EPUB readers with annotation support — shared Fond crate"
+# Unlike its `fond-*` neighbours, this crate is proprietary: it is the reader UI, which is a
+# large part of what makes Kartoteka the paid product. The `fond-` prefix marks a crate as
+# *shared across Fond*, not as MIT — see `docs/LICENSES.md`.
+license = "LicenseRef-Proprietary"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fond-bib = { path = "../fond-bib" }
+fond-doc = { path = "../fond-doc" }
+gtk4 = { version = "0.11", features = ["v4_10"] }
+libadwaita = { version = "0.9", features = ["v1_4"] }
+glib = "0.22"
+webkit6 = "0.6"
+# The EPUB reader serialises its highlight payload into the WebKit view as JSON.
+serde = { workspace = true }
+serde_json = { workspace = true }

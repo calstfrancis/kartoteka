@@ -154,13 +154,28 @@ the constants `epub.rs` shares with `pdf.rs`).
 than imported from `app_window` — eighteen lines is not worth a dependency back on the
 application from a module whose whole point is leaving it.
 
-Step 1.4 is then `git mv` of this directory into `crates/fond-read-gtk/src/`, with
-Kartoteka consuming it by path. License: **proprietary** (`LicenseRef-Proprietary`), per
-Cal's decision 2026-09-09 — see the `fond-` prefix note in `docs/LICENSES.md`.
+Done (step 1.4): the directory became `crates/fond-read-gtk/`, licensed
+**proprietary** (`LicenseRef-Proprietary`) per Cal's decision 2026-09-09 — the `fond-`
+prefix now means *shared*, with the licence stated per crate (`docs/LICENSES.md`).
 
-The one thing 1.4 still has to solve: these modules are `pub(crate)` and reference
-`fond_bib` types directly. As a separate crate they become `pub`, and the annotation types
-(`AnnotationSidecar`, `Progress`, `PageLabelOverride`) come from `fond-bib` — see §6.
+```
+crates/fond-read-gtk/
+├── Cargo.toml      deps: fond-bib, fond-doc, gtk4, libadwaita, glib, webkit6, serde(_json)
+├── LICENSE         proprietary
+└── src/{lib,pdf,epub,annotations}.rs
+```
+
+`kartoteka-ui-gtk` consumes it by path and imports four items: `ReaderHost`,
+`pdf::show_pdf_reader`, `epub::show_epub_reader`, `annotations::show_annotations_dialog`.
+`ui/reader/` is gone; `ui/mod.rs` no longer declares it.
+
+Verified content-identical again: `pdf.rs`, `epub.rs` and `annotations.rs` — 4,760 lines —
+diff to **zero** against their pre-lift state once `pub(crate)` → `pub` and the
+`crate::ui::reader::` → `crate::` path change are normalised. Only `lib.rs` differs, and
+only in its module doc comment, which was rewritten to describe a standalone crate rather
+than a module on its way out.
+
+Step 1.5 is a Kartoteka release tag for Sputnik to pin.
 
 ---
 
