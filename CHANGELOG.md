@@ -2,6 +2,27 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.12.1] "Common Shelf" — 2026-09-09 — The reader becomes a shared component
+
+**Nothing changes for you in this release** — no new features, and the readers work exactly
+as they did. What moved is underneath: the PDF and EPUB readers, and the annotations dialog,
+now live in their own component (`fond-read-gtk`) rather than being buried inside Kartoteka's
+main window. That is what lets a second Fond app open your documents, and take notes on them,
+without the reader being written twice.
+
+Two small things you might notice:
+
+- The Annotations dialog now says "No annotations for this entry" when you have deleted all
+  of an entry's annotations. Before, it opened an empty list.
+- If an annotation cannot be saved because no library is open, that is now reported as an
+  error rather than passing silently as though it had saved.
+
+Behind that, the reader no longer has any access to your library: it is handed a document and
+a small set of six operations (load and save annotations, save reading position, get and set
+page numbering, show a message), and knows nothing about citation keys or notes. Everything
+else about how it behaves is unchanged — the move was verified line-by-line against the
+previous version.
+
 ## [0.12.0] "Loose Leaf" — 2026-09-09 — Multiple notes per entry
 
 **An entry can now have more than one note.** Menu → "Edit note…" opens a small "Notes" list

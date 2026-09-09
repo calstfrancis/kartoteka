@@ -45,6 +45,21 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.12.1" date="2026-09-09">
+      <description>
+        <p>0.12.1 "Common Shelf" — the PDF and EPUB readers become a shared component. No
+        new features; the readers behave exactly as before.</p>
+        <ul>
+          <li>The readers and the annotations dialog moved into their own component, so a
+          second Fond app can open your documents and take notes on them without the reader
+          being written twice.</li>
+          <li>The Annotations dialog now says "No annotations for this entry" when all of an
+          entry's annotations have been deleted, instead of opening an empty list.</li>
+          <li>An annotation that cannot be saved because no library is open is now reported
+          as an error rather than passing silently.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.12.0" date="2026-09-09">
       <description>
         <p>0.12.0 "Loose Leaf" — an entry can now have more than one note.</p>
