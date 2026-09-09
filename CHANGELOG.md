@@ -2,6 +2,21 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [dev] — Multiple notes per entry
+
+**An entry can now have more than one note.** Menu → "Edit note…" opens a small "Notes" list
+instead of jumping straight to the note editor: "Primary note" (unchanged — reading progress,
+citation preferences, tasks, and prose) always first, then any child notes you've added, each
+titled from its own first line. A "+" in the list creates a new child note (just tags and a
+Markdown body — the lighter fields that make sense more than once per entry); clicking one
+opens it for editing, with a delete button. Child notes live in a new `notes/<key>/` directory
+alongside the entry's existing `notes/<key>.md`, are covered by `fsck`, and are indexed for
+search as their own results (so a hit can point at which note matched, not just the entry).
+
+Standalone notes (not attached to any entry) are also supported at the data-model/`fsck`/
+search-index layer, but have no creation UI yet — that's coming with a dedicated library-wide
+Notes browsing view. See `docs/NOTES-SPEC.md` for the fuller plan this is Tier 1 of.
+
 ## [0.11.0] "Wide Margin" — 2026-09-06 — Notes sidebar moved to its own right-hand panel
 
 **The PDF and EPUB readers' Notes/highlights list is now a separate sidebar on the right,

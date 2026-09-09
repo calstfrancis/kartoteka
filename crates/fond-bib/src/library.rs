@@ -14,6 +14,7 @@ use crate::collection::Collection;
 use crate::custom_field::CustomFieldDefs;
 use crate::entry::{self, ParsedEntry};
 use crate::error::{BibError, Result};
+use crate::extra_note::{generate_note_id, is_valid_note_id, ExtraNote};
 use crate::key;
 use crate::node::Node;
 use crate::note::Attachment;
@@ -23,6 +24,9 @@ use crate::relation::{Predicate, Relation};
 
 pub const ENTRIES_DIR: &str = "entries";
 pub const NOTES_DIR: &str = "notes";
+/// Standalone (item-less) notes — `docs/NOTES-SPEC.md` Tier 1. Child notes live under
+/// `NOTES_DIR/<key>/` instead, alongside that entry's primary `NOTES_DIR/<key>.md`.
+pub const STANDALONE_NOTES_DIR: &str = "standalone-notes";
 pub const ANNOTS_DIR: &str = "annots";
 pub const COLLECTIONS_DIR: &str = "collections";
 pub const AI_DIR: &str = "ai";
@@ -67,6 +71,7 @@ impl Library {
             AI_DIR,
             PROJECTS_DIR,
             NODES_DIR,
+            STANDALONE_NOTES_DIR,
         ] {
             let path = root.join(dir);
             fs::create_dir_all(&path).map_err(|e| BibError::io(&path, e))?;
@@ -88,6 +93,22 @@ impl Library {
 
     pub fn note_path(&self, key: &str) -> PathBuf {
         self.root.join(NOTES_DIR).join(format!("{key}.md"))
+    }
+
+    /// The directory holding `key`'s child notes (`docs/NOTES-SPEC.md` Tier 1). May not
+    /// exist — an entry with no child notes has no directory here at all.
+    pub fn child_note_dir(&self, key: &str) -> PathBuf {
+        self.root.join(NOTES_DIR).join(key)
+    }
+
+    pub fn child_note_path(&self, key: &str, note_id: &str) -> PathBuf {
+        self.child_note_dir(key).join(format!("{note_id}.md"))
+    }
+
+    pub fn standalone_note_path(&self, note_id: &str) -> PathBuf {
+        self.root
+            .join(STANDALONE_NOTES_DIR)
+            .join(format!("{note_id}.md"))
     }
 
     pub fn collection_path(&self, slug: &str) -> PathBuf {
@@ -208,6 +229,118 @@ impl Library {
         ensure_parent(&path)?;
         fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
+    }
+
+    /// Child note ids for `key`, ascending — which, since ids are date-prefixed
+    /// (`extra_note::generate_note_id`), is also creation order. Empty (not an error) if the
+    /// entry has no `notes/<key>/` directory at all.
+    pub fn child_note_ids(&self, key: &str) -> Result<Vec<String>> {
+        let dir = self.child_note_dir(key);
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut ids = Vec::new();
+        for entry in fs::read_dir(&dir).map_err(|e| BibError::io(&dir, e))? {
+            let entry = entry.map_err(|e| BibError::io(&dir, e))?;
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    ids.push(stem.to_string());
+                }
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Every key that has a `notes/<key>/` child-note directory, ascending. Used by `fsck` to
+    /// find one whose parent entry no longer exists.
+    fn child_note_dir_keys(&self) -> Result<Vec<String>> {
+        let dir = self.root.join(NOTES_DIR);
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut keys = Vec::new();
+        for entry in fs::read_dir(&dir).map_err(|e| BibError::io(&dir, e))? {
+            let entry = entry.map_err(|e| BibError::io(&dir, e))?;
+            if entry.path().is_dir() {
+                if let Some(name) = entry.file_name().to_str() {
+                    keys.push(name.to_string());
+                }
+            }
+        }
+        keys.sort();
+        Ok(keys)
+    }
+
+    /// Standalone note ids, ascending.
+    pub fn standalone_note_ids(&self) -> Result<Vec<String>> {
+        self.dir_stems(STANDALONE_NOTES_DIR, "md")
+    }
+
+    pub fn load_child_note(&self, key: &str, note_id: &str) -> Result<ExtraNote> {
+        let path = self.child_note_path(key, note_id);
+        let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
+        ExtraNote::parse(&text, &path)
+    }
+
+    pub fn write_child_note(&self, key: &str, note_id: &str, note: &ExtraNote) -> Result<PathBuf> {
+        let path = self.child_note_path(key, note_id);
+        ensure_parent(&path)?;
+        fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    /// Create a new child note for `key` with `body`, returning its freshly generated id.
+    pub fn create_child_note(&self, key: &str, body: impl Into<String>) -> Result<String> {
+        let id = generate_note_id();
+        self.write_child_note(key, &id, &ExtraNote::new(body))?;
+        Ok(id)
+    }
+
+    /// Delete one child note. Also removes `notes/<key>/` itself if that was the last note in
+    /// it, so a fully-emptied child-note directory doesn't linger for `fsck` to flag as
+    /// orphaned (it isn't orphaned — the parent entry is still fine — just empty).
+    pub fn delete_child_note(&self, key: &str, note_id: &str) -> Result<()> {
+        let path = self.child_note_path(key, note_id);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(BibError::io(&path, e)),
+        }
+        // Best-effort: fails silently if the directory still has other notes in it (or
+        // never existed) — both fine, nothing to clean up in that case.
+        let _ = fs::remove_dir(self.child_note_dir(key));
+        Ok(())
+    }
+
+    pub fn load_standalone_note(&self, note_id: &str) -> Result<ExtraNote> {
+        let path = self.standalone_note_path(note_id);
+        let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
+        ExtraNote::parse(&text, &path)
+    }
+
+    pub fn write_standalone_note(&self, note_id: &str, note: &ExtraNote) -> Result<PathBuf> {
+        let path = self.standalone_note_path(note_id);
+        ensure_parent(&path)?;
+        fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        Ok(path)
+    }
+
+    /// Create a new standalone note with `body`, returning its freshly generated id.
+    pub fn create_standalone_note(&self, body: impl Into<String>) -> Result<String> {
+        let id = generate_note_id();
+        self.write_standalone_note(&id, &ExtraNote::new(body))?;
+        Ok(id)
+    }
+
+    pub fn delete_standalone_note(&self, note_id: &str) -> Result<()> {
+        let path = self.standalone_note_path(note_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(BibError::io(&path, e)),
+        }
     }
 
     /// Load and parse a single node from `nodes/<slug>.md`. Slug/filename agreement is an
@@ -943,6 +1076,16 @@ impl Library {
                 Err(e) => return Err(BibError::io(&path, e)),
             }
         }
+        // 3b. Remove any child notes (`docs/NOTES-SPEC.md` Tier 1) along with the entry —
+        // otherwise they'd linger as an orphaned `notes/<key>/` directory for fsck to flag.
+        let child_note_dir = self.child_note_dir(key);
+        if child_note_dir.is_dir() {
+            match fs::remove_dir_all(&child_note_dir) {
+                Ok(()) => report.files_removed.push(child_note_dir),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(BibError::io(&child_note_dir, e)),
+            }
+        }
 
         // 4. GC attachment blobs no surviving note references (the note above is now gone, so
         //    it no longer counts toward the reference set).
@@ -1517,6 +1660,40 @@ impl Library {
             }
         }
 
+        // Child/standalone notes (`docs/NOTES-SPEC.md` Tier 1): malformed ids, unparseable
+        // files, and a child-note directory whose parent entry no longer exists.
+        for dir_key in self.child_note_dir_keys()? {
+            if !key_set.contains(&dir_key) {
+                report.orphaned_child_note_dirs.push(dir_key.clone());
+            }
+            for id in self.child_note_ids(&dir_key)? {
+                if !is_valid_note_id(&id) {
+                    report
+                        .malformed_note_ids
+                        .push(format!("{NOTES_DIR}/{dir_key}/{id}.md"));
+                }
+                if let Err(e) = self.load_child_note(&dir_key, &id) {
+                    report.unparseable_notes.push((
+                        self.child_note_path(&dir_key, &id).display().to_string(),
+                        e.to_string(),
+                    ));
+                }
+            }
+        }
+        for id in self.standalone_note_ids()? {
+            if !is_valid_note_id(&id) {
+                report
+                    .malformed_note_ids
+                    .push(format!("{STANDALONE_NOTES_DIR}/{id}.md"));
+            }
+            if let Err(e) = self.load_standalone_note(&id) {
+                report.unparseable_notes.push((
+                    self.standalone_note_path(&id).display().to_string(),
+                    e.to_string(),
+                ));
+            }
+        }
+
         Ok(report)
     }
 }
@@ -1763,6 +1940,13 @@ pub struct FsckReport {
     pub relations: RelationReconcile,
     /// `(project slug, document path)` where a project's declared document does not exist.
     pub dangling_project_docs: Vec<(String, String)>,
+    /// Keys with a `notes/<key>/` child-note directory but no matching entry
+    /// (`docs/NOTES-SPEC.md` Tier 1).
+    pub orphaned_child_note_dirs: Vec<String>,
+    /// `(note path, parse error)` for a child or standalone note.
+    pub unparseable_notes: Vec<(String, String)>,
+    /// Paths of child/standalone note files whose filename stem isn't a well-formed note id.
+    pub malformed_note_ids: Vec<String>,
 }
 
 impl FsckReport {
@@ -1786,6 +1970,9 @@ impl FsckReport {
             + self.relations.orphaned.len()
             + self.relations.dangling_targets.len()
             + self.dangling_project_docs.len()
+            + self.orphaned_child_note_dirs.len()
+            + self.unparseable_notes.len()
+            + self.malformed_note_ids.len()
     }
 }
 

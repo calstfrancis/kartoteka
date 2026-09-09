@@ -1015,6 +1015,15 @@ fn print_fsck(report: &FsckReport) {
     for (key, hash) in &report.annotation_pdf_unmatched {
         println!("annot pdf unmatched {key}: {hash} matches no recorded attachment");
     }
+    for key in &report.orphaned_child_note_dirs {
+        println!("orphaned notes dir  notes/{key}/ has no matching entry");
+    }
+    for (path, msg) in &report.unparseable_notes {
+        println!("unparseable note    {path}: {msg}");
+    }
+    for path in &report.malformed_note_ids {
+        println!("malformed note id   {path}");
+    }
     println!("\n{} problem(s) found", report.problem_count());
 }
 

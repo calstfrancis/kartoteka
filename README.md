@@ -18,6 +18,8 @@ files with one command. `library.yml` is regenerated on every write, so
 
 - A plain-file library — Hayagriva YAML entries, Markdown notes — that lives in a git
   repository and stays readable without Kartoteka.
+- Multiple notes per entry — a primary note plus any number of lighter child notes, each
+  listed by a title derived from its own first line and indexed for search individually.
 - A sortable spreadsheet view of your entries, with optional columns for tags,
   status, and any custom field you define; drag-to-reorder columns and bulk actions
   (tag/collection/delete) across a multi-selection.

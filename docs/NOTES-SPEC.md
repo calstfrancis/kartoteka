@@ -1,8 +1,10 @@
 # Kartoteka Notes & Annotations — Toward a Robust System
 
 Status: **Tier 0 done** (Notes moved to its own right-hand reader sidebar, independent of
-Contents — see `CHANGELOG.md`). **Tiers 1–6 are scoped, not started** — this is a plan for
-Cal to prioritize from, not a commitment to build all of it.
+Contents). **Tier 1 done** (multi-note foundation: child notes and standalone notes, `fsck`
+checks, search indexing, and a GUI notes list with create/edit/delete — see below for the one
+piece intentionally left out). **Tiers 2–6 are scoped, not started** — this is a plan for Cal
+to prioritize from, not a commitment to build all of it.
 
 > **Naming note.** This is a new, standalone spec, not part of the M1–M5 extension-track
 > numbering in `docs/STATUS.md` (that numbering maps 1:1 to sections of the original
@@ -66,30 +68,42 @@ authoritative files a human can read and edit without the app).
 
 ---
 
-## Tier 1 — multi-note foundation (the prerequisite for most of what follows)
+## Tier 1 — multi-note foundation — done
 
 Everything below this point assumes an entry can have more than one note, and that a note
-can exist with no parent entry at all. Neither is true today, and it's the single biggest
-structural gap in what's here now. Proposed shape, staying inside the plain-file philosophy:
+can exist with no parent entry at all. Neither was true before this tier. Implemented inside
+the plain-file philosophy, no migration needed for existing libraries:
 
-- Keep `notes/<key>.md` exactly as-is — it's the entry's "primary" note and already carries
-  every workflow field the GUI/CLI depend on (tags, read-status, relations, progress, …).
-  No migration needed for existing libraries.
-- Add **child notes**: `notes/<key>/<note-id>.md`, one file per extra note, lighter
-  frontmatter (title, tags, created/modified — no read-status/progress/etc., which only make
-  sense once per entry). A key with child notes gets a `notes/<key>/` directory alongside its
-  unchanged `notes/<key>.md`.
-- Add **standalone notes**: a new top-level `standalone-notes/<note-id>.md`, same lightweight
-  frontmatter as a child note but no parent key. **Decided: these never appear in the
-  entries spreadsheet or Bookshelf grid** — no fake row with a title and blank
-  Type/Author/Year/Files. Those views stay strictly citation-shaped. Standalone notes are
-  reachable only through the dedicated Notes browsing view (Tier 5) and through search.
-- `fsck`: orphaned child-note directories (parent key deleted), malformed note ids.
-- `fond-index`: index each note file as its own indexed unit (not concatenated into the
-  entry's single blob as now), so search results can point at *which* note matched.
-- GUI: the entry detail pane's "Edit note…" becomes a small note list (primary note always
-  first, then children) with a "+ New note" action; standalone notes are created from the
-  Notes view (Tier 5), not from the main entries list.
+- ✅ `notes/<key>.md` is untouched — still the entry's "primary" note, still carrying every
+  workflow field the GUI/CLI depend on (tags, read-status, relations, progress, …).
+- ✅ **Child notes**: `notes/<key>/<note-id>.md`, one file per extra note (`fond_bib::ExtraNote`
+  + `ExtraNoteFrontmatter` in `crates/fond-bib/src/extra_note.rs`) — lighter frontmatter (tags,
+  created/modified only; no title field — the display title is derived from the body's first
+  line, `ExtraNote::title()`). A key with child notes gets a `notes/<key>/` directory
+  alongside its unchanged `notes/<key>.md`. Note ids are `generate_note_id()`: a date prefix
+  plus an 8-hex-char suffix, so they sort in creation order.
+- ✅ **Standalone notes**: `standalone-notes/<note-id>.md`, same shape as a child note but no
+  parent key. **As decided: they never appear in the entries spreadsheet or Bookshelf grid.**
+  The data model, `fsck` checks, and search indexing are all in place for them (`Library::
+  create_standalone_note`/`load_standalone_note`/`delete_standalone_note`), but — since Tier 5
+  (the library-wide Notes browsing view, their one real home) hasn't been built yet — there is
+  currently **no GUI or CLI entry point that creates one**. They're reachable today only by
+  hand-creating the file or through `fond-bib`'s own API; wiring up creation is Tier 5's job.
+- ✅ `fsck`: `orphaned_child_note_dirs` (a `notes/<key>/` directory whose entry no longer
+  exists), `malformed_note_ids`, `unparseable_notes` — see `Library::fsck` in
+  `crates/fond-bib/src/library.rs` and the CLI's `print_fsck`. `Library::delete_entry` also
+  now removes an entry's child-note directory, so a normal delete never creates the orphan
+  case fsck watches for.
+- ✅ `fond-index`: child and standalone notes are indexed as their own `kind:note` documents
+  (not concatenated into the parent entry's `note` field as before), keyed `<parent
+  key>/<note id>` or `standalone/<note id>` — see `crates/fond-index/src/index.rs`.
+- ✅ GUI: "Edit note…" on an entry now opens a small "Notes" list (`show_notes_list_dialog`) —
+  "Primary note" always first (opens the unchanged `show_note_editor`), then any child notes
+  by their derived title, plus a "+ New note" action. Each child note has its own lightweight
+  editor (`show_child_note_editor`: tags + Markdown body + a delete button for existing
+  notes). Verified end-to-end headless: create, list, reopen, edit, and delete all round-trip
+  correctly, including the child-note directory being cleaned up when its last note is
+  deleted.
 
 ---
 
@@ -175,8 +189,8 @@ benefits from Tier 2 (tags/color to drive template branching).
 
 ## Suggested order
 
-Tier 1 unlocks the most (multi-note + standalone notes is the real structural gap); Tier 2 is
-independent and can land in parallel. Tiers 3–4 both depend on Tier 1. Tier 5 depends on
-Tier 1 existing but is otherwise standalone. Tier 6 items are each small enough to slot in
-wherever convenient once Tier 2 lands. None of this is scheduled — pick per Cal's actual
+Tier 1 is done, unlocking Tiers 3–5, which all depend on it. Tier 2 is independent and can
+land whenever. Tier 5 is worth doing soon-ish since it's also standalone notes' only real
+creation path (see Tier 1's note above). Tier 6 items are each small enough to slot in
+wherever convenient once Tier 2 lands. None of the rest is scheduled — pick per Cal's actual
 priorities next.

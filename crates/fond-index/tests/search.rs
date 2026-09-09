@@ -226,3 +226,44 @@ fn nodes_are_indexed_and_scopable() {
     assert!(entry_hits.iter().all(|h| h.kind == "entry"));
     assert!(entry_hits.iter().any(|h| h.key == "cone1970black"));
 }
+
+#[test]
+fn child_and_standalone_notes_are_indexed_and_scopable() {
+    let (_dir, lib) = seed();
+    let child_id = lib
+        .create_child_note("cone1970black", "# A working title\n\nA loose thought on chapter 3.")
+        .unwrap();
+    let standalone_id = lib
+        .create_standalone_note("Reading list for next month.")
+        .unwrap();
+    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None, |_| None).unwrap();
+
+    // `kind:note` restricts to notes; entries/nodes never carry it.
+    let note_hits = idx.search("kind:note", 10).unwrap();
+    assert_eq!(note_hits.len(), 2);
+    assert!(note_hits.iter().all(|h| h.kind == "note"));
+
+    // Child note: key is "<parent key>/<note id>", title is the derived first line.
+    let child_hit = note_hits
+        .iter()
+        .find(|h| h.key == format!("cone1970black/{child_id}"))
+        .expect("child note hit");
+    assert_eq!(child_hit.title, "A working title");
+
+    // Standalone note: key is "standalone/<note id>", found by body text too.
+    let standalone_hit = note_hits
+        .iter()
+        .find(|h| h.key == format!("standalone/{standalone_id}"))
+        .expect("standalone note hit");
+    assert_eq!(standalone_hit.title, "Reading list for next month.");
+    assert_eq!(
+        idx.search("\"reading list\"", 10).unwrap()[0].key,
+        format!("standalone/{standalone_id}")
+    );
+
+    // Free text on the child note's body finds it too.
+    assert_eq!(
+        idx.search("chapter 3", 10).unwrap()[0].key,
+        format!("cone1970black/{child_id}")
+    );
+}

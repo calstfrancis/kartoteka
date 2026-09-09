@@ -932,3 +932,122 @@ fn edit_fields_clearing_a_field_removes_it() {
     );
     assert!(raw.contains("date: 2000"), "unrelated field lost: {raw}");
 }
+
+// --- Child and standalone notes (docs/NOTES-SPEC.md Tier 1) ---
+
+#[test]
+fn create_and_load_child_note_round_trips() {
+    let (_dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+
+    let id = lib
+        .create_child_note("berdyaev1937destiny", "A loose thought about chapter 3.")
+        .unwrap();
+    let loaded = lib.load_child_note("berdyaev1937destiny", &id).unwrap();
+    assert_eq!(loaded.body, "A loose thought about chapter 3.");
+    assert_eq!(
+        lib.child_note_ids("berdyaev1937destiny").unwrap(),
+        vec![id]
+    );
+}
+
+#[test]
+fn child_note_ids_empty_when_no_directory() {
+    let (_dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+    assert!(lib.child_note_ids("berdyaev1937destiny").unwrap().is_empty());
+}
+
+#[test]
+fn deleting_last_child_note_removes_the_directory() {
+    let (_dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+    let id = lib
+        .create_child_note("berdyaev1937destiny", "Only note.")
+        .unwrap();
+    lib.delete_child_note("berdyaev1937destiny", &id).unwrap();
+    assert!(!lib.child_note_dir("berdyaev1937destiny").exists());
+}
+
+#[test]
+fn deleting_one_of_several_child_notes_keeps_the_others() {
+    let (_dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+    let id1 = lib.create_child_note("berdyaev1937destiny", "First.").unwrap();
+    let id2 = lib.create_child_note("berdyaev1937destiny", "Second.").unwrap();
+    lib.delete_child_note("berdyaev1937destiny", &id1).unwrap();
+    assert_eq!(
+        lib.child_note_ids("berdyaev1937destiny").unwrap(),
+        vec![id2]
+    );
+}
+
+#[test]
+fn create_and_load_standalone_note_round_trips() {
+    let (_dir, lib) = temp_library();
+    let id = lib
+        .create_standalone_note("An idea not tied to any one source.")
+        .unwrap();
+    let loaded = lib.load_standalone_note(&id).unwrap();
+    assert_eq!(loaded.body, "An idea not tied to any one source.");
+    assert_eq!(lib.standalone_note_ids().unwrap(), vec![id]);
+}
+
+#[test]
+fn delete_standalone_note_removes_it() {
+    let (_dir, lib) = temp_library();
+    let id = lib.create_standalone_note("Temporary.").unwrap();
+    lib.delete_standalone_note(&id).unwrap();
+    assert!(lib.standalone_note_ids().unwrap().is_empty());
+}
+
+#[test]
+fn fsck_flags_orphaned_child_note_dir_and_malformed_and_unparseable_notes() {
+    let (_dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+
+    // A child note for a key that doesn't exist.
+    fs::create_dir_all(lib.child_note_dir("doesnotexist")).unwrap();
+    fs::write(
+        lib.child_note_path("doesnotexist", "2026-09-06-abcd1234"),
+        "orphaned",
+    )
+    .unwrap();
+
+    // A malformed note id (not a `.md` stem `fsck` should trust).
+    fs::create_dir_all(lib.child_note_dir("berdyaev1937destiny")).unwrap();
+    fs::write(
+        lib.child_note_path("berdyaev1937destiny", "not-a-note-id"),
+        "body",
+    )
+    .unwrap();
+
+    // An unparseable standalone note: malformed YAML frontmatter.
+    fs::write(
+        lib.standalone_note_path("2026-09-06-deadbeef"),
+        "---\ntags: [unterminated\n---\nbody\n",
+    )
+    .unwrap();
+
+    let report = lib.fsck().unwrap();
+    assert_eq!(report.orphaned_child_note_dirs, vec!["doesnotexist"]);
+    assert_eq!(report.malformed_note_ids.len(), 1);
+    assert!(report.malformed_note_ids[0].contains("not-a-note-id"));
+    assert_eq!(report.unparseable_notes.len(), 1);
+    assert!(!report.is_clean());
+}
+
+#[test]
+fn deleting_entry_removes_its_child_notes() {
+    let (_dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+    lib.create_child_note("berdyaev1937destiny", "A note.")
+        .unwrap();
+    assert!(lib.child_note_dir("berdyaev1937destiny").exists());
+
+    lib.delete_entry("berdyaev1937destiny").unwrap();
+    assert!(!lib.child_note_dir("berdyaev1937destiny").exists());
+    // And fsck no longer sees it as orphaned, since the whole directory is gone.
+    let report = lib.fsck().unwrap();
+    assert!(report.orphaned_child_note_dirs.is_empty());
+}

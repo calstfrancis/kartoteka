@@ -8,10 +8,14 @@
 //! e.g. `author:cone tag:christology facet:discipline year:1970`. AI-generated text is a
 //! separate `ai:` field so results from it can be filtered/scoped apart from curated text.
 //!
-//! Both `entries/` and `nodes/` are indexed into one schema, discriminated by `kind`
-//! (`entry` or `node`), so a query can scope to/from nodes (`kind:node augustine`). A node
-//! reuses `title` for its `label`, `type` for its `node-type`, and `note` for its body, and
-//! adds `alias`/`identifier` text; nodes have no author/year (`docs/M3-SPEC.md` §5).
+//! `entries/`, `nodes/`, and child/standalone notes (`docs/NOTES-SPEC.md` Tier 1) are all
+//! indexed into one schema, discriminated by `kind` (`entry`, `node`, or `note`), so a query
+//! can scope to/from either (`kind:node augustine`, `kind:note idea`). A node reuses `title`
+//! for its `label`, `type` for its `node-type`, and `note` for its body, and adds
+//! `alias`/`identifier` text; nodes have no author/year (`docs/M3-SPEC.md` §5). A `kind:note`
+//! document reuses `title` for the note's derived first-line title and `note` for its body,
+//! with `key` shaped `<parent key>/<note id>` for a child note or `standalone/<note id>` for
+//! one with no parent — split on the first `/` to tell the two apart.
 
 use std::path::Path;
 
@@ -296,6 +300,38 @@ impl SearchIndex {
                 fields.alias => aliases,
                 fields.identifier => identifiers,
                 fields.note => node.body.clone(),
+            ))?;
+        }
+
+        // Child and standalone notes (`docs/NOTES-SPEC.md` Tier 1): indexed as their own
+        // `kind:note` documents rather than concatenated into the parent entry's `note` field,
+        // so a search result can point at *which* note matched. `key` is `<parent
+        // key>/<note id>` for a child note, or `standalone/<note id>` for one with no parent —
+        // a caller splits on the first `/` to tell the two apart and navigate to either.
+        for key in library.keys_sorted()? {
+            for id in library.child_note_ids(&key)? {
+                let Ok(note) = library.load_child_note(&key, &id) else {
+                    continue;
+                };
+                writer.add_document(doc!(
+                    fields.kind => "note",
+                    fields.key => format!("{key}/{id}"),
+                    fields.title => note.title(),
+                    fields.tag => note.frontmatter.tags.join(" "),
+                    fields.note => note.body.clone(),
+                ))?;
+            }
+        }
+        for id in library.standalone_note_ids()? {
+            let Ok(note) = library.load_standalone_note(&id) else {
+                continue;
+            };
+            writer.add_document(doc!(
+                fields.kind => "note",
+                fields.key => format!("standalone/{id}"),
+                fields.title => note.title(),
+                fields.tag => note.frontmatter.tags.join(" "),
+                fields.note => note.body.clone(),
             ))?;
         }
 

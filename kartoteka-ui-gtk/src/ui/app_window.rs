@@ -8256,18 +8256,18 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     }
 
     // Edit: the bibliographic fields and tags/status/rating are now editable directly in
-    // the fields below (click into a field, no dialog) — this button is left for the note
-    // editor's remaining fields (progress, cite preferences, tasks, prose) that aren't
-    // inline yet.
+    // the fields below (click into a field, no dialog) — this button opens the small notes
+    // list (`docs/NOTES-SPEC.md` Tier 1: primary note + any child notes, plus "+ New note")
+    // rather than jumping straight to the primary note's own editor the way it used to.
     let edit_button = gtk4::Button::with_label("Edit note…");
     edit_button.set_tooltip_text(Some(
-        "Edit reading progress, citation preferences, tasks, and your own notes",
+        "Edit this entry's notes: reading progress, citation preferences, tasks, and prose",
     ));
     {
         let state = state.clone();
         let widgets = widgets.clone();
         let key = key.clone();
-        edit_button.connect_clicked(move |_| show_note_editor(&state, &widgets, &key));
+        edit_button.connect_clicked(move |_| show_notes_list_dialog(&state, &widgets, &key));
     }
     actions.append(&edit_button);
 
@@ -14015,6 +14015,298 @@ fn epub_go_to(
     chapter_label.set_text(&format!("Chapter {} of {}", r.index + 1, r.spine.len()));
     prev.set_sensitive(r.index > 0);
     next.set_sensitive(r.index + 1 < r.spine.len());
+}
+
+/// "Edit note…"'s entry point: a small list of this entry's notes — the primary note
+/// (progress/cite/tasks/prose, `show_note_editor`, unchanged) always first, then any child
+/// notes (`docs/NOTES-SPEC.md` Tier 1) — with a "+ New note" action. Standalone (item-less)
+/// notes aren't reachable from here by design (Tier 1 decided they live only in a future
+/// library-wide Notes view, not attached to any one entry).
+fn show_notes_list_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Notes"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(420, 480);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    let new_btn = gtk4::Button::from_icon_name("list-add-symbolic");
+    new_btn.set_tooltip_text(Some("New note"));
+    header.pack_start(&new_btn);
+    view.add_top_bar(&header);
+
+    let listbox = gtk4::ListBox::new();
+    listbox.add_css_class("fond-list");
+    listbox.set_selection_mode(gtk4::SelectionMode::Single);
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
+    scroll.set_child(Some(&listbox));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+    dialog.set_content(Some(&view));
+
+    // Row 0 is always "Primary note"; row `i+1` is `shown_ids[i]`'s child note.
+    let shown_ids = Rc::new(RefCell::new(Vec::<String>::new()));
+
+    let populate: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let listbox = listbox.clone();
+        let key = key.to_string();
+        let shown_ids = shown_ids.clone();
+        move || {
+            while let Some(child) = listbox.first_child() {
+                listbox.remove(&child);
+            }
+
+            let primary_row = gtk4::ListBoxRow::new();
+            primary_row.add_css_class("fond-row");
+            let primary_title = gtk4::Label::new(Some("Primary note"));
+            primary_title.add_css_class("fond-row-title");
+            primary_title.set_xalign(0.0);
+            primary_title.set_halign(gtk4::Align::Start);
+            primary_title.set_margin_top(6);
+            primary_title.set_margin_bottom(6);
+            primary_title.set_margin_start(8);
+            primary_title.set_margin_end(8);
+            primary_row.set_child(Some(&primary_title));
+            listbox.append(&primary_row);
+
+            let ids: Vec<String> = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .and_then(|lib| lib.child_note_ids(&key).ok())
+                    .unwrap_or_default()
+            };
+            let mut shown = Vec::new();
+            for id in ids {
+                let title = {
+                    let s = state.borrow();
+                    s.library
+                        .as_ref()
+                        .and_then(|lib| lib.load_child_note(&key, &id).ok())
+                        .map(|n| n.title())
+                        .unwrap_or_else(|| id.clone())
+                };
+                let row = gtk4::ListBoxRow::new();
+                row.add_css_class("fond-row");
+                let label = gtk4::Label::new(Some(&title));
+                label.add_css_class("fond-row-title");
+                label.set_xalign(0.0);
+                label.set_halign(gtk4::Align::Start);
+                label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                label.set_margin_top(6);
+                label.set_margin_bottom(6);
+                label.set_margin_start(8);
+                label.set_margin_end(8);
+                row.set_child(Some(&label));
+                listbox.append(&row);
+                shown.push(id);
+            }
+            *shown_ids.borrow_mut() = shown;
+        }
+    });
+
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.to_string();
+        let shown_ids = shown_ids.clone();
+        let populate = populate.clone();
+        listbox.connect_row_activated(move |_, row| {
+            let idx = row.index();
+            if idx == 0 {
+                show_note_editor(&state, &widgets, &key);
+                return;
+            }
+            let Some(id) = shown_ids
+                .borrow()
+                .get((idx - 1) as usize)
+                .cloned()
+            else {
+                return;
+            };
+            show_child_note_editor(&state, &widgets, &key, Some(id), populate.clone());
+        });
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let key = key.to_string();
+        let populate = populate.clone();
+        new_btn.connect_clicked(move |_| {
+            show_child_note_editor(&state, &widgets, &key, None, populate.clone());
+        });
+    }
+
+    populate();
+    dialog.present();
+}
+
+/// A single child note's editor (`docs/NOTES-SPEC.md` Tier 1): tags plus free-text
+/// Markdown body — deliberately lighter than the primary note's `show_note_editor`, since
+/// progress/cite-prefs/tasks only make sense once per entry. `note_id` is `None` to create a
+/// new child note, `Some(id)` to edit an existing one; `on_saved` refreshes the caller's list
+/// (the notes-list dialog above) after a save or delete.
+fn show_child_note_editor(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    key: &str,
+    note_id: Option<String>,
+    on_saved: Rc<dyn Fn()>,
+) {
+    let existing = note_id.as_ref().and_then(|id| {
+        let s = state.borrow();
+        s.library
+            .as_ref()
+            .and_then(|lib| lib.load_child_note(key, id).ok())
+    });
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(if note_id.is_some() {
+        "Edit note"
+    } else {
+        "New note"
+    }));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(480, 480);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    if note_id.is_some() {
+        let delete_button = gtk4::Button::from_icon_name("user-trash-symbolic");
+        delete_button.set_tooltip_text(Some("Delete this note"));
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let key = key.to_string();
+            let id = note_id.clone().unwrap();
+            let on_saved = on_saved.clone();
+            delete_button.connect_clicked(move |_| {
+                let result = {
+                    let s = state.borrow();
+                    match s.library.as_ref() {
+                        Some(library) => library.delete_child_note(&key, &id),
+                        None => return,
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        toast(&widgets, "Note deleted");
+                        rebuild_index_silent(&state);
+                        dialog.close();
+                        on_saved();
+                    }
+                    Err(e) => toast(&widgets, &friendly::bib_error(&e)),
+                }
+            });
+        }
+        header.pack_start(&delete_button);
+    }
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let tags_entry = gtk4::Entry::builder()
+        .placeholder_text("comma, separated, tags")
+        .build();
+    tags_entry.set_text(
+        &existing
+            .as_ref()
+            .map(|n| n.frontmatter.tags.join(", "))
+            .unwrap_or_default(),
+    );
+    content.append(&labeled("Tags", &tags_entry));
+
+    let body = gtk4::TextView::builder()
+        .wrap_mode(gtk4::WrapMode::WordChar)
+        .left_margin(8)
+        .right_margin(8)
+        .top_margin(8)
+        .bottom_margin(8)
+        .build();
+    body.buffer()
+        .set_text(existing.as_ref().map(|n| n.body.as_str()).unwrap_or(""));
+    let body_scroll = gtk4::ScrolledWindow::new();
+    body_scroll.set_child(Some(&body));
+    body_scroll.set_vexpand(true);
+    body_scroll.add_css_class("card");
+    content.append(&labeled("Note", &body_scroll));
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let key = key.to_string();
+        let note_id = note_id.clone();
+        save.connect_clicked(move |_| {
+            let tags: Vec<String> = tags_entry
+                .text()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let buffer = body.buffer();
+            let text = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .to_string();
+
+            let mut note = existing.clone().unwrap_or_else(|| fond_bib::ExtraNote::new(""));
+            note.frontmatter.tags = tags;
+            note.body = text;
+            note.frontmatter.modified = Some(fond_bib::util::today_iso());
+
+            let result = {
+                let s = state.borrow();
+                match s.library.as_ref() {
+                    Some(library) => {
+                        let id = note_id.clone().unwrap_or_else(fond_bib::generate_note_id);
+                        library.write_child_note(&key, &id, &note)
+                    }
+                    None => return,
+                }
+            };
+            match result {
+                Ok(_) => {
+                    toast(&widgets, "Note saved");
+                    rebuild_index_silent(&state);
+                    dialog.close();
+                    on_saved();
+                }
+                Err(e) => toast(&widgets, &friendly::bib_error(&e)),
+            }
+        });
+    }
+
+    dialog.present();
 }
 
 /// Edit an entry's note: tags, read status, rating, and prose. Writes `notes/<key>.md`.
