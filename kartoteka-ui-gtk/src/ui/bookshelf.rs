@@ -21,6 +21,7 @@ use fond_bib::Library;
 
 use super::app_window::entry_row::EntryRow;
 use super::app_window::AppState;
+use super::worker;
 
 const COVER_WIDTH: i32 = 110;
 const COVER_HEIGHT: i32 = 165;
@@ -305,8 +306,7 @@ fn spawn_cover_fetch(
     isbn: String,
     library: Library,
 ) {
-    let (sender, receiver) =
-        glib::MainContext::channel::<Option<std::path::PathBuf>>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Option<std::path::PathBuf>>();
     let isbn_thread = isbn.clone();
     std::thread::spawn(move || {
         let path = fond_bib::acquire::fetch_isbn_cover(&isbn_thread)
@@ -316,7 +316,7 @@ fn spawn_cover_fetch(
         let _ = sender.send(path);
     });
 
-    receiver.attach(None, move |path| {
+    receiver.attach(move |path| {
         if let Some(path) = path {
             if let Some(card) = bound_cards.borrow().get(&isbn) {
                 apply_cover(card, &path);

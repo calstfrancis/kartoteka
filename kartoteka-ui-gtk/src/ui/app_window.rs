@@ -18,7 +18,7 @@ use webkit6::prelude::*;
 use fond_bib::{entry as bibentry, Library};
 
 use crate::config::Config;
-use crate::ui::{bookshelf, friendly};
+use crate::ui::{bookshelf, friendly, worker};
 use crate::{github, secret_store, webdav};
 
 /// Which kind of identifier the acquire dialog is looking up.
@@ -1586,9 +1586,7 @@ fn import_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBu
     toast(widgets, "Reading PDF…");
 
     // (is_bibtex, payload, pages) on success.
-    let (sender, receiver) = glib::MainContext::channel::<
-        Result<(bool, String, Option<u32>), String>,
-    >(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Result<(bool, String, Option<u32>), String>>();
     let worker_path = path.clone();
     std::thread::spawn(move || {
         let _ = sender.send(identify_pdf(&worker_path));
@@ -1596,7 +1594,7 @@ fn import_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBu
 
     let state = state.clone();
     let widgets = widgets.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok((is_bibtex, payload, pages)) => {
                 let added = {
@@ -1712,8 +1710,7 @@ fn show_add_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 fn import_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBuf) {
     toast(widgets, "Reading EPUB…");
 
-    let (sender, receiver) =
-        glib::MainContext::channel::<Result<String, String>>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Result<String, String>>();
     let worker_path = path.clone();
     std::thread::spawn(move || {
         let _ = sender.send(epub_entry_yaml(&worker_path));
@@ -1721,7 +1718,7 @@ fn import_epub(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathB
 
     let state = state.clone();
     let widgets = widgets.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok(yaml) => {
                 let added = {
@@ -1846,7 +1843,7 @@ fn import_pdf_folder(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, folde
     }
     toast(widgets, &format!("Importing {} PDFs…", pdfs.len()));
 
-    let (sender, receiver) = glib::MainContext::channel::<FolderProgress>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<FolderProgress>();
     std::thread::spawn(move || {
         let total = pdfs.len();
         let (mut added, mut failed) = (0usize, 0usize);
@@ -1884,7 +1881,7 @@ fn import_pdf_folder(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, folde
 
     let state = state.clone();
     let widgets = widgets.clone();
-    receiver.attach(None, move |msg| match msg {
+    receiver.attach(move |msg| match msg {
         FolderProgress::Step { done, total, name } => {
             toast(&widgets, &format!("[{}/{}] {name}", done + 1, total));
             glib::ControlFlow::Continue
@@ -1914,8 +1911,7 @@ fn find_pdf_unpaywall(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key:
     let doi = doi.to_string();
 
     // Ok(bytes, filename) on success.
-    let (sender, receiver) =
-        glib::MainContext::channel::<Result<(Vec<u8>, String), String>>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Result<(Vec<u8>, String), String>>();
     std::thread::spawn(move || {
         let _ = sender.send(unpaywall_download(&doi, &email));
     });
@@ -1923,7 +1919,7 @@ fn find_pdf_unpaywall(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key:
     let state = state.clone();
     let widgets = widgets.clone();
     let key = key.to_string();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok((bytes, filename)) => {
                 // Write to a temp file so store_attachment can hash+copy it.
@@ -2075,14 +2071,14 @@ type ScrapeResult = Result<(String, Option<(Vec<u8>, String)>), String>;
 fn add_from_url(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, url: String) {
     toast(widgets, "Fetching page…");
 
-    let (sender, receiver) = glib::MainContext::channel::<ScrapeResult>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<ScrapeResult>();
     std::thread::spawn(move || {
         let _ = sender.send(scrape_url(&url));
     });
 
     let state = state.clone();
     let widgets = widgets.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok((yaml, pdf)) => {
                 let added = {
@@ -2927,9 +2923,7 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             import.set_sensitive(false);
             spinner.start();
 
-            let (sender, receiver) = glib::MainContext::channel::<
-                Result<fond_bib::ImportReport, String>,
-            >(glib::Priority::DEFAULT);
+            let (sender, receiver) = worker::channel::<Result<fond_bib::ImportReport, String>>();
             std::thread::spawn(move || {
                 let _ = sender.send(
                     library
@@ -2943,7 +2937,7 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             let dialog = dialog.clone();
             let import = import.clone();
             let spinner = spinner.clone();
-            receiver.attach(None, move |result| {
+            receiver.attach(move |result| {
                 spinner.stop();
                 match result {
                     Ok(report) => {
@@ -3026,8 +3020,7 @@ fn save_library_copy(widgets: &Rc<Widgets>, root: PathBuf, dest_parent: PathBuf)
     let dest = dest_parent.join(format!("{lib_name}-backup-{stamp}"));
 
     toast(widgets, "Saving a copy…");
-    let (sender, receiver) =
-        glib::MainContext::channel::<Result<PathBuf, String>>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Result<PathBuf, String>>();
     let worker_dest = dest.clone();
     std::thread::spawn(move || {
         let result = copy_library_dir(&root, &worker_dest)
@@ -3037,7 +3030,7 @@ fn save_library_copy(widgets: &Rc<Widgets>, root: PathBuf, dest_parent: PathBuf)
     });
 
     let widgets = widgets.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok(dest) => toast(&widgets, &format!("Saved a copy to {}", dest.display())),
             Err(e) => toast(&widgets, &format!("Couldn't save a copy: {e}")),
@@ -3148,8 +3141,7 @@ fn move_library(
     }
 
     toast(widgets, "Moving library…");
-    let (sender, receiver) =
-        glib::MainContext::channel::<Result<(), String>>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Result<(), String>>();
     let worker_root = root.clone();
     let worker_new_root = new_root.clone();
     std::thread::spawn(move || {
@@ -3165,7 +3157,7 @@ fn move_library(
     let state = state.clone();
     let widgets = widgets.clone();
     let config = config.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok(()) => {
                 config.borrow_mut().library_path = Some(new_root.clone());
@@ -3383,8 +3375,7 @@ fn show_backup_wizard(
             progress_label.set_text("Committing and pushing…");
 
             let root_thread = root.clone();
-            let (sender, receiver) =
-                glib::MainContext::channel::<Result<(), String>>(glib::Priority::DEFAULT);
+            let (sender, receiver) = worker::channel::<Result<(), String>>();
             std::thread::spawn(move || {
                 let result = (|| -> Result<(), String> {
                     let vault = fond_vault::Vault::open(&root_thread)
@@ -3419,7 +3410,7 @@ fn show_backup_wizard(
             let widgets = widgets.clone();
             let stack = stack.clone();
             let dialog = dialog.clone();
-            receiver.attach(None, move |result| {
+            receiver.attach(move |result| {
                 match result {
                     Ok(()) => stack.set_visible_child_name("done"),
                     Err(e) => {
@@ -3466,8 +3457,7 @@ fn show_backup_wizard(
     stack.set_visible_child_name("signin");
     if let Some(token) = secret_store::load_github_token() {
         signin_status.set_text("Confirming GitHub sign-in…");
-        let (sender, receiver) =
-            glib::MainContext::channel::<Result<String, String>>(glib::Priority::DEFAULT);
+        let (sender, receiver) = worker::channel::<Result<String, String>>();
         std::thread::spawn(move || {
             let _ = sender.send(github::fetch_username(&token).map_err(|e| e.to_string()));
         });
@@ -3475,7 +3465,7 @@ fn show_backup_wizard(
         let stack = stack.clone();
         let setup_intro = setup_intro.clone();
         let dialog = dialog.clone();
-        receiver.attach(None, move |result| {
+        receiver.attach(move |result| {
             match result {
                 Ok(username) => {
                     setup_intro.set_text(&format!(
@@ -3499,9 +3489,7 @@ fn show_backup_wizard(
         });
     } else {
         signin_status.set_text("Requesting a sign-in code from GitHub…");
-        let (sender, receiver) = glib::MainContext::channel::<
-            Result<github::DeviceCodeResponse, String>,
-        >(glib::Priority::DEFAULT);
+        let (sender, receiver) = worker::channel::<Result<github::DeviceCodeResponse, String>>();
         std::thread::spawn(move || {
             let _ = sender
                 .send(github::request_device_code(github::CLIENT_ID).map_err(|e| e.to_string()));
@@ -3514,7 +3502,7 @@ fn show_backup_wizard(
         let signin_link = signin_link.clone();
         let stack = stack.clone();
         let setup_intro = setup_intro.clone();
-        receiver.attach(None, move |result| {
+        receiver.attach(move |result| {
             match result {
                 Ok(device) => {
                     signin_status.set_text("Open the page below and enter this code:");
@@ -3524,9 +3512,8 @@ fn show_backup_wizard(
                     signin_link.set_label("Open GitHub");
                     signin_link.set_visible(true);
 
-                    let (sender2, receiver2) = glib::MainContext::channel::<
-                        Result<(String, String), String>,
-                    >(glib::Priority::DEFAULT);
+                    let (sender2, receiver2) =
+                        worker::channel::<Result<(String, String), String>>();
                     {
                         let cancelled = cancelled.clone();
                         std::thread::spawn(move || {
@@ -3546,7 +3533,7 @@ fn show_backup_wizard(
                     let dialog = dialog.clone();
                     let stack = stack.clone();
                     let setup_intro = setup_intro.clone();
-                    receiver2.attach(None, move |result| {
+                    receiver2.attach(move |result| {
                         match result {
                             Ok((token, username)) => {
                                 if let Err(e) = secret_store::save_github_token(&token) {
@@ -3689,16 +3676,14 @@ fn show_github_signin(widgets: &Rc<Widgets>) {
     }
     toast(widgets, "Contacting GitHub…");
 
-    let (sender, receiver) = glib::MainContext::channel::<Result<github::DeviceCodeResponse, String>>(
-        glib::Priority::DEFAULT,
-    );
+    let (sender, receiver) = worker::channel::<Result<github::DeviceCodeResponse, String>>();
     std::thread::spawn(move || {
         let _ =
             sender.send(github::request_device_code(github::CLIENT_ID).map_err(|e| e.to_string()));
     });
 
     let widgets = widgets.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok(device) => present_device_dialog(&widgets, device),
             Err(e) => toast(&widgets, &format!("GitHub error: {e}")),
@@ -3761,8 +3746,7 @@ fn present_device_dialog(widgets: &Rc<Widgets>, device: github::DeviceCodeRespon
         });
     }
 
-    let (sender, receiver) =
-        glib::MainContext::channel::<Result<(String, String), String>>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Result<(String, String), String>>();
     {
         let cancelled = cancelled.clone();
         std::thread::spawn(move || {
@@ -3775,7 +3759,7 @@ fn present_device_dialog(widgets: &Rc<Widgets>, device: github::DeviceCodeRespon
 
     let widgets = widgets.clone();
     let dialog_for_result = dialog.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok((token, username)) => match secret_store::save_github_token(&token) {
                 Ok(()) => toast(&widgets, &format!("Signed in to GitHub as {username}")),
@@ -3812,8 +3796,7 @@ fn push_to_github(widgets: &Rc<Widgets>, root: PathBuf) {
         .to_string();
     toast(widgets, "Pushing to GitHub…");
 
-    let (sender, receiver) =
-        glib::MainContext::channel::<Result<(), String>>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Result<(), String>>();
     std::thread::spawn(move || {
         let result = (|| -> Result<(), String> {
             let vault = fond_vault::Vault::open(&root).map_err(|e| e.to_string())?;
@@ -3832,7 +3815,7 @@ fn push_to_github(widgets: &Rc<Widgets>, root: PathBuf) {
     });
 
     let widgets = widgets.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         match result {
             Ok(()) => toast(&widgets, "Pushed to GitHub"),
             Err(e) => toast(&widgets, &format!("Push failed: {e}")),
@@ -3934,8 +3917,7 @@ fn show_webdav_dialog(
             spinner.start();
 
             let root = root.clone();
-            let (sender, receiver) =
-                glib::MainContext::channel::<Result<usize, String>>(glib::Priority::DEFAULT);
+            let (sender, receiver) = worker::channel::<Result<usize, String>>();
             std::thread::spawn(move || {
                 let _ = sender.send(webdav::upload_library(&base, &user, &pass, &root));
             });
@@ -3944,7 +3926,7 @@ fn show_webdav_dialog(
             let dialog = dialog.clone();
             let back_up = back_up.clone();
             let spinner = spinner.clone();
-            receiver.attach(None, move |result| {
+            receiver.attach(move |result| {
                 spinner.stop();
                 match result {
                     Ok(n) => {
@@ -4053,8 +4035,7 @@ fn run_auto_backup(
         .map(|s| s.to_string())
         .unwrap_or_else(|| "Auto-backup".to_string());
 
-    let (sender, receiver) =
-        glib::MainContext::channel::<Result<(), String>>(glib::Priority::DEFAULT);
+    let (sender, receiver) = worker::channel::<Result<(), String>>();
     std::thread::spawn(move || {
         let result = (|| -> Result<(), String> {
             let vault = fond_vault::Vault::open(&root)
@@ -4087,7 +4068,7 @@ fn run_auto_backup(
     });
 
     let widgets = widgets.clone();
-    receiver.attach(None, move |result| {
+    receiver.attach(move |result| {
         if let Err(e) = result {
             toast(&widgets, &format!("Automatic backup: {e}"));
         }
@@ -4385,9 +4366,7 @@ fn show_acquire_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             spinner.start();
 
             // (is_bibtex, payload) on success; error string otherwise.
-            let (sender, receiver) = glib::MainContext::channel::<Result<(bool, String), String>>(
-                glib::Priority::DEFAULT,
-            );
+            let (sender, receiver) = worker::channel::<Result<(bool, String), String>>();
             std::thread::spawn(move || {
                 let result = match kind {
                     AcquireKind::Doi => {
@@ -4410,7 +4389,7 @@ fn show_acquire_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             let entry = entry.clone();
             let spinner = spinner.clone();
             let add = add.clone();
-            receiver.attach(None, move |result| {
+            receiver.attach(move |result| {
                 spinner.stop();
                 match result {
                     Ok((is_bibtex, payload)) => {
@@ -14126,11 +14105,7 @@ fn show_notes_list_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, 
                 show_note_editor(&state, &widgets, &key);
                 return;
             }
-            let Some(id) = shown_ids
-                .borrow()
-                .get((idx - 1) as usize)
-                .cloned()
-            else {
+            let Some(id) = shown_ids.borrow().get((idx - 1) as usize).cloned() else {
                 return;
             };
             show_child_note_editor(&state, &widgets, &key, Some(id), populate.clone());
@@ -14279,7 +14254,9 @@ fn show_child_note_editor(
                 .text(&buffer.start_iter(), &buffer.end_iter(), false)
                 .to_string();
 
-            let mut note = existing.clone().unwrap_or_else(|| fond_bib::ExtraNote::new(""));
+            let mut note = existing
+                .clone()
+                .unwrap_or_else(|| fond_bib::ExtraNote::new(""));
             note.frontmatter.tags = tags;
             note.body = text;
             note.frontmatter.modified = Some(fond_bib::util::today_iso());
