@@ -945,17 +945,17 @@ fn create_and_load_child_note_round_trips() {
         .unwrap();
     let loaded = lib.load_child_note("berdyaev1937destiny", &id).unwrap();
     assert_eq!(loaded.body, "A loose thought about chapter 3.");
-    assert_eq!(
-        lib.child_note_ids("berdyaev1937destiny").unwrap(),
-        vec![id]
-    );
+    assert_eq!(lib.child_note_ids("berdyaev1937destiny").unwrap(), vec![id]);
 }
 
 #[test]
 fn child_note_ids_empty_when_no_directory() {
     let (_dir, lib) = temp_library();
     lib.add_from_yaml(BERDYAEV).unwrap();
-    assert!(lib.child_note_ids("berdyaev1937destiny").unwrap().is_empty());
+    assert!(lib
+        .child_note_ids("berdyaev1937destiny")
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -973,8 +973,12 @@ fn deleting_last_child_note_removes_the_directory() {
 fn deleting_one_of_several_child_notes_keeps_the_others() {
     let (_dir, lib) = temp_library();
     lib.add_from_yaml(BERDYAEV).unwrap();
-    let id1 = lib.create_child_note("berdyaev1937destiny", "First.").unwrap();
-    let id2 = lib.create_child_note("berdyaev1937destiny", "Second.").unwrap();
+    let id1 = lib
+        .create_child_note("berdyaev1937destiny", "First.")
+        .unwrap();
+    let id2 = lib
+        .create_child_note("berdyaev1937destiny", "Second.")
+        .unwrap();
     lib.delete_child_note("berdyaev1937destiny", &id1).unwrap();
     assert_eq!(
         lib.child_note_ids("berdyaev1937destiny").unwrap(),

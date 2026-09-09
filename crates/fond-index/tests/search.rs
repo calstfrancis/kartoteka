@@ -231,7 +231,10 @@ fn nodes_are_indexed_and_scopable() {
 fn child_and_standalone_notes_are_indexed_and_scopable() {
     let (_dir, lib) = seed();
     let child_id = lib
-        .create_child_note("cone1970black", "# A working title\n\nA loose thought on chapter 3.")
+        .create_child_note(
+            "cone1970black",
+            "# A working title\n\nA loose thought on chapter 3.",
+        )
         .unwrap();
     let standalone_id = lib
         .create_standalone_note("Reading list for next month.")
