@@ -2,6 +2,28 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.13.0] "Open Margin" — 2026-09-11 — Note-taking, fixed and made keyboard-friendly
+
+- **Fixed: search could silently miss notes.** A search term that only appeared inside a
+  child note's body (not the entry's title/author/tags/primary note) used to return zero
+  results in the spreadsheet — the note was genuinely indexed, but the hit had no entry to
+  resolve to and was dropped. It now resolves to the note's parent entry.
+- **Notes now autosave.** The primary-note and child-note editors used to require an explicit
+  Save click — closing the dialog (or clicking what used to be labeled "Cancel") silently
+  discarded anything typed. Both editors now save on focus-out, the same way the PDF/EPUB
+  annotation note field already did; the dismiss button is now labeled "Close" to match.
+- **Standalone notes can finally be created.** The data model, `fsck`, and search index have
+  supported item-less notes since 0.12.0 "Loose Leaf", but there was no way to make one from
+  the app. Hamburger menu → "Standalone notes…" now lists, creates, and edits them.
+- **"Edit note…" now shows a count** (e.g. "Edit note… (3)") when an entry has a non-empty
+  primary note and/or child notes, so you don't have to open the dialog just to find out.
+- **New note, faster:** Ctrl+Shift+E creates a new child note on the currently selected entry
+  directly, without a stop at the notes list first.
+- **Note-taking is now fully keyboard-doable.** The note body field used to swallow Tab as a
+  literal tab character, trapping keyboard focus inside it — Tab now moves on to Save/Close
+  like everywhere else. Escape closes every notes dialog (the list views and all three
+  editors), autosaving first where there's anything to save.
+
 ## [0.12.1] "Common Shelf" — 2026-09-09 — The reader becomes a shared component
 
 **Nothing changes for you in this release** — no new features, and the readers work exactly

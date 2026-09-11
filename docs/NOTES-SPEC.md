@@ -2,9 +2,11 @@
 
 Status: **Tier 0 done** (Notes moved to its own right-hand reader sidebar, independent of
 Contents). **Tier 1 done** (multi-note foundation: child notes and standalone notes, `fsck`
-checks, search indexing, and a GUI notes list with create/edit/delete — see below for the one
-piece intentionally left out). **Tiers 2–6 are scoped, not started** — this is a plan for Cal
-to prioritize from, not a commitment to build all of it.
+checks, search indexing, and a GUI notes list with create/edit/delete, including a minimal
+standalone-notes entry point added in 0.13.0 "Open Margin" — see below). **Tiers 2–4 and 6
+are scoped, not started; Tier 5 has a minimal standalone-only slice done, the fuller combined
+view still open.** This is a plan for Cal to prioritize from, not a commitment to build all
+of it.
 
 > **Naming note.** This is a new, standalone spec, not part of the M1–M5 extension-track
 > numbering in `docs/STATUS.md` (that numbering maps 1:1 to sections of the original
@@ -84,11 +86,11 @@ the plain-file philosophy, no migration needed for existing libraries:
   plus an 8-hex-char suffix, so they sort in creation order.
 - ✅ **Standalone notes**: `standalone-notes/<note-id>.md`, same shape as a child note but no
   parent key. **As decided: they never appear in the entries spreadsheet or Bookshelf grid.**
-  The data model, `fsck` checks, and search indexing are all in place for them (`Library::
-  create_standalone_note`/`load_standalone_note`/`delete_standalone_note`), but — since Tier 5
-  (the library-wide Notes browsing view, their one real home) hasn't been built yet — there is
-  currently **no GUI or CLI entry point that creates one**. They're reachable today only by
-  hand-creating the file or through `fond-bib`'s own API; wiring up creation is Tier 5's job.
+  0.13.0 "Open Margin" added a minimal GUI entry point — hamburger menu → "Standalone
+  notes…" (`show_standalone_notes_dialog`/`show_standalone_note_editor` in `app_window.rs`)
+  — a plain list + create/edit/delete, not the full filterable/searchable Tier 5 view below.
+  That fuller view (combined with child/primary notes, filterable by tag, independent of
+  first locating a parent entry) is still Tier 5's job.
 - ✅ `fsck`: `orphaned_child_note_dirs` (a `notes/<key>/` directory whose entry no longer
   exists), `malformed_note_ids`, `unparseable_notes` — see `Library::fsck` in
   `crates/fond-bib/src/library.rs` and the CLI's `print_fsck`. `Library::delete_entry` also
@@ -174,6 +176,8 @@ benefits from Tier 2 (tags/color to drive template branching).
   every note in the library — primary, child, and standalone (Tier 1) — filterable by tag,
   searchable, independent of first locating the parent entry. This is the sole home for
   standalone notes (Tier 1 decided they never appear in the entries spreadsheet/Bookshelf).
+  0.13.0 shipped a minimal, standalone-only slice of this (a plain list, no tag filter, no
+  cross-type search) — the combined primary/child/standalone view is still open.
 
 ---
 

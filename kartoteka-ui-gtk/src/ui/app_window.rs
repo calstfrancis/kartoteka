@@ -1082,6 +1082,9 @@ fn build_hamburger_popover(
              most-cited rankings",
     ));
     activate_row(&rows, &popover, "Tasks…", "win.tasks");
+    activate_row(&rows, &popover, "Standalone notes…", "win.standalone-notes").set_tooltip_text(
+        Some("Notes that aren't attached to any entry"),
+    );
     activate_row(&rows, &popover, "Find duplicates…", "win.duplicates");
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Cite…", "win.cite");
@@ -1163,6 +1166,7 @@ const SHORTCUT_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+N", "New item…"),
             ("Ctrl+K", "Cite (search and copy a citation)…"),
             ("Ctrl+F", "Focus the search field"),
+            ("Ctrl+Shift+E", "New note on the selected entry"),
         ],
     ),
     (
@@ -1285,6 +1289,32 @@ fn add_window_actions(
         window.add_action(&action);
     }
     {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        // Jumps straight to a fresh child note on the entry currently open in the detail
+        // pane, skipping the "Notes" list dialog — that list is still the right place to
+        // browse existing notes, but making a quick new one shouldn't need a stop there
+        // first every time.
+        let action = gio::SimpleAction::new("new-note-on-selected", None);
+        action.connect_activate(move |_, _| {
+            let Some(row) = widgets.selection.selected_item().and_downcast::<EntryRow>() else {
+                toast(&widgets, "Select an entry first");
+                return;
+            };
+            let key = state.borrow().entries[row.idx()].key.clone();
+            let state2 = state.clone();
+            let widgets2 = widgets.clone();
+            show_child_note_editor(
+                &state,
+                &widgets,
+                &key,
+                None,
+                Rc::new(move || refresh_detail(&state2, &widgets2)),
+            );
+        });
+        window.add_action(&action);
+    }
+    {
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("shortcuts", None);
         action.connect_activate(move |_, _| show_shortcuts_dialog(&widgets));
@@ -1296,6 +1326,7 @@ fn add_window_actions(
         app.set_accels_for_action("win.open-library", &["<Primary>o"]);
         app.set_accels_for_action("win.new-library", &["<Primary><Shift>n"]);
         app.set_accels_for_action("win.focus-search", &["<Primary>f"]);
+        app.set_accels_for_action("win.new-note-on-selected", &["<Primary><Shift>e"]);
         app.set_accels_for_action("win.shortcuts", &["<Primary>question", "F1"]);
     }
     {
@@ -1380,6 +1411,13 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("tasks", None);
         action.connect_activate(move |_, _| show_global_tasks_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("standalone-notes", None);
+        action.connect_activate(move |_, _| show_standalone_notes_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -3939,6 +3977,43 @@ fn show_webdav_dialog(
     }
 
     dialog.present();
+}
+
+/// Binds Escape to close `dialog`. Plain `adw::Window`s don't do this on their own — without
+/// it, a keyboard-only user has no way to dismiss one short of Tabbing all the way round to a
+/// Close/Cancel button (or none at all, for a dialog that's just a list). Use directly for a
+/// dialog with nothing to lose by a bare close; for one with unsaved/autosaving state, bind
+/// Escape to the same button the Close/Cancel action already uses instead (e.g.
+/// `cancel.clicked()`) so the two paths can't drift apart.
+fn close_on_escape(dialog: &adw::Window) {
+    let controller = gtk4::EventControllerKey::new();
+    let dialog_for_handler = dialog.clone();
+    controller.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape {
+            dialog_for_handler.close();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    dialog.add_controller(controller);
+}
+
+/// Like `close_on_escape`, but for a dialog whose Close/Cancel button does more than a bare
+/// `dialog.close()` (e.g. an autosave flush first) — Escape presses that button rather than
+/// closing directly, so there's exactly one place the "dismiss" behavior is defined.
+fn close_on_escape_via(dialog: &adw::Window, button: &gtk4::Button) {
+    let controller = gtk4::EventControllerKey::new();
+    let button = button.clone();
+    controller.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape {
+            button.emit_clicked();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    dialog.add_controller(controller);
 }
 
 /// A vertical caption + widget pair.
@@ -7371,7 +7446,21 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             {
                 Some(hits) => hits
                     .iter()
-                    .filter_map(|h| s.key_to_index.get(&h.key).copied())
+                    .filter_map(|h| {
+                        // A `kind:note` hit's key is `<parent key>/<note id>` (or
+                        // `standalone/<note id>`, which has no entry to resolve to) — it never
+                        // matches an entry key directly, so a term that only appears inside a
+                        // child note's body used to vanish from results entirely. Fall back to
+                        // the parent entry so the hit still surfaces.
+                        s.key_to_index.get(&h.key).copied().or_else(|| {
+                            let (parent, _) = h.key.split_once('/')?;
+                            if h.kind == "note" && parent != "standalone" {
+                                s.key_to_index.get(parent).copied()
+                            } else {
+                                None
+                            }
+                        })
+                    })
                     .collect(),
                 None => {
                     let q = query.to_lowercase();
@@ -8217,7 +8306,25 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     // the fields below (click into a field, no dialog) — this button opens the small notes
     // list (`docs/NOTES-SPEC.md` Tier 1: primary note + any child notes, plus "+ New note")
     // rather than jumping straight to the primary note's own editor the way it used to.
-    let edit_button = gtk4::Button::with_label("Edit note…");
+    // Label carries a note count when there's something to find — otherwise discovering
+    // that an entry has child notes at all meant opening this dialog blind every time.
+    let note_count = {
+        let s = state.borrow();
+        s.library.as_ref().map_or(0, |lib| {
+            let has_primary = lib
+                .load_note(&key)
+                .ok()
+                .flatten()
+                .is_some_and(|n| !n.body.trim().is_empty());
+            let child_count = lib.child_note_ids(&key).map(|ids| ids.len()).unwrap_or(0);
+            child_count + usize::from(has_primary)
+        })
+    };
+    let edit_button = gtk4::Button::with_label(&if note_count > 0 {
+        format!("Edit note… ({note_count})")
+    } else {
+        "Edit note…".to_string()
+    });
     edit_button.set_tooltip_text(Some(
         "Edit this entry's notes: reading progress, citation preferences, tasks, and prose",
     ));
@@ -9272,6 +9379,7 @@ fn show_notes_list_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, 
         });
     }
 
+    close_on_escape(&dialog);
     populate();
     dialog.present();
 }
@@ -9310,7 +9418,9 @@ fn show_child_note_editor(
     header.add_css_class("fond-chrome");
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
-    let cancel = gtk4::Button::with_label("Cancel");
+    // Autosave (below) means closing this dialog never discards typed content, so the
+    // dismiss button reads "Close" rather than "Cancel" — matching what it actually does.
+    let cancel = gtk4::Button::with_label("Close");
     let save = gtk4::Button::with_label("Save");
     save.add_css_class("suggested-action");
     header.pack_start(&cancel);
@@ -9367,6 +9477,7 @@ fn show_child_note_editor(
 
     let body = gtk4::TextView::builder()
         .wrap_mode(gtk4::WrapMode::WordChar)
+        .accepts_tab(false) // Tab moves focus (to Save/Close) instead of inserting a literal tab
         .left_margin(8)
         .right_margin(8)
         .top_margin(8)
@@ -9383,17 +9494,23 @@ fn show_child_note_editor(
     view.set_content(Some(&content));
     dialog.set_content(Some(&view));
 
-    {
-        let dialog = dialog.clone();
-        cancel.connect_clicked(move |_| dialog.close());
-    }
-    {
+    // Shared save path for both the explicit Save button and autosave-on-blur below. A
+    // brand-new note (`current_id` still empty) is only written once there's something to
+    // save, so opening "+ New note" and closing it untouched creates no file. `announce`
+    // controls whether this run shows a toast/closes the dialog (explicit Save) or saves
+    // quietly in the background (autosave).
+    let current_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(note_id.clone()));
+    let do_save: Rc<dyn Fn(bool)> = Rc::new({
         let state = state.clone();
         let widgets = widgets.clone();
         let dialog = dialog.clone();
         let key = key.to_string();
-        let note_id = note_id.clone();
-        save.connect_clicked(move |_| {
+        let existing = existing.clone();
+        let current_id = current_id.clone();
+        let on_saved = on_saved.clone();
+        let tags_entry = tags_entry.clone();
+        let body = body.clone();
+        move |announce: bool| {
             let tags: Vec<String> = tags_entry
                 .text()
                 .split(',')
@@ -9404,6 +9521,10 @@ fn show_child_note_editor(
             let text = buffer
                 .text(&buffer.start_iter(), &buffer.end_iter(), false)
                 .to_string();
+
+            if !announce && tags.is_empty() && text.trim().is_empty() {
+                return;
+            }
 
             let mut note = existing
                 .clone()
@@ -9416,22 +9537,372 @@ fn show_child_note_editor(
                 let s = state.borrow();
                 match s.library.as_ref() {
                     Some(library) => {
-                        let id = note_id.clone().unwrap_or_else(fond_bib::generate_note_id);
-                        library.write_child_note(&key, &id, &note)
+                        let id = current_id
+                            .borrow()
+                            .clone()
+                            .unwrap_or_else(fond_bib::generate_note_id);
+                        library.write_child_note(&key, &id, &note).map(|_| id)
                     }
                     None => return,
                 }
             };
             match result {
-                Ok(_) => {
-                    toast(&widgets, "Note saved");
+                Ok(id) => {
+                    *current_id.borrow_mut() = Some(id);
                     rebuild_index_silent(&state);
-                    dialog.close();
                     on_saved();
+                    if announce {
+                        toast(&widgets, "Note saved");
+                        dialog.close();
+                    }
                 }
                 Err(e) => toast(&widgets, &friendly::bib_error(&e)),
             }
+        }
+    });
+
+    {
+        let do_save = do_save.clone();
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| {
+            do_save(false);
+            dialog.close();
         });
+    }
+    close_on_escape_via(&dialog, &cancel);
+    {
+        let do_save = do_save.clone();
+        save.connect_clicked(move |_| do_save(true));
+    }
+    {
+        let focus = gtk4::EventControllerFocus::new();
+        let do_save = do_save.clone();
+        focus.connect_leave(move |_| do_save(false));
+        tags_entry.add_controller(focus);
+    }
+    {
+        let focus = gtk4::EventControllerFocus::new();
+        let do_save = do_save.clone();
+        focus.connect_leave(move |_| do_save(false));
+        body.add_controller(focus);
+    }
+
+    dialog.present();
+}
+
+/// Library-wide list of standalone (item-less) notes (`docs/NOTES-SPEC.md` Tier 1), reachable
+/// from the hamburger's "Standalone notes…" — the minimum viable slice of the Tier 5 Notes
+/// view: `create_standalone_note`/`load_standalone_note`/`delete_standalone_note` have existed
+/// in `fond-bib`, indexed and `fsck`-checked, since Tier 1, but had no GUI entry point at all
+/// until this, so "jot a note with no entry attached" was impossible from the app.
+fn show_standalone_notes_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Standalone notes"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(420, 480);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    let new_btn = gtk4::Button::from_icon_name("list-add-symbolic");
+    new_btn.set_tooltip_text(Some("New standalone note"));
+    header.pack_start(&new_btn);
+    view.add_top_bar(&header);
+
+    let listbox = gtk4::ListBox::new();
+    listbox.add_css_class("fond-list");
+    listbox.set_selection_mode(gtk4::SelectionMode::Single);
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.add_css_class("fond-ground");
+    scroll.set_child(Some(&listbox));
+    scroll.set_vexpand(true);
+    view.set_content(Some(&scroll));
+
+    let empty_hint = adw::StatusPage::new();
+    empty_hint.set_icon_name(Some("text-x-generic-symbolic"));
+    empty_hint.set_title("No standalone notes yet");
+    empty_hint.set_description(Some(
+        "Notes here aren't attached to any entry — click + to jot one down.",
+    ));
+
+    let stack = gtk4::Stack::new();
+    stack.add_named(&scroll, Some("list"));
+    stack.add_named(&empty_hint, Some("empty"));
+    view.set_content(Some(&stack));
+    dialog.set_content(Some(&view));
+
+    let shown_ids = Rc::new(RefCell::new(Vec::<String>::new()));
+
+    let populate: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let listbox = listbox.clone();
+        let shown_ids = shown_ids.clone();
+        let stack = stack.clone();
+        move || {
+            while let Some(child) = listbox.first_child() {
+                listbox.remove(&child);
+            }
+            let ids: Vec<String> = {
+                let s = state.borrow();
+                s.library
+                    .as_ref()
+                    .and_then(|lib| lib.standalone_note_ids().ok())
+                    .unwrap_or_default()
+            };
+            let mut shown = Vec::new();
+            for id in &ids {
+                let title = {
+                    let s = state.borrow();
+                    s.library
+                        .as_ref()
+                        .and_then(|lib| lib.load_standalone_note(id).ok())
+                        .map(|n| n.title())
+                        .unwrap_or_else(|| id.clone())
+                };
+                let row = gtk4::ListBoxRow::new();
+                row.add_css_class("fond-row");
+                let label = gtk4::Label::new(Some(&title));
+                label.add_css_class("fond-row-title");
+                label.set_xalign(0.0);
+                label.set_halign(gtk4::Align::Start);
+                label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                label.set_margin_top(6);
+                label.set_margin_bottom(6);
+                label.set_margin_start(8);
+                label.set_margin_end(8);
+                row.set_child(Some(&label));
+                listbox.append(&row);
+                shown.push(id.clone());
+            }
+            stack.set_visible_child_name(if ids.is_empty() { "empty" } else { "list" });
+            *shown_ids.borrow_mut() = shown;
+        }
+    });
+
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let shown_ids = shown_ids.clone();
+        let populate = populate.clone();
+        listbox.connect_row_activated(move |_, row| {
+            let idx = row.index();
+            let Some(id) = shown_ids.borrow().get(idx as usize).cloned() else {
+                return;
+            };
+            show_standalone_note_editor(&state, &widgets, Some(id), populate.clone());
+        });
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let populate = populate.clone();
+        new_btn.connect_clicked(move |_| {
+            show_standalone_note_editor(&state, &widgets, None, populate.clone());
+        });
+    }
+
+    close_on_escape(&dialog);
+    populate();
+    dialog.present();
+}
+
+/// A single standalone note's editor — the same shape and autosave-on-blur behavior as
+/// `show_child_note_editor`, just backed by `standalone_note_ids`/`load_standalone_note`/
+/// `write_standalone_note`/`delete_standalone_note` instead of a parent entry's child notes.
+fn show_standalone_note_editor(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    note_id: Option<String>,
+    on_saved: Rc<dyn Fn()>,
+) {
+    let existing = note_id.as_ref().and_then(|id| {
+        let s = state.borrow();
+        s.library
+            .as_ref()
+            .and_then(|lib| lib.load_standalone_note(id).ok())
+    });
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some(if note_id.is_some() {
+        "Edit standalone note"
+    } else {
+        "New standalone note"
+    }));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(480, 480);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    // Autosave (below) means closing this dialog never discards typed content, so the
+    // dismiss button reads "Close" rather than "Cancel".
+    let cancel = gtk4::Button::with_label("Close");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    if note_id.is_some() {
+        let delete_button = gtk4::Button::from_icon_name("user-trash-symbolic");
+        delete_button.set_tooltip_text(Some("Delete this note"));
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let id = note_id.clone().unwrap();
+            let on_saved = on_saved.clone();
+            delete_button.connect_clicked(move |_| {
+                let result = {
+                    let s = state.borrow();
+                    match s.library.as_ref() {
+                        Some(library) => library.delete_standalone_note(&id),
+                        None => return,
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        toast(&widgets, "Note deleted");
+                        rebuild_index_silent(&state);
+                        dialog.close();
+                        on_saved();
+                    }
+                    Err(e) => toast(&widgets, &friendly::bib_error(&e)),
+                }
+            });
+        }
+        header.pack_start(&delete_button);
+    }
+    header.pack_end(&save);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let tags_entry = gtk4::Entry::builder()
+        .placeholder_text("comma, separated, tags")
+        .build();
+    tags_entry.set_text(
+        &existing
+            .as_ref()
+            .map(|n| n.frontmatter.tags.join(", "))
+            .unwrap_or_default(),
+    );
+    content.append(&labeled("Tags", &tags_entry));
+
+    let body = gtk4::TextView::builder()
+        .wrap_mode(gtk4::WrapMode::WordChar)
+        .accepts_tab(false) // Tab moves focus (to Save/Close) instead of inserting a literal tab
+        .left_margin(8)
+        .right_margin(8)
+        .top_margin(8)
+        .bottom_margin(8)
+        .build();
+    body.buffer()
+        .set_text(existing.as_ref().map(|n| n.body.as_str()).unwrap_or(""));
+    let body_scroll = gtk4::ScrolledWindow::new();
+    body_scroll.set_child(Some(&body));
+    body_scroll.set_vexpand(true);
+    body_scroll.add_css_class("card");
+    content.append(&labeled("Note", &body_scroll));
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    let current_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(note_id.clone()));
+    let do_save: Rc<dyn Fn(bool)> = Rc::new({
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let existing = existing.clone();
+        let current_id = current_id.clone();
+        let on_saved = on_saved.clone();
+        let tags_entry = tags_entry.clone();
+        let body = body.clone();
+        move |announce: bool| {
+            let tags: Vec<String> = tags_entry
+                .text()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let buffer = body.buffer();
+            let text = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .to_string();
+
+            if !announce && tags.is_empty() && text.trim().is_empty() {
+                return;
+            }
+
+            let mut note = existing
+                .clone()
+                .unwrap_or_else(|| fond_bib::ExtraNote::new(""));
+            note.frontmatter.tags = tags;
+            note.body = text;
+            note.frontmatter.modified = Some(fond_bib::util::today_iso());
+
+            let result = {
+                let s = state.borrow();
+                match s.library.as_ref() {
+                    Some(library) => {
+                        let id = current_id
+                            .borrow()
+                            .clone()
+                            .unwrap_or_else(fond_bib::generate_note_id);
+                        library.write_standalone_note(&id, &note).map(|_| id)
+                    }
+                    None => return,
+                }
+            };
+            match result {
+                Ok(id) => {
+                    *current_id.borrow_mut() = Some(id);
+                    rebuild_index_silent(&state);
+                    on_saved();
+                    if announce {
+                        toast(&widgets, "Note saved");
+                        dialog.close();
+                    }
+                }
+                Err(e) => toast(&widgets, &friendly::bib_error(&e)),
+            }
+        }
+    });
+
+    {
+        let do_save = do_save.clone();
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| {
+            do_save(false);
+            dialog.close();
+        });
+    }
+    close_on_escape_via(&dialog, &cancel);
+    {
+        let do_save = do_save.clone();
+        save.connect_clicked(move |_| do_save(true));
+    }
+    {
+        let focus = gtk4::EventControllerFocus::new();
+        let do_save = do_save.clone();
+        focus.connect_leave(move |_| do_save(false));
+        tags_entry.add_controller(focus);
+    }
+    {
+        let focus = gtk4::EventControllerFocus::new();
+        let do_save = do_save.clone();
+        focus.connect_leave(move |_| do_save(false));
+        body.add_controller(focus);
     }
 
     dialog.present();
@@ -9611,6 +10082,7 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
 
     let body = gtk4::TextView::builder()
         .wrap_mode(gtk4::WrapMode::WordChar)
+        .accepts_tab(false) // Tab moves focus (to Save/Close) instead of inserting a literal tab
         .left_margin(8)
         .right_margin(8)
         .top_margin(8)
@@ -9626,16 +10098,28 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
     view.set_content(Some(&content));
     dialog.set_content(Some(&view));
 
-    {
-        let dialog = dialog.clone();
-        cancel.connect_clicked(move |_| dialog.close());
-    }
-    {
+    // Autosave (below) means closing this dialog never discards typed content, so the
+    // dismiss button reads "Close" rather than "Cancel" — matching what it actually does.
+    cancel.set_label("Close");
+
+    // Shared save path for both the explicit Save button and autosave-on-blur of the note
+    // body: the prose field is the one place a lost edit actually costs real work, so it
+    // saves quietly on focus-out the same way the annotation note field already does.
+    // `announce` controls whether this run shows a toast/closes the dialog (explicit Save)
+    // or saves quietly in the background (autosave).
+    let do_save: Rc<dyn Fn(bool)> = Rc::new({
         let state = state.clone();
         let widgets = widgets.clone();
         let dialog = dialog.clone();
         let key = key.to_string();
-        save.connect_clicked(move |_| {
+        let note = note.clone();
+        let progress_page = progress_page.clone();
+        let progress_of = progress_of.clone();
+        let cite_short = cite_short.clone();
+        let cite_style = cite_style.clone();
+        let task_rows = task_rows.clone();
+        let body = body.clone();
+        move |announce: bool| {
             // Tags/status/rating aren't managed by this dialog anymore (inline in the detail
             // pane instead) — `note.clone()` already carries them forward unchanged.
             let mut updated = note.clone();
@@ -9699,13 +10183,35 @@ fn show_note_editor(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &
             };
             match result {
                 Ok(_) => {
-                    toast(&widgets, "Note saved");
-                    dialog.close();
                     refresh_detail(&state, &widgets);
+                    if announce {
+                        toast(&widgets, "Note saved");
+                        dialog.close();
+                    }
                 }
                 Err(e) => toast(&widgets, &friendly::bib_error(&e)),
             }
+        }
+    });
+
+    {
+        let do_save = do_save.clone();
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| {
+            do_save(false);
+            dialog.close();
         });
+    }
+    close_on_escape_via(&dialog, &cancel);
+    {
+        let do_save = do_save.clone();
+        save.connect_clicked(move |_| do_save(true));
+    }
+    {
+        let focus = gtk4::EventControllerFocus::new();
+        let do_save = do_save.clone();
+        focus.connect_leave(move |_| do_save(false));
+        body.add_controller(focus);
     }
 
     dialog.present();

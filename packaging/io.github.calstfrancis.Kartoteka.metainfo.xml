@@ -45,6 +45,24 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.13.0" date="2026-09-11">
+      <description>
+        <p>0.13.0 "Open Margin" — note-taking, fixed and made keyboard-friendly.</p>
+        <ul>
+          <li>Fixed a search bug: a term that only appeared inside a child note's body used
+          to return zero results — it now resolves to the note's parent entry.</li>
+          <li>Notes now autosave as you type, the same way the PDF/EPUB annotation note field
+          already did; closing a note editor no longer discards anything.</li>
+          <li>Standalone notes — not attached to any entry — can finally be created, from
+          the hamburger menu's new "Standalone notes…".</li>
+          <li>"Edit note…" now shows a count when an entry has notes, so you don't have to
+          open the dialog just to find out.</li>
+          <li>Ctrl+Shift+E creates a new note on the selected entry directly.</li>
+          <li>The note body field no longer traps keyboard focus on Tab, and Escape now
+          closes every notes dialog.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.12.1" date="2026-09-09">
       <description>
         <p>0.12.1 "Common Shelf" — the PDF and EPUB readers become a shared component. No
