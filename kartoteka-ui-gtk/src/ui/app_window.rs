@@ -1082,9 +1082,8 @@ fn build_hamburger_popover(
              most-cited rankings",
     ));
     activate_row(&rows, &popover, "Tasks…", "win.tasks");
-    activate_row(&rows, &popover, "Standalone notes…", "win.standalone-notes").set_tooltip_text(
-        Some("Notes that aren't attached to any entry"),
-    );
+    activate_row(&rows, &popover, "Standalone notes…", "win.standalone-notes")
+        .set_tooltip_text(Some("Notes that aren't attached to any entry"));
     activate_row(&rows, &popover, "Find duplicates…", "win.duplicates");
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Cite…", "win.cite");
