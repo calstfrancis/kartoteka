@@ -79,7 +79,7 @@ fn outline_reads_titles_depth_and_page_in_document_order() {
     };
 
     let pdf = pdf_with_outline();
-    let entries = outline(&pdfium, &pdf).unwrap();
+    let entries = outline(pdfium, &pdf).unwrap();
 
     assert_eq!(
         entries.len(),
@@ -144,6 +144,6 @@ fn outline_is_empty_for_a_pdf_with_no_outlines() {
         xref
     ));
 
-    let entries = outline(&pdfium, &pdf.into_bytes()).unwrap();
+    let entries = outline(pdfium, &pdf.into_bytes()).unwrap();
     assert!(entries.is_empty());
 }

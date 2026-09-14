@@ -54,11 +54,11 @@ pub fn show_annotations_dialog(
         .and_then(|(_, blob)| {
             let bytes = std::fs::read(blob).ok()?;
             let pdfium = fond_doc::bind_pdfium().ok()?;
-            let native = fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
+            let native = fond_doc::page_labels(pdfium, &bytes).unwrap_or_default();
             if native.iter().any(|l| l.is_some()) {
                 return Some(native);
             }
-            let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(0);
+            let count = fond_doc::page_count(pdfium, &bytes).unwrap_or(0);
             let override_value = host.page_label_override();
             Some(override_value.map(|ov| ov.apply(count)).unwrap_or(native))
         })

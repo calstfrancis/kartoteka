@@ -54,7 +54,7 @@ fn extracts_text_layer_from_a_pdf() {
     };
 
     let pdf = minimal_pdf("Kartoteka liberation theology");
-    let extracted = extract_text(&pdfium, &pdf).unwrap();
+    let extracted = extract_text(pdfium, &pdf).unwrap();
 
     assert_eq!(extracted.page_count, 1);
     let text = extracted.full_text();

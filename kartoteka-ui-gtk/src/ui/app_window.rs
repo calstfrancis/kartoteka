@@ -1675,9 +1675,9 @@ fn import_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBu
 fn identify_pdf(path: &std::path::Path) -> Result<(bool, String, Option<u32>), String> {
     let pdfium = fond_doc::bind_pdfium().map_err(|e| format!("PDFium unavailable: {e}"))?;
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let pages = fond_doc::page_count(&pdfium, &bytes).ok().map(|n| n as u32);
+    let pages = fond_doc::page_count(pdfium, &bytes).ok().map(|n| n as u32);
 
-    let text = fond_doc::extract_text(&pdfium, &bytes)
+    let text = fond_doc::extract_text(pdfium, &bytes)
         .ok()
         .map(|t| t.full_text());
     let mut isbn_seen = None;
@@ -1696,7 +1696,7 @@ fn identify_pdf(path: &std::path::Path) -> Result<(bool, String, Option<u32>), S
         }
     }
 
-    let meta = fond_doc::extract_metadata(&pdfium, &bytes).map_err(|e| e.to_string())?;
+    let meta = fond_doc::extract_metadata(pdfium, &bytes).map_err(|e| e.to_string())?;
     if let Some(title) = meta.title {
         let yaml = fond_bib::acquire::minimal_book_yaml(
             &title,

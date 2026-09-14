@@ -3,6 +3,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use pdfium_render::prelude::{
     PdfDocumentMetadataTagType, PdfRect, PdfRenderConfig, PdfSearchDirection, PdfSearchOptions,
@@ -11,16 +12,9 @@ use pdfium_render::prelude::{
 
 use crate::error::{DocError, Result};
 
-/// Bind to the PDFium native library.
-///
-/// Resolution order:
-/// 1. `PDFIUM_LIB_PATH` — a directory containing `libpdfium.so` (or the shared-library file
-///    itself).
-/// 2. The system library search path.
-///
-/// PDFium is BSD-3-licensed and shipped as a separate native binary (see `docs/LICENSES.md`);
-/// it is never vendored into the repository.
-pub fn bind_pdfium() -> Result<Pdfium> {
+static PDFIUM: OnceLock<Result<Pdfium>> = OnceLock::new();
+
+fn bind_pdfium_uncached() -> Result<Pdfium> {
     if let Ok(val) = std::env::var("PDFIUM_LIB_PATH") {
         let given = PathBuf::from(&val);
         let lib = if given.is_dir() {
@@ -40,6 +34,33 @@ pub fn bind_pdfium() -> Result<Pdfium> {
         message: e.to_string(),
     })?;
     Ok(Pdfium::new(bindings))
+}
+
+/// Bind to the PDFium native library.
+///
+/// Resolution order:
+/// 1. `PDFIUM_LIB_PATH` — a directory containing `libpdfium.so` (or the shared-library file
+///    itself).
+/// 2. The system library search path.
+///
+/// PDFium is BSD-3-licensed and shipped as a separate native binary (see `docs/LICENSES.md`);
+/// it is never vendored into the repository.
+///
+/// Bound exactly once per process and never dropped: PDFium's `FPDF_InitLibrary`/
+/// `FPDF_DestroyLibrary` are process-global and not reference-counted, so a `Pdfium` per
+/// reader window used to mean the first reader closed would tear down PDFium's globals out
+/// from under every other reader still open — a guaranteed crash as soon as a second document
+/// was read. Returning `&'static Pdfium` from a `OnceLock` (safe to share thanks to the
+/// `thread_safe` feature) means every caller shares one library binding that lives for the
+/// process's lifetime, matching PDFium's actual init/shutdown contract.
+pub fn bind_pdfium() -> Result<&'static Pdfium> {
+    match PDFIUM.get_or_init(bind_pdfium_uncached) {
+        Ok(p) => Ok(p),
+        Err(e) => Err(DocError::LibraryLoad {
+            path: e.to_string(),
+            message: String::new(),
+        }),
+    }
 }
 
 /// Sniff whether the file at `path` looks like a PDF — for a file whose name has no `.pdf`

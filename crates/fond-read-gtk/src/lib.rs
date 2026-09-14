@@ -19,11 +19,11 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::Orientation;
-use libadwaita as adw;
 
 pub mod annotations;
 pub mod epub;
 pub mod pdf;
+pub mod reader_host;
 
 /// A slot holding a "rebuild this list" closure, filled in after the widgets it rebuilds
 /// exist. Shared by both readers' notes sidebars.
@@ -65,39 +65,40 @@ pub trait ReaderHost {
 }
 
 thread_local! {
-    /// Reader windows currently open, keyed by the document's content hash — so this is
-    /// really "the same file", not "the same entry".
+    /// Reader tabs currently open, keyed by the document's content hash — so this is really
+    /// "the same file", not "the same entry".
     ///
     /// Opening a second reader on a document already open would give each one an
     /// independent in-memory sidecar snapshot, and both rewrite the whole sidecar on every
     /// save, so the last close would silently discard the other's annotations. Instead the
-    /// second attempt surfaces the window that is already open.
+    /// second attempt surfaces the tab that is already open.
     ///
     /// Process-global rather than per-library: entries are removed only on a reader's own
-    /// `close-request`, never on a library switch, which matches the behaviour this
-    /// replaced (`AppState.open_readers`). GTK is single-threaded, so a `thread_local` is
-    /// the whole of the synchronisation story.
-    static OPEN_READERS: RefCell<HashMap<String, adw::Window>> = RefCell::new(HashMap::new());
+    /// tab closing, never on a library switch, which matches the behaviour this replaced
+    /// (`AppState.open_readers`). GTK is single-threaded, so a `thread_local` is the whole
+    /// of the synchronisation story.
+    static OPEN_READERS: RefCell<HashMap<String, reader_host::ReaderTab>> =
+        RefCell::new(HashMap::new());
 }
 
-/// The reader already open on `hash`, if there is one.
-pub fn existing_window(hash: &str) -> Option<adw::Window> {
+/// The reader tab already open on `hash`, if there is one.
+pub fn existing_reader(hash: &str) -> Option<reader_host::ReaderTab> {
     OPEN_READERS.with(|r| r.borrow().get(hash).cloned())
 }
 
-/// Surface the reader already open on `hash`, reporting whether there was one.
+/// Surface the reader tab already open on `hash`, reporting whether there was one.
 pub fn present_existing(hash: &str) -> bool {
-    match existing_window(hash) {
-        Some(window) => {
-            window.present();
+    match existing_reader(hash) {
+        Some(tab) => {
+            tab.present();
             true
         }
         None => false,
     }
 }
 
-pub fn register_window(hash: &str, window: &adw::Window) {
-    OPEN_READERS.with(|r| r.borrow_mut().insert(hash.to_string(), window.clone()));
+pub fn register_reader(hash: &str, tab: &reader_host::ReaderTab) {
+    OPEN_READERS.with(|r| r.borrow_mut().insert(hash.to_string(), tab.clone()));
 }
 
 pub fn unregister_window(hash: &str) {

@@ -45,6 +45,20 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.14.0" date="2026-09-14">
+      <description>
+        <p>0.14.0 "Steady Reader" — tabs, and a reader that no longer crashes.</p>
+        <ul>
+          <li>Fixed a crash: opening a second PDF to read (or closing one while another was
+          still open) could bring down the whole app. The PDF engine is now shared correctly
+          instead of each reader window tearing down state the others still needed.</li>
+          <li>"Read" now opens a tab in one shared Reader window instead of a new top-level
+          window each time, so reading several documents at once is far less unwieldy. Each
+          tab has its own "Open in a new window" button for anyone who wants a document on
+          its own.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.13.0" date="2026-09-11">
       <description>
         <p>0.13.0 "Open Margin" — note-taking, fixed and made keyboard-friendly.</p>

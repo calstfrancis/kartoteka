@@ -56,7 +56,7 @@ fn selects_text_spanning_two_lines_as_two_quads() {
     let pdf = two_line_pdf();
 
     // A rectangle covering both lines' full extent.
-    let selection = select_text_in_rect(&pdfium, &pdf, 0, 60.0, 655.0, 560.0, 725.0)
+    let selection = select_text_in_rect(pdfium, &pdf, 0, 60.0, 655.0, 560.0, 725.0)
         .unwrap()
         .expect("expected a selection covering both lines");
 
@@ -85,7 +85,7 @@ fn selects_text_within_a_single_line_only() {
     let pdf = two_line_pdf();
 
     // A rectangle over the first line's band only.
-    let selection = select_text_in_rect(&pdfium, &pdf, 0, 60.0, 695.0, 560.0, 725.0)
+    let selection = select_text_in_rect(pdfium, &pdf, 0, 60.0, 695.0, 560.0, 725.0)
         .unwrap()
         .expect("expected a selection covering the first line");
 
@@ -113,7 +113,7 @@ fn returns_none_over_a_blank_area() {
     };
     let pdf = two_line_pdf();
 
-    let selection = select_text_in_rect(&pdfium, &pdf, 0, 60.0, 100.0, 200.0, 200.0).unwrap();
+    let selection = select_text_in_rect(pdfium, &pdf, 0, 60.0, 100.0, 200.0, 200.0).unwrap();
     assert!(selection.is_none(), "expected no text in a blank margin");
 }
 
@@ -171,7 +171,7 @@ fn straight_vertical_drag_selects_whole_middle_lines() {
     // ending below line three — the failure mode this guards against is a plain
     // rectangle-intersection selection, which would only pick up the narrow column of text
     // directly under x=100 on every line instead of pulling in whole in-between lines.
-    let selection = select_text_range(&pdfium, &pdf, 0, 100.0, 725.0, 100.0, 615.0)
+    let selection = select_text_range(pdfium, &pdf, 0, 100.0, 725.0, 100.0, 615.0)
         .unwrap()
         .expect("expected a selection spanning all three lines");
 
@@ -204,10 +204,10 @@ fn range_selection_direction_does_not_matter() {
     };
     let pdf = three_line_pdf();
 
-    let forward = select_text_range(&pdfium, &pdf, 0, 100.0, 725.0, 100.0, 615.0)
+    let forward = select_text_range(pdfium, &pdf, 0, 100.0, 725.0, 100.0, 615.0)
         .unwrap()
         .expect("forward drag should select text");
-    let backward = select_text_range(&pdfium, &pdf, 0, 100.0, 615.0, 100.0, 725.0)
+    let backward = select_text_range(pdfium, &pdf, 0, 100.0, 615.0, 100.0, 725.0)
         .unwrap()
         .expect("a drag dragged bottom-to-top should select the same text");
 

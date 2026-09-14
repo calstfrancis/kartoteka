@@ -2,6 +2,19 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.14.0] "Steady Reader" — 2026-09-14 — Tabs, and a reader that no longer crashes
+
+- **Fixed: reading a second document could crash the app.** Every open PDF reader bound its
+  own copy of the PDFium library; whichever reader closed first tore down PDFium's process-
+  global state out from under every other reader still open, so simply closing one PDF while
+  a second was open (or opening a second at all) risked a crash. PDFium is now bound once per
+  process and shared, matching its own init/shutdown contract.
+- **"Read" now opens a tab, not a new window.** PDF and EPUB readers open in one shared
+  "Reader" window as tabs instead of each getting its own top-level window — reading several
+  documents at once no longer means juggling separate windows, and (with the fix above)
+  doesn't risk a crash. Each tab still has its own "Open in a new window" button in its
+  header for anyone who wants a document on its own.
+
 ## [0.13.0] "Open Margin" — 2026-09-11 — Note-taking, fixed and made keyboard-friendly
 
 - **Fixed: search could silently miss notes.** A search term that only appeared inside a

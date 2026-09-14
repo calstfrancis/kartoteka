@@ -58,8 +58,8 @@ fn embed_then_extract_round_trips_a_highlight() {
         contents: Some("core claim".to_string()),
     };
 
-    let annotated = embed_highlights(&pdfium, &pdf, std::slice::from_ref(&to_embed)).unwrap();
-    let extracted = extract_annotations(&pdfium, &annotated).unwrap();
+    let annotated = embed_highlights(pdfium, &pdf, std::slice::from_ref(&to_embed)).unwrap();
+    let extracted = extract_annotations(pdfium, &annotated).unwrap();
 
     assert_eq!(extracted.len(), 1, "expected one annotation: {extracted:?}");
     let a = &extracted[0];

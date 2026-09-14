@@ -384,7 +384,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             let pages = fond_doc::bind_pdfium().ok().and_then(|pdfium| {
                 std::fs::read(&path)
                     .ok()
-                    .and_then(|bytes| fond_doc::page_count(&pdfium, &bytes).ok())
+                    .and_then(|bytes| fond_doc::page_count(pdfium, &bytes).ok())
                     .map(|n| n as u32)
             });
 
@@ -579,11 +579,11 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                                 let bytes = std::fs::read(&blob).ok()?;
                                 let pdfium = fond_doc::bind_pdfium().ok()?;
                                 let native =
-                                    fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
+                                    fond_doc::page_labels(pdfium, &bytes).unwrap_or_default();
                                 if native.iter().any(|l| l.is_some()) {
                                     return Some(native);
                                 }
-                                let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(0);
+                                let count = fond_doc::page_count(pdfium, &bytes).unwrap_or(0);
                                 let override_value = library
                                     .load_note(&key)
                                     .ok()
@@ -641,7 +641,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                 return Err(format!("no present PDF attachment for '{key}'").into());
             };
             let pdfium = fond_doc::bind_pdfium()?;
-            let text = fond_doc::extract_text_from_file(&pdfium, &path)?;
+            let text = fond_doc::extract_text_from_file(pdfium, &path)?;
             print!("{}", text.full_text());
             Ok(ExitCode::SUCCESS)
         }
@@ -651,7 +651,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             let (blob, hash) = pdf_attachment(&library, &key)?;
             let pdfium = fond_doc::bind_pdfium()?;
             let bytes = std::fs::read(&blob)?;
-            let extracted = fond_doc::extract_annotations(&pdfium, &bytes)?;
+            let extracted = fond_doc::extract_annotations(pdfium, &bytes)?;
 
             let mut sidecar = library
                 .load_annotations(&key)?
@@ -711,7 +711,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
 
             let pdfium = fond_doc::bind_pdfium()?;
             let bytes = std::fs::read(&blob)?;
-            let annotated = fond_doc::embed_highlights(&pdfium, &bytes, &to_embed)?;
+            let annotated = fond_doc::embed_highlights(pdfium, &bytes, &to_embed)?;
             std::fs::write(&output, annotated)?;
             println!(
                 "wrote {} highlight(s) to {}",
@@ -828,7 +828,7 @@ fn identify_pdf(library: &Library, path: &std::path::Path) -> CliResult<String> 
         .map_err(|e| format!("PDFium is needed to identify a PDF without an identifier: {e}"))?;
     let bytes = std::fs::read(path)?;
 
-    let text = fond_doc::extract_text(&pdfium, &bytes)
+    let text = fond_doc::extract_text(pdfium, &bytes)
         .ok()
         .map(|t| t.full_text());
     let mut isbn_seen = None;
@@ -861,7 +861,7 @@ fn identify_pdf(library: &Library, path: &std::path::Path) -> CliResult<String> 
         }
     }
 
-    let meta = fond_doc::extract_metadata(&pdfium, &bytes)?;
+    let meta = fond_doc::extract_metadata(pdfium, &bytes)?;
     if let Some(title) = meta.title {
         eprintln!("no DOI/ISBN lookup succeeded; building an entry from PDF metadata");
         let yaml = fond_bib::acquire::minimal_book_yaml(

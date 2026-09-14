@@ -16,7 +16,7 @@ use crate::{popover_button, popover_separator, ReaderHost};
 
 /// Live state of an open PDF reader window.
 struct ReaderState {
-    pdfium: fond_doc::Pdfium,
+    pdfium: &'static fond_doc::Pdfium,
     bytes: Vec<u8>,
     page: u16,
     count: u16,
@@ -189,7 +189,7 @@ fn build_drag_preview_overlay(
             let page = page_of();
             let page_pts = {
                 let r = reader.borrow();
-                fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
+                fond_doc::page_size(r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
             };
             let line_rects = (page_pts.0 > 0.0 && page_pts.1 > 0.0 && w > 0 && h > 0)
                 .then(|| {
@@ -204,7 +204,7 @@ fn build_drag_preview_overlay(
                     let (ex, ey) = to_pdf(x1, y1);
                     let r = reader.borrow();
                     fond_doc::select_text_range(
-                        &r.pdfium, &r.bytes, page, sx as f32, sy as f32, ex as f32, ey as f32,
+                        r.pdfium, &r.bytes, page, sx as f32, sy as f32, ex as f32, ey as f32,
                     )
                     .ok()
                     .flatten()
@@ -313,8 +313,8 @@ fn render_pdf_page_texture(
     page: u16,
 ) -> Option<(gdk::Texture, u32, u32, (f32, f32))> {
     let width = (READER_BASE_WIDTH * r.zoom) as u32;
-    let page_pts = fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0));
-    let mut rp = fond_doc::render_page(&r.pdfium, &r.bytes, page, width).ok()?;
+    let page_pts = fond_doc::page_size(r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0));
+    let mut rp = fond_doc::render_page(r.pdfium, &r.bytes, page, width).ok()?;
     let current_page = page as u32 + 1;
 
     // A freestanding Note (no quadpoints — added via the "Note…" button on blank page) is
@@ -453,7 +453,7 @@ fn copy_drag_selection(
     let selection = {
         let r = reader.borrow();
         fond_doc::select_text_range(
-            &r.pdfium,
+            r.pdfium,
             &r.bytes,
             page,
             start.0 as f32,
@@ -508,7 +508,7 @@ fn save_drag_annotation(
     let (quads, snippet) = {
         let r = reader.borrow();
         fond_doc::select_text_range(
-            &r.pdfium,
+            r.pdfium,
             &r.bytes,
             page,
             start.0 as f32,
@@ -887,7 +887,7 @@ fn build_continuous_view(
         // rasterization — so the layout is correct before this page's texture has rendered.
         let pts = {
             let r = reader.borrow();
-            fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((612.0, 792.0))
+            fond_doc::page_size(r.pdfium, &r.bytes, page).unwrap_or((612.0, 792.0))
         };
         let w = (READER_BASE_WIDTH * zoom) as u32;
         let h = if pts.0 > 0.0 {
@@ -956,7 +956,7 @@ fn build_continuous_view(
                     let render_h = this_picture.height().max(0) as u32;
                     let page_pts = {
                         let r = reader.borrow();
-                        fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
+                        fond_doc::page_size(r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
                     };
                     let geom = DragGeometry {
                         render_w,
@@ -1004,7 +1004,7 @@ fn build_continuous_view(
                 let render_h = this_picture.height().max(0) as u32;
                 let page_pts = {
                     let r = reader.borrow();
-                    fond_doc::page_size(&r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
+                    fond_doc::page_size(r.pdfium, &r.bytes, page).unwrap_or((0.0, 0.0))
                 };
                 let refresh: Rc<dyn Fn()> = {
                     let reader = reader.clone();
@@ -1266,16 +1266,16 @@ pub fn show_pdf_reader(
             return;
         }
     };
-    let count = fond_doc::page_count(&pdfium, &bytes).unwrap_or(1).max(1);
+    let count = fond_doc::page_count(pdfium, &bytes).unwrap_or(1).max(1);
     // Empty for most PDFs — outlines are the exception, not the rule — so the Contents
     // button below only appears when there's actually something to jump to.
-    let outline_entries = fond_doc::outline(&pdfium, &bytes).unwrap_or_default();
+    let outline_entries = fond_doc::outline(pdfium, &bytes).unwrap_or_default();
     // Likewise empty for most PDFs (no custom /PageLabels) — falls back to the raw page
     // number wherever it's displayed. When the PDF declares nothing of its own, fall back to
     // a manually-set `page_label_override` on the entry's note (see "Set page numbering…"
     // below) — this is the only way to get printed-page-number navigation on the common case
     // of a scanned or older PDF with no `/PageLabels` dictionary at all.
-    let native_page_labels = fond_doc::page_labels(&pdfium, &bytes).unwrap_or_default();
+    let native_page_labels = fond_doc::page_labels(pdfium, &bytes).unwrap_or_default();
     let has_native_page_labels = native_page_labels.iter().any(|l| l.is_some());
     let page_label_override = host.page_label_override();
     let page_labels = if has_native_page_labels {
@@ -1312,12 +1312,6 @@ pub fn show_pdf_reader(
         undo_stack: Vec::new(),
         redo_stack: Vec::new(),
     }));
-
-    let dialog = adw::Window::new();
-    dialog.set_title(Some(title));
-    dialog.set_transient_for(Some(window));
-    dialog.set_default_size(900, 820);
-    crate::register_window(pdf_hash, &dialog);
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -1428,14 +1422,22 @@ pub fn show_pdf_reader(
     redo_button.set_tooltip_text(Some("Redo (Ctrl+Shift+Z)"));
     redo_button.set_sensitive(false);
 
+    // Moves this tab out of the shared "Reader" window into its own standalone one — the
+    // only way to detach a tab (see `reader_host`'s module doc for why there's no drag-out-
+    // of-the-bar gesture too).
+    let popout_button = gtk4::Button::from_icon_name("window-new-symbolic");
+    popout_button.add_css_class("flat");
+    popout_button.set_tooltip_text(Some("Open in a new window"));
+
     // pack_end order is the reverse of visual order (last-packed ends up leftmost) — same
     // gotcha CLAUDE.md notes for the hamburger menu. Visual order here, left to right:
-    // Two-page, Continuous, mode picker, colour picker, Note, Page #. The Contents/Notes
-    // sidebar toggles and Undo/Redo live at the *start* of the headerbar instead (house style
-    // for the sidebar toggle; Undo/Redo follow it for the same "persistent chrome, not a
-    // per-mode control" reasoning). Page nav and zoom move to the bottom status bar (below)
-    // so the headerbar's title-widget slot stays free for the document's own name — a wide
-    // title plus this many controls didn't fit together.
+    // Two-page, Continuous, mode picker, colour picker, Note, Page #, Open in new window. The
+    // Contents/Notes sidebar toggles and Undo/Redo live at the *start* of the headerbar
+    // instead (house style for the sidebar toggle; Undo/Redo follow it for the same
+    // "persistent chrome, not a per-mode control" reasoning). Page nav and zoom move to the
+    // bottom status bar (below) so the headerbar's title-widget slot stays free for the
+    // document's own name — a wide title plus this many controls didn't fit together.
+    header.pack_end(&popout_button);
     header.pack_end(&page_num_button);
     header.pack_end(&note_button);
     header.pack_end(&color_drop);
@@ -1541,7 +1543,9 @@ pub fn show_pdf_reader(
     // `content` is reparented into the sidebar Paned below instead of set directly here —
     // the Notes sidebar (and, when present, Contents) always builds that Paned now, and
     // `Paned::set_end_child` asserts its child has no existing parent.
-    dialog.set_content(Some(&view));
+    let reader_tab = crate::reader_host::open_reader_tab(window, title, &view);
+    let reader_window = reader_tab.host_window.clone();
+    crate::register_reader(pdf_hash, &reader_tab);
 
     // Render the current page into the Picture (via the shared helper both this view and
     // continuous-scroll mode use), and refresh the page label. Also fills `right_picture`
@@ -1705,7 +1709,7 @@ pub fn show_pdf_reader(
             }
             glib::Propagation::Proceed
         });
-        dialog.add_controller(key_controller);
+        view.add_controller(key_controller);
     }
 
     // Contents/Notes sidebar: persistent (not a popover) so it stays visible while
@@ -2140,7 +2144,7 @@ pub fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
-        let dialog_for_menu = dialog.clone();
+        let dialog_for_menu = reader_window.clone();
         click.connect_pressed(move |_gesture, _n, x, y| {
             let (page, render_w, render_h, page_w_pts, page_h_pts) = {
                 let r = reader.borrow();
@@ -2243,7 +2247,7 @@ pub fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
-        let dialog = dialog.clone();
+        let dialog = reader_window.clone();
         zoom_in.connect_clicked(move |_| {
             {
                 let mut r = reader.borrow_mut();
@@ -2277,7 +2281,7 @@ pub fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
-        let dialog = dialog.clone();
+        let dialog = reader_window.clone();
         zoom_out.connect_clicked(move |_| {
             {
                 let mut r = reader.borrow_mut();
@@ -2343,7 +2347,7 @@ pub fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
-        let dialog = dialog.clone();
+        let dialog = reader_window.clone();
         let two_page_toggle = two_page_toggle.clone();
         continuous_toggle.connect_toggled(move |btn| {
             if btn.is_active() {
@@ -2476,7 +2480,7 @@ pub fn show_pdf_reader(
         let undo_button = undo_button.clone();
         let redo_button = redo_button.clone();
         let rebuild_notes = rebuild_notes.clone();
-        let dialog = dialog.clone();
+        let dialog = reader_window.clone();
         let refresh: Rc<dyn Fn()> = {
             let reader = reader.clone();
             let render = render.clone();
@@ -2506,7 +2510,7 @@ pub fn show_pdf_reader(
         let page_of_label = page_of_label.clone();
         let prev = prev.clone();
         let next = next.clone();
-        let dialog = dialog.clone();
+        let dialog = reader_window.clone();
         page_num_button.connect_clicked(move |_| {
             show_page_number_dialog(
                 &host,
@@ -2517,6 +2521,15 @@ pub fn show_pdf_reader(
                 &next,
                 &dialog,
             );
+        });
+    }
+    {
+        let window = window.clone();
+        let pdf_hash = pdf_hash.to_string();
+        let reader_tab = reader_tab.clone();
+        popout_button.connect_clicked(move |_| {
+            let new_tab = reader_tab.pop_out(&window);
+            crate::register_reader(&pdf_hash, &new_tab);
         });
     }
     // Search: run on Enter (not per-keystroke — PDFium re-searches every page each time, not
@@ -2555,7 +2568,7 @@ pub fn show_pdf_reader(
         Rc::new(move |query: &str| {
             let matches = {
                 let r = reader.borrow();
-                fond_doc::search_document(&r.pdfium, &r.bytes, query).unwrap_or_default()
+                fond_doc::search_document(r.pdfium, &r.bytes, query).unwrap_or_default()
             };
             let count = matches.len();
             let first_page = matches.first().map(|m| m.page);
@@ -2674,7 +2687,7 @@ pub fn show_pdf_reader(
         let host = host.clone();
         let pdf_hash = pdf_hash.to_string();
         let reader = reader.clone();
-        dialog.connect_close_request(move |_| {
+        crate::reader_host::on_tab_closed(&reader_tab, move || {
             let (page, count) = {
                 let r = reader.borrow();
                 (r.page as u32 + 1, r.count as u32)
@@ -2685,11 +2698,10 @@ pub fn show_pdf_reader(
                 chapter_percent: None,
             });
             crate::unregister_window(&pdf_hash);
-            glib::Propagation::Proceed
         });
     }
 
-    dialog.present();
+    reader_tab.present();
 }
 
 /// A small modal that anchors the reader's *current* physical page to its own printed page

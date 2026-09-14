@@ -61,7 +61,7 @@ fn finds_a_match_only_on_the_page_that_has_it() {
     };
 
     let pdf = two_page_pdf();
-    let matches = search_document(&pdfium, &pdf, "treasure").unwrap();
+    let matches = search_document(pdfium, &pdf, "treasure").unwrap();
 
     assert_eq!(matches.len(), 1, "expected one match: {matches:?}");
     assert_eq!(
@@ -82,11 +82,11 @@ fn is_case_insensitive_and_empty_for_no_hits_or_empty_query() {
     };
 
     let pdf = two_page_pdf();
-    assert_eq!(search_document(&pdfium, &pdf, "TREASURE").unwrap().len(), 1);
+    assert_eq!(search_document(pdfium, &pdf, "TREASURE").unwrap().len(), 1);
     assert_eq!(
-        search_document(&pdfium, &pdf, "nonexistent").unwrap().len(),
+        search_document(pdfium, &pdf, "nonexistent").unwrap().len(),
         0
     );
-    assert_eq!(search_document(&pdfium, &pdf, "").unwrap().len(), 0);
-    assert_eq!(search_document(&pdfium, &pdf, "   ").unwrap().len(), 0);
+    assert_eq!(search_document(pdfium, &pdf, "").unwrap().len(), 0);
+    assert_eq!(search_document(pdfium, &pdf, "   ").unwrap().len(), 0);
 }

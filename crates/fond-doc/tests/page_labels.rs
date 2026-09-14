@@ -77,7 +77,7 @@ fn reads_mixed_roman_and_restarted_arabic_labels_in_document_order() {
     };
 
     let pdf = pdf_with_page_labels();
-    let labels = page_labels(&pdfium, &pdf).unwrap();
+    let labels = page_labels(pdfium, &pdf).unwrap();
 
     assert_eq!(labels.len(), 4, "expected four labels: {labels:?}");
     assert_eq!(labels[0].as_deref(), Some("i"));
@@ -132,6 +132,6 @@ fn is_none_for_every_page_when_the_pdf_has_no_page_labels() {
         xref
     ));
 
-    let labels = page_labels(&pdfium, &pdf.into_bytes()).unwrap();
+    let labels = page_labels(pdfium, &pdf.into_bytes()).unwrap();
     assert_eq!(labels, vec![None]);
 }

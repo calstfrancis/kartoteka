@@ -11,7 +11,6 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib, Orientation};
 use libadwaita as adw;
-use libadwaita::prelude::*;
 use webkit6::prelude::*;
 
 use super::pdf::{COLOR_PRESETS, EPUB_MARK_KIND_OPTIONS, UNDO_HISTORY_LIMIT};
@@ -457,12 +456,6 @@ pub fn show_epub_reader(
         chapter_texts: None,
     }));
 
-    let dialog = adw::Window::new();
-    dialog.set_title(Some(title));
-    dialog.set_transient_for(Some(window));
-    dialog.set_default_size(1000, 820);
-    crate::register_window(hash, &dialog);
-
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
     header.add_css_class("fond-chrome");
@@ -616,10 +609,19 @@ pub fn show_epub_reader(
         });
     }
 
+    // Moves this tab out of the shared "Reader" window into its own standalone one — the
+    // only way to detach a tab (see `reader_host`'s module doc for why there's no drag-out-
+    // of-the-bar gesture too).
+    let popout_button = gtk4::Button::from_icon_name("window-new-symbolic");
+    popout_button.add_css_class("flat");
+    popout_button.set_tooltip_text(Some("Open in a new window"));
+
     // pack_end order is the reverse of visual order (same gotcha CLAUDE.md notes for the
     // hamburger menu) — Apply packed first so it ends up rightmost: Mode, Colour, Apply,
-    // Font size. Sidebar toggles, search, and undo/redo go at the header's start, per house
-    // style (undo/redo in the same relative position as the PDF reader's own pair).
+    // Font size, Open in new window. Sidebar toggles, search, and undo/redo go at the
+    // header's start, per house style (undo/redo in the same relative position as the PDF
+    // reader's own pair).
+    header.pack_end(&popout_button);
     header.pack_end(&apply_button);
     header.pack_end(&color_drop);
     header.pack_end(&mode_drop);
@@ -924,7 +926,18 @@ pub fn show_epub_reader(
     paned.set_hexpand(true);
     paned.set_position(220);
     view.set_content(Some(&paned));
-    dialog.set_content(Some(&view));
+    let reader_tab = crate::reader_host::open_reader_tab(window, title, &view);
+    crate::register_reader(hash, &reader_tab);
+
+    {
+        let window = window.clone();
+        let hash = hash.to_string();
+        let reader_tab = reader_tab.clone();
+        popout_button.connect_clicked(move |_| {
+            let new_tab = reader_tab.pop_out(&window);
+            crate::register_reader(&hash, &new_tab);
+        });
+    }
 
     // Undo/redo: pop a snapshot and refresh the current chapter's highlights plus the notes
     // sidebar — cheap, since there's no per-page render state to rebuild the way PDF's
@@ -1231,7 +1244,7 @@ pub fn show_epub_reader(
             }
             glib::Propagation::Proceed
         });
-        dialog.add_controller(key_controller);
+        view.add_controller(key_controller);
     }
 
     if let Some(sidebar_toggle) = &sidebar_toggle {
@@ -1444,8 +1457,8 @@ pub fn show_epub_reader(
         let host = host.clone();
         let hash = hash.to_string();
         let reader = reader.clone();
-        let view = web_view.clone();
-        dialog.connect_close_request(move |_| {
+        let web_view = web_view.clone();
+        crate::reader_host::on_tab_closed(&reader_tab, move || {
             crate::unregister_window(&hash);
             let (chapter_num, chapter_count) = {
                 let r = reader.borrow();
@@ -1453,22 +1466,27 @@ pub fn show_epub_reader(
             };
             let host = host.clone();
             let script = "(function() {\n  var el = document.documentElement;\n  var range = el.scrollHeight - el.clientHeight;\n  return range > 0 ? Math.round((el.scrollTop / range) * 100) : 0;\n})()";
-            view.evaluate_javascript(script, None, None, gio::Cancellable::NONE, move |result| {
-                let percent: u8 = result
-                    .ok()
-                    .map(|v| v.to_int32().clamp(0, 100) as u8)
-                    .unwrap_or(0);
-                host.save_progress(fond_bib::Progress {
-                    page: chapter_num,
-                    of: chapter_count,
-                    chapter_percent: Some(percent),
-                });
-            });
-            glib::Propagation::Proceed
+            web_view.evaluate_javascript(
+                script,
+                None,
+                None,
+                gio::Cancellable::NONE,
+                move |result| {
+                    let percent: u8 = result
+                        .ok()
+                        .map(|v| v.to_int32().clamp(0, 100) as u8)
+                        .unwrap_or(0);
+                    host.save_progress(fond_bib::Progress {
+                        page: chapter_num,
+                        of: chapter_count,
+                        chapter_percent: Some(percent),
+                    });
+                },
+            );
         });
     }
 
-    dialog.present();
+    reader_tab.present();
 }
 
 /// Navigate the EPUB reader's `WebView` to `target` (a zip-internal path, optionally with a
