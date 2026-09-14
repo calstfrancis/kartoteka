@@ -4,6 +4,12 @@
 //! number display exists for: the printed number often isn't the raw file position. Requires PDFium (skips otherwise, like the other real-PDF tests in this crate).
 
 use fond_doc::{bind_pdfium, page_labels};
+// PDFium is process-global and not safe to call concurrently (only its Init/Destroy
+// pair is protected — see `fond_doc::bind_pdfium`'s doc comment). `bind_pdfium()` now
+// returns one process-wide singleton instead of a fresh instance per call, so without
+// this, cargo test's default parallel #[test] threads race real PDFium calls against
+// each other within this binary and segfault (caught live in CI on this exact file).
+static PDFIUM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn pdf_with_page_labels() -> Vec<u8> {
     let page_content = |text: &str| {
@@ -68,6 +74,7 @@ fn pdf_with_page_labels() -> Vec<u8> {
 
 #[test]
 fn reads_mixed_roman_and_restarted_arabic_labels_in_document_order() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
@@ -90,6 +97,7 @@ fn reads_mixed_roman_and_restarted_arabic_labels_in_document_order() {
 
 #[test]
 fn is_none_for_every_page_when_the_pdf_has_no_page_labels() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {

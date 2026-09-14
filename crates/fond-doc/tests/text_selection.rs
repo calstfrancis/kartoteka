@@ -5,6 +5,12 @@
 //! other real-PDF tests in this crate).
 
 use fond_doc::{bind_pdfium, select_text_in_rect, select_text_range};
+// PDFium is process-global and not safe to call concurrently (only its Init/Destroy
+// pair is protected — see `fond_doc::bind_pdfium`'s doc comment). `bind_pdfium()` now
+// returns one process-wide singleton instead of a fresh instance per call, so without
+// this, cargo test's default parallel #[test] threads race real PDFium calls against
+// each other within this binary and segfault (caught live in CI on this exact file).
+static PDFIUM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn two_line_pdf() -> Vec<u8> {
     let content = "BT /F1 18 Tf 72 700 Td (The first line of text) Tj ET \
@@ -46,6 +52,7 @@ fn two_line_pdf() -> Vec<u8> {
 
 #[test]
 fn selects_text_spanning_two_lines_as_two_quads() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
@@ -75,6 +82,7 @@ fn selects_text_spanning_two_lines_as_two_quads() {
 
 #[test]
 fn selects_text_within_a_single_line_only() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
@@ -104,6 +112,7 @@ fn selects_text_within_a_single_line_only() {
 
 #[test]
 fn returns_none_over_a_blank_area() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
@@ -158,6 +167,7 @@ fn three_line_pdf() -> Vec<u8> {
 
 #[test]
 fn straight_vertical_drag_selects_whole_middle_lines() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
@@ -195,6 +205,7 @@ fn straight_vertical_drag_selects_whole_middle_lines() {
 
 #[test]
 fn range_selection_direction_does_not_matter() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {

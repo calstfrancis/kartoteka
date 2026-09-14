@@ -3,6 +3,12 @@
 //! (skips otherwise, like the other real-PDF tests in this crate).
 
 use fond_doc::{bind_pdfium, outline};
+// PDFium is process-global and not safe to call concurrently (only its Init/Destroy
+// pair is protected — see `fond_doc::bind_pdfium`'s doc comment). `bind_pdfium()` now
+// returns one process-wide singleton instead of a fresh instance per call, so without
+// this, cargo test's default parallel #[test] threads race real PDFium calls against
+// each other within this binary and segfault (caught live in CI on this exact file).
+static PDFIUM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A two-page PDF with an outline tree: a top-level "Chapter One" bookmark pointing at page
 /// 1, with a nested child "Section 1.1" pointing at page 2.
@@ -70,6 +76,7 @@ fn pdf_with_outline() -> Vec<u8> {
 
 #[test]
 fn outline_reads_titles_depth_and_page_in_document_order() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
@@ -101,6 +108,7 @@ fn outline_reads_titles_depth_and_page_in_document_order() {
 
 #[test]
 fn outline_is_empty_for_a_pdf_with_no_outlines() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {

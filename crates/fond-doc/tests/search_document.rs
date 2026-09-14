@@ -3,6 +3,12 @@
 //! Requires PDFium (skips otherwise, like the other real-PDF tests in this crate).
 
 use fond_doc::{bind_pdfium, search_document};
+// PDFium is process-global and not safe to call concurrently (only its Init/Destroy
+// pair is protected — see `fond_doc::bind_pdfium`'s doc comment). `bind_pdfium()` now
+// returns one process-wide singleton instead of a fresh instance per call, so without
+// this, cargo test's default parallel #[test] threads race real PDFium calls against
+// each other within this binary and segfault (caught live in CI on this exact file).
+static PDFIUM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn two_page_pdf() -> Vec<u8> {
     let content1 = "BT /F1 24 Tf 72 700 Td (find the treasure here) Tj ET";
@@ -52,6 +58,7 @@ fn two_page_pdf() -> Vec<u8> {
 
 #[test]
 fn finds_a_match_only_on_the_page_that_has_it() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
@@ -73,6 +80,7 @@ fn finds_a_match_only_on_the_page_that_has_it() {
 
 #[test]
 fn is_case_insensitive_and_empty_for_no_hits_or_empty_query() {
+    let _guard = PDFIUM_TEST_LOCK.lock().unwrap();
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
