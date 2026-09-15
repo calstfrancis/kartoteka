@@ -1243,7 +1243,10 @@ fn rename_attachments_dry_run_reports_without_writing() {
 
     // Dry run must not have touched the note.
     let note = lib.load_note("berdyaev1937destiny").unwrap().unwrap();
-    assert_eq!(note.frontmatter.attachments[0].filename, "libgen_scan_293847.pdf");
+    assert_eq!(
+        note.frontmatter.attachments[0].filename,
+        "libgen_scan_293847.pdf"
+    );
 }
 
 #[test]

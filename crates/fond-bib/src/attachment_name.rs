@@ -190,7 +190,8 @@ mod tests {
 
     #[test]
     fn no_extension_omits_dot() {
-        let e = parse("k:\n  type: article\n  title: T\n  author:\n    - Smith, John\n  date: 1999\n");
+        let e =
+            parse("k:\n  type: article\n  title: T\n  author:\n    - Smith, John\n  date: 1999\n");
         assert_eq!(citation_filename(&e, "").as_deref(), Some("Smith 1999 - T"));
     }
 
@@ -228,7 +229,10 @@ mod tests {
     #[test]
     fn dedupe_numbers_a_repeated_name() {
         let taken = vec!["Smith 2020 - T.pdf".to_string()];
-        assert_eq!(dedupe("Smith 2020 - T.pdf", &taken), "Smith 2020 - T (2).pdf");
+        assert_eq!(
+            dedupe("Smith 2020 - T.pdf", &taken),
+            "Smith 2020 - T (2).pdf"
+        );
     }
 
     #[test]
@@ -237,7 +241,10 @@ mod tests {
             "Smith 2020 - T.pdf".to_string(),
             "Smith 2020 - T (2).pdf".to_string(),
         ];
-        assert_eq!(dedupe("Smith 2020 - T.pdf", &taken), "Smith 2020 - T (3).pdf");
+        assert_eq!(
+            dedupe("Smith 2020 - T.pdf", &taken),
+            "Smith 2020 - T (3).pdf"
+        );
     }
 
     #[test]
