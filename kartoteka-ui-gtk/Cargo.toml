@@ -1,6 +1,6 @@
 [package]
 name = "kartoteka-ui-gtk"
-version = "0.16.1"
+version = "0.16.2"
 description = "Kartoteka — Linux GTK4/libadwaita frontend (proprietary)"
 license = "LicenseRef-Proprietary"
 edition.workspace = true
@@ -18,7 +18,7 @@ fond-index = { path = "../crates/fond-index" }
 fond-doc = { path = "../crates/fond-doc" }
 # Extracted into its own repo/app 2026-09-15 (root CLAUDE.md's Pereplyot entry) — now a
 # pinned git dependency instead of an in-workspace path, same pattern Sputnik already used.
-fond-read-gtk = { git = "https://github.com/calstfrancis/pereplyot", tag = "v0.1.0-dev1" }
+fond-read-gtk = { git = "https://github.com/calstfrancis/pereplyot", tag = "v0.2.0" }
 fond-vault = { path = "../crates/fond-vault" }
 gtk4 = { version = "0.11", features = ["v4_10"] }
 libadwaita = { version = "0.9", features = ["v1_4"] }

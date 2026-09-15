@@ -2,6 +2,14 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.16.2] "Open Ledger" — 2026-09-15 — Reading history now shared with Pereplyot/Sputnik
+
+- Opening a PDF or EPUB now also records into the shared reading-history log
+  (`fond_read_gtk::history`, new in Pereplyot v0.2.0) that Pereplyot's own History shelf
+  reads from — so a document opened here shows up there too, not just documents opened
+  through Pereplyot itself. Kartoteka's own annotation/progress storage is unaffected;
+  this is purely an additional record, written alongside it.
+
 ## [0.16.1] "Borrowed Binding" — 2026-09-15 — The reader now lives in its own repo
 
 - `fond-read-gtk` (the built-in PDF/EPUB reader) moved into its own standalone app and

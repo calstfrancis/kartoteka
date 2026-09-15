@@ -8311,7 +8311,15 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             let window = widgets.window.clone();
             let title = title_text.to_string();
             read_button.connect_clicked(move |_| {
-                show_pdf_reader(&host, &window, &hash, &path, &title, start_page)
+                show_pdf_reader(&host, &window, &hash, &path, &title, start_page);
+                // Shared cross-app reading log (Pereplyot's own History shelf, and
+                // Sputnik's) — records regardless of which app actually opened it.
+                fond_read_gtk::history::record_open(
+                    fond_read_gtk::history::DocKind::Pdf,
+                    &hash,
+                    &path,
+                    &title,
+                );
             });
             actions.append(&read_button);
         }
@@ -8330,6 +8338,12 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             let title = title_text.to_string();
             read_button.connect_clicked(move |_| {
                 show_epub_reader(&host, &window, &hash, &path, &title, None, start_progress);
+                fond_read_gtk::history::record_open(
+                    fond_read_gtk::history::DocKind::Epub,
+                    &hash,
+                    &path,
+                    &title,
+                );
             });
             actions.append(&read_button);
         }
@@ -8354,6 +8368,12 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 row.connect_clicked(move |_| {
                     popover.popdown();
                     show_pdf_reader(&host, &window, &pdf_hash, &pdf_path, &title, start_page);
+                    fond_read_gtk::history::record_open(
+                        fond_read_gtk::history::DocKind::Pdf,
+                        &pdf_hash,
+                        &pdf_path,
+                        &title,
+                    );
                 });
             }
             rows.append(&row);
@@ -8374,6 +8394,12 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                         &title,
                         None,
                         start_progress,
+                    );
+                    fond_read_gtk::history::record_open(
+                        fond_read_gtk::history::DocKind::Epub,
+                        &epub_hash,
+                        &epub_path,
+                        &title,
                     );
                 });
             }

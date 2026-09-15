@@ -45,6 +45,12 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.16.2" date="2026-09-15">
+      <description>
+        <p>0.16.2 "Open Ledger" — opening a PDF or EPUB now also records into the shared
+        reading-history log Pereplyot's History shelf reads from.</p>
+      </description>
+    </release>
     <release version="0.16.1" date="2026-09-15">
       <description>
         <p>0.16.1 "Borrowed Binding" — the built-in reader now lives in its own repo,
