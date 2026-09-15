@@ -2,6 +2,14 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.16.1] "Borrowed Binding" — 2026-09-15 — The reader now lives in its own repo
+
+- `fond-read-gtk` (the built-in PDF/EPUB reader) moved into its own standalone app and
+  repo, [Pereplyot](https://github.com/calstfrancis/pereplyot) — Kartoteka now consumes it
+  as a pinned git dependency instead of an in-workspace crate. No behavior change; this is
+  purely where the reader's source lives. See that repo's `docs/READER-EXTRACTION.md` (in
+  this repo) for the boundary this was built on.
+
 ## [0.16.0] "Plain Label" — 2026-09-15 — Human-readable attachment filenames
 
 - **Attachments are now renamed to a readable "Author Year - Title" name automatically**,

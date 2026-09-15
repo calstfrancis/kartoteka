@@ -45,6 +45,12 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.16.1" date="2026-09-15">
+      <description>
+        <p>0.16.1 "Borrowed Binding" — the built-in reader now lives in its own repo,
+        Pereplyot. No behavior change.</p>
+      </description>
+    </release>
     <release version="0.16.0" date="2026-09-15">
       <description>
         <p>0.16.0 "Plain Label" — human-readable attachment filenames.</p>
