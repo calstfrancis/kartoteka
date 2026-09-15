@@ -1108,6 +1108,16 @@ fn build_hamburger_popover(
         "win.auto-backup-settings",
     );
     activate_row(&rows, &popover, "Reindex search", "win.reindex");
+    activate_row(
+        &rows,
+        &popover,
+        "Rename attachments to citations…",
+        "win.rename-attachments",
+    )
+    .set_tooltip_text(Some(
+        "Rename every stored attachment to \"Author Year - Title.ext\" — useful for \
+         attachments added before this naming existed, or before their entry was identified",
+    ));
     rows.append(&popover_separator());
 
     let current = config
@@ -1491,6 +1501,13 @@ fn add_window_actions(
         window.add_action(&action);
     }
     {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("rename-attachments", None);
+        action.connect_activate(move |_, _| rename_attachments_to_citations(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
         let config = config.clone();
         let initial = config
             .borrow()
@@ -1545,6 +1562,54 @@ fn reindex(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             toast(widgets, "Search index rebuilt");
         }
         Err(e) => toast(widgets, &format!("Reindex failed: {e}")),
+    }
+}
+
+/// Rename every attachment in the library to the citation-based "Author Year - Title.ext"
+/// scheme (`Library::rename_attachments_to_citation_names`) — a one-click backfill for
+/// attachments filed under an old download name before that naming existed, or before their
+/// entry was identified. Synchronous, like `reindex` above: this only touches small note
+/// YAML files, not attachment blobs, so it stays fast even for a large library.
+fn rename_attachments_to_citations(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    let s = state.borrow();
+    let Some(library) = s.library.as_ref() else {
+        drop(s);
+        toast(widgets, "Open a library first");
+        return;
+    };
+
+    let keys = match library.keys_sorted() {
+        Ok(keys) => keys,
+        Err(e) => {
+            drop(s);
+            toast(widgets, &format!("Rename failed: {e}"));
+            return;
+        }
+    };
+
+    let mut total = 0usize;
+    for key in &keys {
+        match library.rename_attachments_to_citation_names(key, false) {
+            Ok(renamed) => total += renamed.len(),
+            Err(e) => {
+                drop(s);
+                toast(widgets, &format!("Rename failed on {key}: {e}"));
+                return;
+            }
+        }
+    }
+    drop(s);
+
+    if total == 0 {
+        toast(widgets, "No attachments needed renaming");
+    } else {
+        toast(
+            widgets,
+            &format!(
+                "Renamed {total} attachment{}",
+                if total == 1 { "" } else { "s" }
+            ),
+        );
     }
 }
 

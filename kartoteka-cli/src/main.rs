@@ -188,6 +188,17 @@ enum Command {
         #[arg(long, short)]
         output: PathBuf,
     },
+    /// Rename stored attachments to a human-readable "Author Year - Title.ext" name built
+    /// from citation info, for attachments filed under an old download name (before this
+    /// naming existed, or before the entry was identified). An entry with no usable
+    /// author/title yet is left alone. Defaults to every entry in the library.
+    RenameAttachments {
+        /// Rename only this entry's attachments instead of the whole library.
+        key: Option<String>,
+        /// Report what would be renamed without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Check the library for structural problems. Exits non-zero if any are found.
     Fsck,
     /// Show git working-tree status.
@@ -718,6 +729,33 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                 to_embed.len(),
                 output.display()
             );
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::RenameAttachments { key, dry_run } => {
+            let library = Library::open(&cli.library)?;
+            let keys = match key {
+                Some(k) => {
+                    if !library.entry_path(&k).exists() {
+                        return Err(format!("no entry '{k}'").into());
+                    }
+                    vec![k]
+                }
+                None => library.keys_sorted()?,
+            };
+
+            let mut total = 0usize;
+            for key in &keys {
+                let renamed = library.rename_attachments_to_citation_names(key, dry_run)?;
+                for (old, new) in &renamed {
+                    total += 1;
+                    let verb = if dry_run { "would rename" } else { "renamed" };
+                    println!("{key}: {verb} {old} -> {new}");
+                }
+            }
+            if total == 0 {
+                println!("nothing to rename");
+            }
             Ok(ExitCode::SUCCESS)
         }
 

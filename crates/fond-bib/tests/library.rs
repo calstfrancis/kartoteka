@@ -1111,6 +1111,156 @@ fn fsck_flags_orphaned_child_note_dir_and_malformed_and_unparseable_notes() {
 }
 
 #[test]
+fn store_attachment_renames_using_citation_info() {
+    let (dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+
+    let src = dir.path().join("libgen_scan_293847.pdf");
+    fs::write(&src, b"pdf bytes").unwrap();
+    let att = lib
+        .store_attachment("berdyaev1937destiny", &src, None)
+        .unwrap();
+
+    assert_eq!(att.filename, "Berdyaev 1937 - The Destiny of Man.pdf");
+    let note = lib.load_note("berdyaev1937destiny").unwrap().unwrap();
+    assert_eq!(
+        note.frontmatter.attachments[0].filename,
+        "Berdyaev 1937 - The Destiny of Man.pdf"
+    );
+}
+
+#[test]
+fn store_attachment_falls_back_to_source_name_without_citation_info() {
+    let (dir, lib) = temp_library();
+    // No entries/*.yml at all for this key — an attachment stored before identification.
+    let src = dir.path().join("libgen_scan_293847.pdf");
+    fs::write(&src, b"pdf bytes").unwrap();
+
+    let att = lib.store_attachment("unidentified", &src, None).unwrap();
+    assert_eq!(att.filename, "libgen_scan_293847.pdf");
+}
+
+#[test]
+fn store_attachment_dedupes_a_second_attachment_with_the_same_citation_name() {
+    let (dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+
+    let preprint = dir.path().join("preprint.pdf");
+    fs::write(&preprint, b"preprint bytes").unwrap();
+    let published = dir.path().join("published.pdf");
+    fs::write(&published, b"published bytes").unwrap();
+
+    let a1 = lib
+        .store_attachment("berdyaev1937destiny", &preprint, None)
+        .unwrap();
+    let a2 = lib
+        .store_attachment("berdyaev1937destiny", &published, None)
+        .unwrap();
+
+    assert_eq!(a1.filename, "Berdyaev 1937 - The Destiny of Man.pdf");
+    assert_eq!(a2.filename, "Berdyaev 1937 - The Destiny of Man (2).pdf");
+}
+
+#[test]
+fn store_attachment_re_storing_identical_bytes_keeps_the_existing_record() {
+    let (dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+
+    let src = dir.path().join("scan.pdf");
+    fs::write(&src, b"same bytes").unwrap();
+    let first = lib
+        .store_attachment("berdyaev1937destiny", &src, None)
+        .unwrap();
+    let second = lib
+        .store_attachment("berdyaev1937destiny", &src, None)
+        .unwrap();
+
+    assert_eq!(first, second);
+    let note = lib.load_note("berdyaev1937destiny").unwrap().unwrap();
+    assert_eq!(note.frontmatter.attachments.len(), 1);
+}
+
+#[test]
+fn rename_attachments_backfills_old_names_to_citation_scheme() {
+    let (dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+
+    // Simulate an attachment stored before this naming existed: a note with an
+    // old-style filename but a real blob behind it.
+    let src = dir.path().join("scan.pdf");
+    fs::write(&src, b"pdf bytes").unwrap();
+    let mut att = lib
+        .store_attachment("berdyaev1937destiny", &src, None)
+        .unwrap();
+    att.filename = "libgen_scan_293847.pdf".to_string();
+    let mut note = lib.load_note("berdyaev1937destiny").unwrap().unwrap();
+    note.frontmatter.attachments = vec![att];
+    lib.write_note("berdyaev1937destiny", &note).unwrap();
+
+    let renamed = lib
+        .rename_attachments_to_citation_names("berdyaev1937destiny", false)
+        .unwrap();
+    assert_eq!(
+        renamed,
+        vec![(
+            "libgen_scan_293847.pdf".to_string(),
+            "Berdyaev 1937 - The Destiny of Man.pdf".to_string()
+        )]
+    );
+
+    let note = lib.load_note("berdyaev1937destiny").unwrap().unwrap();
+    assert_eq!(
+        note.frontmatter.attachments[0].filename,
+        "Berdyaev 1937 - The Destiny of Man.pdf"
+    );
+
+    // Running again is a no-op: nothing left to rename.
+    let again = lib
+        .rename_attachments_to_citation_names("berdyaev1937destiny", false)
+        .unwrap();
+    assert!(again.is_empty());
+}
+
+#[test]
+fn rename_attachments_dry_run_reports_without_writing() {
+    let (dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+
+    let src = dir.path().join("scan.pdf");
+    fs::write(&src, b"pdf bytes").unwrap();
+    let mut att = lib
+        .store_attachment("berdyaev1937destiny", &src, None)
+        .unwrap();
+    att.filename = "libgen_scan_293847.pdf".to_string();
+    let mut note = lib.load_note("berdyaev1937destiny").unwrap().unwrap();
+    note.frontmatter.attachments = vec![att];
+    lib.write_note("berdyaev1937destiny", &note).unwrap();
+
+    let renamed = lib
+        .rename_attachments_to_citation_names("berdyaev1937destiny", true)
+        .unwrap();
+    assert_eq!(renamed.len(), 1);
+
+    // Dry run must not have touched the note.
+    let note = lib.load_note("berdyaev1937destiny").unwrap().unwrap();
+    assert_eq!(note.frontmatter.attachments[0].filename, "libgen_scan_293847.pdf");
+}
+
+#[test]
+fn rename_attachments_leaves_unidentified_entries_alone() {
+    let (dir, lib) = temp_library();
+    // No entries/*.yml — attachment stored before identification.
+    let src = dir.path().join("scan.pdf");
+    fs::write(&src, b"pdf bytes").unwrap();
+    lib.store_attachment("unidentified", &src, None).unwrap();
+
+    let renamed = lib
+        .rename_attachments_to_citation_names("unidentified", false)
+        .unwrap();
+    assert!(renamed.is_empty());
+}
+
+#[test]
 fn deleting_entry_removes_its_child_notes() {
     let (_dir, lib) = temp_library();
     lib.add_from_yaml(BERDYAEV).unwrap();

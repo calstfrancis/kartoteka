@@ -2,6 +2,21 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.16.0] "Plain Label" — 2026-09-15 — Human-readable attachment filenames
+
+- **Attachments are now renamed to a readable "Author Year - Title" name automatically**,
+  instead of keeping whatever the source file was called (a download slug, a scanner's
+  default, `libgen_scan_293847.pdf`). Two or three-plus authors are shortened to "A & B" /
+  "A et al."; long titles are cut at a word boundary rather than producing an unwieldy
+  filename; a second attachment that would collide with the same name gets " (2)"
+  appended. Applies wherever an attachment is added — Add PDF/EPUB, drag-and-drop, the
+  "Attach…" action, and the CLI's `add-pdf`/`add-epub`. Falls back to the source file's own
+  name when the entry has no usable author/title yet (e.g. attached before identification).
+- **New: "Rename attachments to citations…"** (hamburger menu, or `kartoteka
+  rename-attachments [key] [--dry-run]` on the CLI) backfills this naming onto attachments
+  already stored under an old name — from before this existed, or added before their entry
+  was identified. Safe to re-run; already-good names are left untouched.
+
 ## [0.15.0] "Clear Byline" — 2026-09-15 — Structured creators: types, single-field entry, reordering
 
 - **Creator entry is fully structured now.** The one flat "Author(s)" text field is replaced

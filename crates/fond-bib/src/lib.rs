@@ -10,6 +10,7 @@
 pub mod acquire;
 pub mod ai;
 pub mod annotation;
+pub mod attachment_name;
 pub mod collection;
 pub mod creator;
 pub mod custom_field;

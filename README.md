@@ -30,6 +30,10 @@ files with one command. `library.yml` is regenerated on every write, so
   reading-status badge, for when Kartoteka is doing double duty as a reading tracker.
 - Import from Zotero (BetterBibTeX and the Zotero SQLite store), or acquire references by
   DOI, arXiv, or ISBN. Drop a PDF or EPUB in and it identifies itself.
+- Attachments are automatically renamed to a human-readable "Author Year - Title.ext" from
+  the entry's citation info, instead of keeping a download's original filename; a
+  "Rename attachments to citations…" action (hamburger menu, or `kartoteka
+  rename-attachments`) backfills attachments added before this existed.
 - Built-in PDF and EPUB readers with highlighting, underline/strikeout, freestanding
   notes, in-document and whole-book search, reading-position resume, undo/redo, and a
   two-page facing-pages view for PDFs. Reads KEPUB (Kobo's EPUB variant) even with no

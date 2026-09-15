@@ -45,6 +45,23 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.16.0" date="2026-09-15">
+      <description>
+        <p>0.16.0 "Plain Label" — human-readable attachment filenames.</p>
+        <ul>
+          <li>Attachments are now renamed to a readable "Author Year - Title" name
+          automatically, instead of keeping whatever the source file was called (a download
+          slug, a scanner's default, a bare hash-like name). Two or three-plus authors are
+          shortened to "A &amp; B" / "A et al."; long titles are cut at a word boundary; a
+          colliding second attachment gets " (2)" appended. Applies wherever an attachment
+          is added, and falls back to the source file's own name when the entry has no
+          usable author/title yet.</li>
+          <li>New "Rename attachments to citations…" action (hamburger menu, or `kartoteka
+          rename-attachments`) backfills this naming onto attachments already stored under
+          an old name.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.15.0" date="2026-09-15">
       <description>
         <p>0.15.0 "Clear Byline" — structured creators: types, single-field entry,

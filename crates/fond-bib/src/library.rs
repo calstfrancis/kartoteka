@@ -438,6 +438,7 @@ impl Library {
     ) -> Result<Attachment> {
         let bytes = fs::read(src).map_err(|e| BibError::io(src, e))?;
         let hex = blake3::hash(&bytes).to_hex().to_string();
+        let hash = format!("blake3:{hex}");
 
         fs::create_dir_all(self.attachments_dir())
             .map_err(|e| BibError::io(self.attachments_dir(), e))?;
@@ -446,32 +447,100 @@ impl Library {
             fs::write(&dest, &bytes).map_err(|e| BibError::io(&dest, e))?;
         }
 
+        let mut note = self.load_note(key)?.unwrap_or_default();
+
+        // Already attached (re-storing the same bytes, e.g. a re-run import): keep the
+        // existing record rather than minting a second name for identical content.
+        if let Some(existing) = note.frontmatter.attachments.iter().find(|a| a.hash == hash) {
+            return Ok(existing.clone());
+        }
+
+        let source_filename = src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment")
+            .to_string();
+        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+        // Prefer a human-readable "Author Year - Title.ext" name over whatever the source
+        // file was called (a download slug, a scanner's default, `libgen_12345.pdf`, …).
+        // Falls back to the source name when the entry has no usable author/title yet, e.g.
+        // an attachment added before the entry is identified.
+        let base_filename = self
+            .load_entry(key)
+            .ok()
+            .and_then(|parsed| crate::attachment_name::citation_filename(&parsed.entry, ext))
+            .unwrap_or(source_filename);
+        // Disambiguate against this entry's other attachments (a preprint plus the
+        // published PDF would otherwise both want the same name).
+        let taken: Vec<String> = note
+            .frontmatter
+            .attachments
+            .iter()
+            .map(|a| a.filename.clone())
+            .collect();
+        let filename = crate::attachment_name::dedupe(&base_filename, &taken);
+
         let attachment = Attachment {
-            hash: format!("blake3:{hex}"),
-            filename: src
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("attachment")
-                .to_string(),
+            hash,
+            filename,
             bytes: bytes.len() as u64,
             pages,
         };
 
-        let mut note = self.load_note(key)?.unwrap_or_default();
-        if !note
-            .frontmatter
-            .attachments
-            .iter()
-            .any(|a| a.hash == attachment.hash)
-        {
-            note.frontmatter.attachments.push(attachment.clone());
-        }
+        note.frontmatter.attachments.push(attachment.clone());
         if note.frontmatter.date_added.is_none() {
             note.frontmatter.date_added = Some(crate::util::today_iso());
         }
         self.write_note(key, &note)?;
 
         Ok(attachment)
+    }
+
+    /// Rename `key`'s already-stored attachments to the current citation-based scheme (see
+    /// `attachment_name::citation_filename`) — for attachments filed under an old or
+    /// original-download name before this naming existed, or before the entry was
+    /// identified. An attachment whose entry still has no usable author/title, or whose
+    /// name already matches, keeps its current name. Returns `(old filename, new filename)`
+    /// pairs for the attachments actually renamed, in note order; if none changed, the note
+    /// is left untouched (no write). `dry_run` computes the same pairs without writing.
+    pub fn rename_attachments_to_citation_names(
+        &self,
+        key: &str,
+        dry_run: bool,
+    ) -> Result<Vec<(String, String)>> {
+        let Some(mut note) = self.load_note(key)? else {
+            return Ok(Vec::new());
+        };
+        if note.frontmatter.attachments.is_empty() {
+            return Ok(Vec::new());
+        }
+        let entry = self.load_entry(key).ok().map(|parsed| parsed.entry);
+
+        let mut renamed = Vec::new();
+        let mut taken: Vec<String> = Vec::new();
+        for att in &mut note.frontmatter.attachments {
+            let ext = Path::new(&att.filename)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let candidate = entry
+                .as_ref()
+                .and_then(|e| crate::attachment_name::citation_filename(e, ext))
+                .unwrap_or_else(|| att.filename.clone());
+            let new_name = crate::attachment_name::dedupe(&candidate, &taken);
+            taken.push(new_name.clone());
+            if new_name != att.filename {
+                renamed.push((att.filename.clone(), new_name.clone()));
+                if !dry_run {
+                    att.filename = new_name;
+                }
+            }
+        }
+
+        if !dry_run && !renamed.is_empty() {
+            self.write_note(key, &note)?;
+        }
+        Ok(renamed)
     }
 
     /// Directory holding cached cover images (fetched from OpenLibrary by ISBN), keyed by
