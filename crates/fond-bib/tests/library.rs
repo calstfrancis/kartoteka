@@ -868,6 +868,7 @@ fn delete_entry_gcs_unshared_blob_but_keeps_shared_one() {
 #[test]
 fn edit_fields_updates_managed_fields_and_preserves_others() {
     use fond_bib::entry::{self, EntryFields};
+    use fond_bib::{Creator, CreatorRole};
     let (_dir, lib) = temp_library();
 
     // An entry with fields the form doesn't manage (edition, language) plus a publisher.
@@ -880,14 +881,20 @@ fn edit_fields_updates_managed_fields_and_preserves_others() {
 
     let current = entry::read_fields(&lib.load_entry("work").unwrap().entry);
     assert_eq!(current.title, "Old Title");
-    assert_eq!(current.authors, "Doe, Jane");
+    assert_eq!(
+        current.creators,
+        vec![Creator::new(CreatorRole::Author, "Doe", "Jane")]
+    );
     assert_eq!(current.year, "1990");
     assert_eq!(current.publisher, "Old Press");
 
     // Edit title, add a second author, change the year, set a DOI — leave publisher untouched.
     let edited = EntryFields {
         title: "New Title".into(),
-        authors: "Doe, Jane\nRoe, Richard".into(),
+        creators: vec![
+            Creator::new(CreatorRole::Author, "Doe", "Jane"),
+            Creator::new(CreatorRole::Author, "Roe", "Richard"),
+        ],
         year: "1991".into(),
         doi: "10.1000/new".into(),
         ..current.clone()
@@ -897,7 +904,13 @@ fn edit_fields_updates_managed_fields_and_preserves_others() {
     let after = lib.load_entry("work").unwrap().entry;
     let f = entry::read_fields(&after);
     assert_eq!(f.title, "New Title");
-    assert_eq!(f.authors, "Doe, Jane\nRoe, Richard");
+    assert_eq!(
+        f.creators,
+        vec![
+            Creator::new(CreatorRole::Author, "Doe", "Jane"),
+            Creator::new(CreatorRole::Author, "Roe", "Richard"),
+        ]
+    );
     assert_eq!(f.year, "1991");
     assert_eq!(f.doi, "10.1000/new");
     assert_eq!(f.publisher, "Old Press", "untouched publisher must survive");
@@ -931,6 +944,62 @@ fn edit_fields_clearing_a_field_removes_it() {
         "cleared field still present: {raw}"
     );
     assert!(raw.contains("date: 2000"), "unrelated field lost: {raw}");
+}
+
+#[test]
+fn edit_fields_writes_multiple_creator_types_to_separate_yaml_keys() {
+    use fond_bib::entry::{self, EntryFields};
+    use fond_bib::{Creator, CreatorRole};
+    let (_dir, lib) = temp_library();
+    fs::write(
+        lib.entry_path("work"),
+        "work:\n  type: book\n  title: T\n  date: 2000\n",
+    )
+    .unwrap();
+
+    // Grouped author/editor/affiliated-contiguous, matching the order `parse_creators` will
+    // read back (all authors, then all editors, then each affiliated role) — cross-type
+    // interleaving isn't preserved across a save/reload (see `creator::parse_creators` docs),
+    // so this is the input shape that actually round-trips byte-for-byte.
+    let current = entry::read_fields(&lib.load_entry("work").unwrap().entry);
+    let edited = EntryFields {
+        creators: vec![
+            Creator::new(CreatorRole::Author, "Doe", "Jane"),
+            Creator::new_single_field(CreatorRole::Author, "UNESCO"),
+            Creator::new(CreatorRole::Editor, "Roe", "Rick"),
+            Creator::new(CreatorRole::Translator, "Lee", "Desmond"),
+        ],
+        ..current
+    };
+    lib.edit_fields("work", &edited).unwrap();
+
+    let raw = fs::read_to_string(lib.entry_path("work")).unwrap();
+    assert!(raw.contains("author:"), "got: {raw}");
+    assert!(raw.contains("editor:"), "got: {raw}");
+    assert!(raw.contains("affiliated:"), "got: {raw}");
+    assert!(raw.contains("role: translator"), "got: {raw}");
+    assert!(raw.contains("UNESCO"), "single-field org name lost: {raw}");
+
+    // Round-trips back through the structured editor unchanged.
+    let after = lib.load_entry("work").unwrap().entry;
+    let f = entry::read_fields(&after);
+    assert_eq!(f.creators, edited.creators);
+
+    // Sort/citation key still prefers the plain author over the editor/translator.
+    assert_eq!(entry::family_name(&after).as_deref(), Some("Doe"));
+}
+
+#[test]
+fn family_name_falls_back_to_editor_for_an_editor_only_entry() {
+    let (_dir, lib) = temp_library();
+    let yaml = "_:\n  type: book\n  title: Essays\n  editor:\n    - Roe, Rick\n";
+    let keys = lib.add_from_yaml(yaml).unwrap();
+    let entry = lib.load_entry(&keys[0]).unwrap().entry;
+    assert_eq!(
+        fond_bib::entry::family_name(&entry).as_deref(),
+        Some("Roe"),
+        "an edited volume with no plain author should still sort/key under its editor"
+    );
 }
 
 // --- Child and standalone notes (docs/NOTES-SPEC.md Tier 1) ---

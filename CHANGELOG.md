@@ -2,6 +2,28 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.15.0] "Clear Byline" — 2026-09-15 — Structured creators: types, single-field entry, reordering
+
+- **Creator entry is fully structured now.** The one flat "Author(s)" text field is replaced
+  everywhere it appeared (New item, the detail pane's inline citation editor, and "Create
+  book part") by a proper creator list: each person gets their own row with a type (Author,
+  Editor, Translator, Illustrator, and over a dozen others), can be reordered, and can be
+  added or removed independently. The first creator on the list still determines the entry's
+  sort/citation key, falling back to the first editor and then the first other creator for an
+  entry with no plain author (an edited volume, say) — matching how citation styles already
+  substitute a missing author.
+- **Single-field entry**, for an organization or a name with no clear first/last split (e.g.
+  "UNESCO") — a per-row toggle switches a creator between separate Last/First fields and one
+  plain name field.
+- **Per-row name-order swap**, to fix a name typed in the wrong field without retyping it.
+- Storage is unchanged: entries are still plain Hayagriva YAML (`author:`/`editor:`/
+  `affiliated:`), no Kartoteka-private keys — the new editor just reads and writes all three
+  fields instead of only `author:`.
+- Fixed: OpenLibrary ISBN lookups used to join multiple authors into a single bogus string
+  ("Plato and Desmond Lee" as one literal name) rather than separate entries — this went
+  unnoticed because most lookups are for a single author. Each author now lands as its own
+  properly-split entry.
+
 ## [0.14.0] "Steady Reader" — 2026-09-14 — Tabs, and a reader that no longer crashes
 
 - **Fixed: reading a second document could crash the app.** Every open PDF reader bound its

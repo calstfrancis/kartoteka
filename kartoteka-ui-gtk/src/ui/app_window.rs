@@ -1803,9 +1803,14 @@ fn epub_entry_yaml(path: &std::path::Path) -> Result<String, String> {
         .title
         .as_deref()
         .ok_or_else(|| "the EPUB has no title in its metadata".to_string())?;
+    let creators: Vec<fond_bib::Creator> = meta
+        .authors
+        .iter()
+        .map(|a| fond_bib::Creator::from_natural_text(fond_bib::CreatorRole::Author, a))
+        .collect();
     fond_bib::acquire::book_yaml(
         title,
-        &meta.authors,
+        &creators,
         meta.date.as_deref(),
         meta.publisher.as_deref(),
         meta.isbn.as_deref(),
@@ -2180,11 +2185,15 @@ fn scrape_url(url: &str) -> ScrapeResult {
     if !meta.is_usable() {
         return Err("no citation metadata found on that page".to_string());
     }
-    let authors = meta.authors.join("; ");
+    let creators: Vec<fond_bib::Creator> = meta
+        .authors
+        .iter()
+        .map(|a| fond_bib::Creator::from_natural_text(fond_bib::CreatorRole::Author, a))
+        .collect();
     let yaml = build_entry_yaml(&NewItemFields {
         ty: &meta.entry_type,
         title: &meta.title,
-        authors: &authors,
+        creators,
         date: &meta.date,
         container: &meta.container,
         publisher: &meta.publisher,
@@ -2243,6 +2252,46 @@ fn yaml_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Append `creators`' `author:`/`editor:`/`affiliated:` blocks to a hand-built entry YAML
+/// string at the standard 2-space entry-field indent, grouping same-role creators together
+/// (in first-occurrence order) the same way `fond_bib::entry::write_creators_into` does for
+/// the structured editor — this text-template path just can't reuse that function directly
+/// since it isn't building a `serde_yaml_ng::Mapping`.
+fn push_creator_yaml(out: &mut String, creators: &[fond_bib::Creator]) {
+    let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
+    for c in creators {
+        let key = c.role.role_key();
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, lines)) => lines.push(c.display_line()),
+            None => groups.push((key, vec![c.display_line()])),
+        }
+    }
+
+    for (role_key, names) in &groups {
+        if *role_key == "author" || *role_key == "editor" {
+            out.push_str(&format!("  {role_key}:\n"));
+            for name in names {
+                out.push_str(&format!("    - {}\n", yaml_quote(name)));
+            }
+        }
+    }
+
+    let affiliated: Vec<_> = groups
+        .iter()
+        .filter(|(k, _)| *k != "author" && *k != "editor")
+        .collect();
+    if !affiliated.is_empty() {
+        out.push_str("  affiliated:\n");
+        for (role_key, names) in affiliated {
+            out.push_str("    - names:\n");
+            for name in names {
+                out.push_str(&format!("        - {}\n", yaml_quote(name)));
+            }
+            out.push_str(&format!("      role: {role_key}\n"));
+        }
+    }
+}
+
 /// Fields for a one-entry Hayagriva YAML snippet, from either the manual "New item" form or
 /// a URL scrape. `date` accepts any precision Hayagriva's date parser does (`YYYY`,
 /// `YYYY-MM`, `YYYY-MM-DD`); every other field is a plain string, empty meaning absent.
@@ -2250,8 +2299,7 @@ fn yaml_quote(s: &str) -> String {
 struct NewItemFields<'a> {
     ty: &'a str,
     title: &'a str,
-    /// Split on `;`/newlines into individual names.
-    authors: &'a str,
+    creators: Vec<fond_bib::Creator>,
     date: &'a str,
     container: &'a str,
     publisher: &'a str,
@@ -2274,18 +2322,7 @@ fn build_entry_yaml(f: &NewItemFields) -> String {
     if !f.title.trim().is_empty() {
         out.push_str(&format!("  title: {}\n", yaml_quote(f.title.trim())));
     }
-    let names: Vec<&str> = f
-        .authors
-        .split([';', '\n'])
-        .map(|n| n.trim())
-        .filter(|n| !n.is_empty())
-        .collect();
-    if !names.is_empty() {
-        out.push_str("  author:\n");
-        for name in names {
-            out.push_str(&format!("    - {}\n", yaml_quote(name)));
-        }
-    }
+    push_creator_yaml(&mut out, &f.creators);
     if !f.date.trim().is_empty() {
         out.push_str(&format!("  date: {}\n", f.date.trim()));
     }
@@ -2509,9 +2546,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let type_labels: Vec<&str> = ITEM_TYPES.iter().map(|(label, _)| *label).collect();
     let type_drop = gtk4::DropDown::from_strings(&type_labels);
     let title = gtk4::Entry::new();
-    let authors = gtk4::Entry::builder()
-        .placeholder_text("Last, First; Last, First")
-        .build();
+    let creator_editor = crate::ui::creator_editor::CreatorListEditor::new(&[]);
     let year = gtk4::Entry::new();
     let container = gtk4::Entry::builder()
         .placeholder_text("Journal / book title")
@@ -2523,7 +2558,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     content.append(&labeled("Type", &type_drop));
     content.append(&labeled("Title", &title));
-    content.append(&labeled("Author(s)", &authors));
+    content.append(&labeled("Creator(s)", &creator_editor.widget));
     content.append(&labeled("Year", &year));
     content.append(&labeled("Journal / book", &container));
     content.append(&labeled("Publisher", &publisher));
@@ -2557,7 +2592,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             let yaml = build_entry_yaml(&NewItemFields {
                 ty,
                 title: &title.text(),
-                authors: &authors.text(),
+                creators: creator_editor.creators(),
                 date: &year.text(),
                 container: &container.text(),
                 publisher: &publisher.text(),
@@ -2648,18 +2683,18 @@ fn show_create_book_part_dialog(
     content.append(&intro);
 
     let title_entry = gtk4::Entry::new();
-    let authors_entry = gtk4::Entry::builder()
-        .placeholder_text("Last, First; Last, First")
-        .build();
+    let creator_editor = crate::ui::creator_editor::CreatorListEditor::new(&[]);
     let pages_entry = gtk4::Entry::builder().placeholder_text("45-67").build();
     content.append(&labeled("Chapter title", &title_entry));
-    content.append(&labeled("Chapter author(s)", &authors_entry));
+    content.append(&labeled("Chapter creator(s)", &creator_editor.widget));
     content.append(&labeled("Pages", &pages_entry));
 
-    // Whether the source's own author(s) become the new part's editor (the common case —
+    // Whether the source's own creator(s) become the new part's editor (the common case —
     // an edited anthology is usually catalogued with the editor filling Kartoteka's one
     // "Author(s)" field, since there's no separate editor field on the book form) or stay
-    // as its author (a single/co-authored book being split into named sections).
+    // as its author (a single/co-authored book being split into named sections). This is
+    // about the *source book's* fields as embedded in the new part's `parent:` block, not
+    // the chapter's own creator(s) above — usually a different person(s) entirely.
     let role_row = gtk4::Box::new(Orientation::Vertical, 4);
     let role_label = gtk4::Label::new(Some("The book's listed author(s) are its:"));
     role_label.set_xalign(0.0);
@@ -2688,13 +2723,14 @@ fn show_create_book_part_dialog(
                 return;
             }
             let role = match role_drop.selected() {
-                0 => fond_bib::entry::ParentRole::Editor,
-                _ => fond_bib::entry::ParentRole::Author,
+                0 => fond_bib::CreatorRole::Editor,
+                _ => fond_bib::CreatorRole::Author,
             };
             let role_str = match role {
-                fond_bib::entry::ParentRole::Editor => "editor",
-                fond_bib::entry::ParentRole::Author => "author",
+                fond_bib::CreatorRole::Editor => "editor",
+                _ => "author",
             };
+            let creators = creator_editor.creators();
             let result = {
                 let s = state.borrow();
                 s.library
@@ -2706,7 +2742,7 @@ fn show_create_book_part_dialog(
                             role,
                             "chapter",
                             &title,
-                            &authors_entry.text(),
+                            &creators,
                             &pages_entry.text(),
                         )?;
                         lib.add_from_yaml(&yaml)
@@ -2766,8 +2802,8 @@ fn refresh_book_part(
             .flatten()
             .and_then(|n| n.frontmatter.derived_from_role);
         match role_str.as_deref() {
-            Some("author") => fond_bib::entry::ParentRole::Author,
-            _ => fond_bib::entry::ParentRole::Editor,
+            Some("author") => fond_bib::CreatorRole::Author,
+            _ => fond_bib::CreatorRole::Editor,
         }
     };
     let result = {
@@ -8046,10 +8082,8 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             .unwrap_or(0) as u32,
     );
 
-    let authors_entry = gtk4::Entry::builder()
-        .text(current_fields.authors.replace('\n', "; "))
-        .placeholder_text("Last, First; Last, First")
-        .build();
+    let creator_editor =
+        crate::ui::creator_editor::CreatorListEditor::new(&current_fields.creators);
     let year_entry = gtk4::Entry::builder().text(&current_fields.year).build();
     let publisher_entry = gtk4::Entry::builder()
         .text(&current_fields.publisher)
@@ -8071,7 +8105,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         let type_choices = type_choices.clone();
         let type_drop = type_drop.clone();
         let title_entry = title_entry.clone();
-        let authors_entry = authors_entry.clone();
+        let creator_editor = creator_editor.clone();
         let year_entry = year_entry.clone();
         let publisher_entry = publisher_entry.clone();
         let doi_entry = doi_entry.clone();
@@ -8081,17 +8115,10 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 .get(type_drop.selected() as usize)
                 .map(|(_, t)| t.clone())
                 .unwrap_or_else(|| current_fields.entry_type.clone());
-            let authors_field = authors_entry
-                .text()
-                .split([';', '\n'])
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
             let edited = fond_bib::entry::EntryFields {
                 entry_type,
                 title: title_entry.text().trim().to_string(),
-                authors: authors_field,
+                creators: creator_editor.creators(),
                 year: year_entry.text().trim().to_string(),
                 publisher: publisher_entry.text().trim().to_string(),
                 doi: doi_entry.text().trim().to_string(),
@@ -8117,7 +8144,6 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     };
     for entry in [
         &title_entry,
-        &authors_entry,
         &year_entry,
         &publisher_entry,
         &doi_entry,
@@ -8133,6 +8159,10 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     {
         let save = save_citation.clone();
         type_drop.connect_selected_notify(move |_| save());
+    }
+    {
+        let save = save_citation.clone();
+        creator_editor.connect_changed(move || save());
     }
 
     // First present attachment of each format Kartoteka has a built-in reader for. Previously
@@ -8462,7 +8492,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
 
         // Author → node: create/link a person node for each author (feature §1 author IDs).
         if !summary.author.is_empty() {
-            let row = popover_button("Link author…", false);
+            let row = popover_button("Link creator…", false);
             row.set_tooltip_text(Some("Create or link a person node for each author"));
             let popover = popover.clone();
             let state = state.clone();
@@ -8592,7 +8622,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     // Citation key stays read-only (it's derived, not a field to edit) and tucked in
     // "Details" since it's Typst-specific, not something a reader of the entry needs.
     fields.append(&labeled("Type", &type_drop));
-    fields.append(&labeled("Author(s)", &authors_entry));
+    fields.append(&labeled("Creator(s)", &creator_editor.widget));
     fields.append(&labeled("Year", &year_entry));
     fields.append(&labeled("Publisher", &publisher_entry));
     fields.append(&labeled("DOI", &doi_entry));
@@ -11226,21 +11256,22 @@ fn link_authors_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key
             toast(widgets, "Could not load this entry");
             return;
         };
-        let authors: Vec<_> = parsed.entry.authors().unwrap_or_default().to_vec();
-        if authors.is_empty() {
-            toast(widgets, "This entry has no authors");
+        let creators = fond_bib::creator::parse_creators(&parsed.entry);
+        if creators.is_empty() {
+            toast(widgets, "This entry has no creators");
             return;
         }
         let existing: std::collections::HashSet<String> =
             lib.node_slugs().unwrap_or_default().into_iter().collect();
         let mut taken = existing.clone();
-        authors
+        creators
             .iter()
-            .map(|p| {
-                let family = p.name.clone();
-                let label = match &p.given_name {
-                    Some(g) if !g.is_empty() => format!("{g} {family}"),
-                    _ => family.clone(),
+            .map(|c| {
+                let family = c.family.clone();
+                let label = if c.single_field || c.given.is_empty() {
+                    family.clone()
+                } else {
+                    format!("{} {family}", c.given)
                 };
                 let base = fond_bib::key::node_slug(&family);
                 if existing.contains(&base) {
@@ -11264,7 +11295,7 @@ fn link_authors_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key
     };
 
     let dialog = adw::Window::new();
-    dialog.set_title(Some("Link authors to nodes"));
+    dialog.set_title(Some("Link creators to nodes"));
     dialog.set_modal(true);
     dialog.set_transient_for(Some(&widgets.window));
     dialog.set_default_size(460, -1);

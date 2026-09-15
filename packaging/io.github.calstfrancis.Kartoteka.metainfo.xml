@@ -45,6 +45,30 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.15.0" date="2026-09-15">
+      <description>
+        <p>0.15.0 "Clear Byline" — structured creators: types, single-field entry,
+        reordering.</p>
+        <ul>
+          <li>Creator entry is fully structured now: the one flat "Author(s)" text field is
+          replaced everywhere it appeared (New item, the detail pane's inline citation editor,
+          and "Create book part") by a proper creator list. Each person gets their own row
+          with a type (Author, Editor, Translator, Illustrator, and over a dozen others), and
+          can be reordered, added, or removed independently. The first creator on the list
+          still determines the entry's sort/citation key, falling back to the first editor and
+          then the first other creator for an entry with no plain author (an edited volume,
+          say).</li>
+          <li>Single-field entry, for an organization or a name with no clear first/last split
+          (e.g. "UNESCO") — a per-row toggle switches a creator between separate Last/First
+          fields and one plain name field.</li>
+          <li>Per-row name-order swap, to fix a name typed in the wrong field without retyping
+          it.</li>
+          <li>Fixed: OpenLibrary ISBN lookups used to join multiple authors into a single
+          bogus string rather than separate entries; each author now lands as its own
+          properly-split entry.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.14.0" date="2026-09-14">
       <description>
         <p>0.14.0 "Steady Reader" — tabs, and a reader that no longer crashes.</p>

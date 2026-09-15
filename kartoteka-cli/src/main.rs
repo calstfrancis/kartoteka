@@ -901,9 +901,14 @@ fn identify_epub(path: &std::path::Path, isbn_override: Option<&str>) -> CliResu
         .title
         .as_deref()
         .ok_or("the EPUB has no title in its metadata; pass --isbn or --key")?;
+    let creators: Vec<fond_bib::Creator> = meta
+        .authors
+        .iter()
+        .map(|a| fond_bib::Creator::from_natural_text(fond_bib::CreatorRole::Author, a))
+        .collect();
     fond_bib::acquire::book_yaml(
         title,
-        &meta.authors,
+        &creators,
         meta.date.as_deref(),
         meta.publisher.as_deref(),
         meta.isbn.as_deref(),

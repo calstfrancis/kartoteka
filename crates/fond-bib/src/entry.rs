@@ -7,6 +7,7 @@ use std::path::Path;
 use hayagriva::Entry as HEntry;
 use hayagriva::Library as HLibrary;
 
+use crate::creator::{self, Creator, CreatorRole};
 use crate::error::{BibError, Result};
 
 /// One entry parsed from an `entries/<key>.yml` file.
@@ -48,12 +49,11 @@ fn parse_library(text: &str, path: &Path) -> Result<HLibrary> {
     })
 }
 
-/// First author's family name, if the entry has authors.
+/// The sort/citation-key family name: the first author, falling back to the first editor
+/// and then the first other creator when the entry has no plain author — see
+/// [`creator::sort_family_name`].
 pub fn family_name(entry: &HEntry) -> Option<String> {
-    entry
-        .authors()
-        .and_then(|people| people.first())
-        .map(|p| p.name.clone())
+    creator::sort_family_name(entry)
 }
 
 /// Publication year, if dated.
@@ -61,22 +61,11 @@ pub fn year(entry: &HEntry) -> Option<i32> {
     entry.date().map(|d| d.year)
 }
 
-/// All authors as a single display string (`"Cone, James H., Doe, Jane"`), for indexing
-/// and search. Empty if the entry has no authors.
+/// All of the entry's "primary" creators (see [`creator::sort_family_name`]) as a single
+/// display string (`"Cone, James H., Doe, Jane"`), for indexing and search. Empty if the
+/// entry has no creators at all.
 pub fn author_names(entry: &HEntry) -> String {
-    entry
-        .authors()
-        .map(|people| {
-            people
-                .iter()
-                .map(|p| match &p.given_name {
-                    Some(given) if !given.is_empty() => format!("{}, {given}", p.name),
-                    _ => p.name.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default()
+    creator::display_names(entry)
 }
 
 /// Title as a plain string, if present.
@@ -106,20 +95,13 @@ pub fn serialize_entry_as(entry: &HEntry, new_key: &str) -> Result<String> {
     })
 }
 
-/// Which role a book's own author(s) play when embedded as a book-part's `parent:` block
-/// (see `book_part_yaml`). The common case for a multi-contributor anthology is `Editor` —
-/// whoever the book is catalogued under functions as the volume's editor once individual
-/// chapters get their own entries; `Author` keeps them as the parent's author instead, for
-/// a single- or co-authored book being split into named chapters/sections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParentRole {
-    Editor,
-    Author,
-}
-
 /// `source`'s own fields as a YAML mapping suitable for embedding as another entry's
-/// `parent:` block, with `author` renamed to `editor` when `role` is `Editor`.
-fn parent_block(source: &HEntry, role: ParentRole) -> Result<serde_yaml_ng::Value> {
+/// `parent:` block, with `author` renamed to `editor` when `role` is `CreatorRole::Editor` —
+/// the common case for a multi-contributor anthology, where whoever the book is catalogued
+/// under functions as the volume's editor once individual chapters get their own entries.
+/// Any other role leaves the source's fields untouched (the "keep as author" case, for a
+/// single- or co-authored book being split into named chapters/sections).
+fn parent_block(source: &HEntry, role: CreatorRole) -> Result<serde_yaml_ng::Value> {
     use serde_yaml_ng::Value;
 
     let text = serialize_entry(source)?;
@@ -132,7 +114,7 @@ fn parent_block(source: &HEntry, role: ParentRole) -> Result<serde_yaml_ng::Valu
         .and_then(|m| m.values().next())
         .cloned()
         .unwrap_or_else(|| Value::Mapping(Default::default()));
-    if role == ParentRole::Editor {
+    if role == CreatorRole::Editor {
         if let Some(map) = inner.as_mapping_mut() {
             if let Some(author) = map.remove(Value::String("author".to_string())) {
                 map.insert(Value::String("editor".to_string()), author);
@@ -152,10 +134,10 @@ fn parent_block(source: &HEntry, role: ParentRole) -> Result<serde_yaml_ng::Valu
 /// fresh key from title/author when it sees one).
 pub fn book_part_yaml(
     source: &HEntry,
-    role: ParentRole,
+    role: CreatorRole,
     part_type: &str,
     title: &str,
-    authors: &str,
+    creators: &[Creator],
     pages: &str,
 ) -> Result<String> {
     use serde_yaml_ng::Value;
@@ -171,15 +153,7 @@ pub fn book_part_yaml(
             Value::String(title.trim().to_string()),
         );
     }
-    let names: Vec<Value> = authors
-        .split(['\n', ';'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| Value::String(s.to_string()))
-        .collect();
-    if !names.is_empty() {
-        fields.insert(Value::String("author".to_string()), Value::Sequence(names));
-    }
+    write_creators_into(&mut fields, creators)?;
     if !pages.trim().is_empty() {
         fields.insert(
             Value::String("page-range".to_string()),
@@ -210,7 +184,7 @@ pub fn book_part_yaml(
 pub fn refresh_book_part_parent(
     existing_yaml: &str,
     source: &HEntry,
-    role: ParentRole,
+    role: CreatorRole,
 ) -> Result<String> {
     use serde_yaml_ng::Value;
 
@@ -237,15 +211,16 @@ pub fn refresh_book_part_parent(
 }
 
 /// The subset of bibliographic fields the GUI's structured citation editor exposes. Values
-/// are the human-facing strings shown in the form; `authors` is one `Family, Given` per line
-/// (matching how the entry lists them). Everything else on the entry is left untouched.
+/// are the human-facing strings shown in the form, except `creators`, which is the full
+/// structured author/editor/translator/… list (see [`crate::creator`]). Everything else on
+/// the entry is left untouched.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntryFields {
     /// Hayagriva entry type, lowercased (e.g. `book`, `article`).
     pub entry_type: String,
     pub title: String,
-    /// One author per line, each `Family, Given` (or just `Family`).
-    pub authors: String,
+    /// The entry's full creator list (authors, editors, translators, …), in display order.
+    pub creators: Vec<Creator>,
     /// Publication year as free text (empty = no date).
     pub year: String,
     pub publisher: String,
@@ -253,29 +228,12 @@ pub struct EntryFields {
     pub isbn: String,
 }
 
-/// One author rendered as the `Family, Given` line the form shows (given name optional).
-fn person_line(p: &hayagriva::types::Person) -> String {
-    match &p.given_name {
-        Some(given) if !given.is_empty() => format!("{}, {given}", p.name),
-        _ => p.name.clone(),
-    }
-}
-
 /// Read the editable fields out of an entry, for populating the structured editor.
 pub fn read_fields(entry: &HEntry) -> EntryFields {
     EntryFields {
         entry_type: format!("{:?}", entry.entry_type()).to_lowercase(),
         title: title_string(entry).unwrap_or_default(),
-        authors: entry
-            .authors()
-            .map(|people| {
-                people
-                    .iter()
-                    .map(person_line)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default(),
+        creators: creator::parse_creators(entry),
         year: entry.date().map(|d| d.year.to_string()).unwrap_or_default(),
         publisher: entry
             .publisher()
@@ -330,20 +288,9 @@ pub fn apply_fields_to_yaml(
         set_or_remove(inner, "publisher", edited.publisher.trim());
     }
 
-    // author — a YAML sequence of "Family, Given" lines, or removed if empty.
-    if edited.authors != current.authors {
-        let lines: Vec<Value> = edited
-            .authors
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(key_of)
-            .collect();
-        if lines.is_empty() {
-            inner.remove(key_of("author"));
-        } else {
-            inner.insert(key_of("author"), Value::Sequence(lines));
-        }
+    // creators — author / editor / affiliated YAML fields, each removed if it ends up empty.
+    if edited.creators != current.creators {
+        write_creators_into(inner, &edited.creators)?;
     }
 
     // date — an integer year when it parses as one, else the raw string, else removed.
@@ -393,6 +340,45 @@ fn set_or_remove(map: &mut serde_yaml_ng::Mapping, key: &str, value: &str) {
     }
 }
 
+/// Write `creators` into `map`'s `author`/`editor`/`affiliated` keys (via
+/// [`creator::write_creators`]), removing any of the three that end up empty. Each
+/// `Person`/`PersonsWithRoles` serializes through Hayagriva's own `Serialize` impl (a bare
+/// scalar `"Family, Given"` string, or its `{name, given-name, …}` map form), matching exactly
+/// how these fields already look on disk.
+pub(crate) fn write_creators_into(
+    map: &mut serde_yaml_ng::Mapping,
+    creators: &[Creator],
+) -> Result<()> {
+    use serde_yaml_ng::Value;
+
+    fn to_value<T: serde::Serialize>(v: &T) -> Result<Value> {
+        serde_yaml_ng::to_value(v).map_err(|e| BibError::Yaml {
+            path: Path::new("<entry>").to_path_buf(),
+            message: e.to_string(),
+        })
+    }
+
+    fn set_seq(map: &mut serde_yaml_ng::Mapping, key: &str, items: Vec<Value>) {
+        let k = Value::String(key.to_string());
+        if items.is_empty() {
+            map.remove(&k);
+        } else {
+            map.insert(k, Value::Sequence(items));
+        }
+    }
+
+    let (authors, editors, affiliated) = creator::write_creators(creators);
+    let author_vals: Vec<Value> = authors.iter().map(to_value).collect::<Result<_>>()?;
+    let editor_vals: Vec<Value> = editors.iter().map(to_value).collect::<Result<_>>()?;
+    let affiliated_vals: Vec<Value> = affiliated.iter().map(to_value).collect::<Result<_>>()?;
+
+    set_seq(map, "author", author_vals);
+    set_seq(map, "editor", editor_vals);
+    set_seq(map, "affiliated", affiliated_vals);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod book_part_tests {
     use super::*;
@@ -407,10 +393,10 @@ mod book_part_tests {
         let book = anthology();
         let yaml = book_part_yaml(
             &book,
-            ParentRole::Editor,
+            CreatorRole::Editor,
             "chapter",
             "On Personhood",
-            "Smith, John",
+            &[Creator::new(CreatorRole::Author, "Smith", "John")],
             "45-67",
         )
         .unwrap();
@@ -440,10 +426,10 @@ mod book_part_tests {
         let mut book = anthology();
         let original = book_part_yaml(
             &book,
-            ParentRole::Editor,
+            CreatorRole::Editor,
             "chapter",
             "On Personhood",
-            "Smith, John",
+            &[Creator::new(CreatorRole::Author, "Smith", "John")],
             "",
         )
         .unwrap();
@@ -453,7 +439,7 @@ mod book_part_tests {
         let refreshed = refresh_book_part_parent(
             &serialize_entry_as(&added.entry, &added.key).unwrap(),
             &book,
-            ParentRole::Editor,
+            CreatorRole::Editor,
         )
         .unwrap();
         let reparsed = parse_single(&refreshed, Path::new("new-item.yml")).unwrap();

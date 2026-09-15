@@ -196,8 +196,8 @@ struct AcqEntry {
     #[serde(rename = "type")]
     entry_type: String,
     title: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    author: String,
+    #[serde(rename = "author", skip_serializing_if = "Vec::is_empty")]
+    authors: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,7 +239,11 @@ pub fn minimal_book_yaml(title: &str, author: Option<&str>, isbn: Option<&str>) 
     to_yaml_doc(AcqEntry {
         entry_type: "book".to_string(),
         title: title.to_string(),
-        author: author.unwrap_or_default().to_string(),
+        authors: author
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(|a| vec![a.to_string()])
+            .unwrap_or_default(),
         date: None,
         publisher: None,
         location: None,
@@ -255,10 +259,11 @@ pub fn minimal_book_yaml(title: &str, author: Option<&str>, isbn: Option<&str>) 
 
 /// A Hayagriva YAML document (placeholder key `_`) built from plain book fields — used to
 /// seed an entry from EPUB OPF metadata when no ISBN lookup is available (or it failed).
-/// `authors` are each `Family, Given` (or display) form; empty/`None` fields are omitted.
+/// `creators`' author/editor/affiliated split is written via
+/// [`crate::entry::write_creators_into`]; empty/`None` fields are omitted.
 pub fn book_yaml(
     title: &str,
-    authors: &[String],
+    creators: &[crate::creator::Creator],
     date: Option<&str>,
     publisher: Option<&str>,
     isbn: Option<&str>,
@@ -272,15 +277,7 @@ pub fn book_yaml(
     let mut inner = Mapping::new();
     inner.insert(s("type"), s("book"));
     inner.insert(s("title"), s(title.trim()));
-    let authors: Vec<Value> = authors
-        .iter()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty())
-        .map(s)
-        .collect();
-    if !authors.is_empty() {
-        inner.insert(s("author"), Value::Sequence(authors));
-    }
+    crate::entry::write_creators_into(&mut inner, creators)?;
     if let Some(d) = clean(date) {
         inner.insert(s("date"), s(d));
     }
@@ -404,14 +401,24 @@ pub fn isbn_json_to_yaml(json: &str, isbn: &str) -> Result<String> {
         })?
         .to_string();
 
-    let author = record
+    // OpenLibrary gives natural-order full names ("Desmond Lee"); reformat each through
+    // `Creator::from_natural_text` (splits on the last whitespace: last token = family) so
+    // this matches the `"Family, Given"` convention used everywhere else in the app, and so
+    // multiple authors land as separate sequence entries rather than one bogus joined string.
+    let authors: Vec<String> = record
         .get("authors")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
                 .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
-                .collect::<Vec<_>>()
-                .join(" and ")
+                .map(|name| {
+                    crate::creator::Creator::from_natural_text(
+                        crate::creator::CreatorRole::Author,
+                        name,
+                    )
+                    .display_line()
+                })
+                .collect()
         })
         .unwrap_or_default();
 
@@ -456,7 +463,7 @@ pub fn isbn_json_to_yaml(json: &str, isbn: &str) -> Result<String> {
     let entry = AcqEntry {
         entry_type: "book".to_string(),
         title,
-        author,
+        authors,
         date,
         publisher,
         location,
@@ -560,7 +567,10 @@ mod tests {
         let yaml =
             minimal_book_yaml("The Republic", Some("Plato"), Some(" 978-0-14-044913-6 ")).unwrap();
         assert!(yaml.contains("title: The Republic"));
-        assert!(yaml.contains("author: Plato"));
+        assert!(
+            yaml.contains("author:") && yaml.contains("- Plato"),
+            "got: {yaml}"
+        );
         assert!(yaml.contains("isbn: 978-0-14-044913-6"), "got: {yaml}");
         assert!(!yaml.contains("date:"));
         assert!(!yaml.contains("publisher:"));
@@ -627,7 +637,11 @@ mod tests {
         let yaml = isbn_json_to_yaml(json, "9780140449136").unwrap();
         assert!(yaml.contains("type: book"));
         assert!(yaml.contains("title: The Republic"));
-        assert!(yaml.contains("Plato and Desmond Lee"));
+        // Each OpenLibrary name lands as its own sequence entry, reformatted to the
+        // "Family, Given" convention ("Desmond Lee" -> "Lee, Desmond") rather than joined
+        // into a single bogus "Plato and Desmond Lee" string.
+        assert!(yaml.contains("- Plato"), "got: {yaml}");
+        assert!(yaml.contains("- Lee, Desmond"), "got: {yaml}");
         // Month is preserved, not truncated down to the bare year.
         assert!(
             yaml.contains("date: 2007-10") || yaml.contains("date: '2007-10'"),

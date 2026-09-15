@@ -64,7 +64,10 @@ fn book_yaml_builds_multi_author_entry_that_adds_cleanly() {
 
     let yaml = fond_bib::acquire::book_yaml(
         "Black Theology and Black Power",
-        &["Cone, James H.".to_string(), "Doe, Jane".to_string()],
+        &[
+            fond_bib::Creator::new(fond_bib::CreatorRole::Author, "Cone", "James H."),
+            fond_bib::Creator::new(fond_bib::CreatorRole::Author, "Doe", "Jane"),
+        ],
         Some("1969"),
         Some("Seabury Press"),
         Some("9780883441581"),
@@ -76,7 +79,13 @@ fn book_yaml_builds_multi_author_entry_that_adds_cleanly() {
     let entry = lib.load_entry(&keys[0]).unwrap().entry;
     let f = fond_bib::entry::read_fields(&entry);
     assert_eq!(f.title, "Black Theology and Black Power");
-    assert_eq!(f.authors, "Cone, James H.\nDoe, Jane");
+    assert_eq!(
+        f.creators
+            .iter()
+            .map(|c| c.display_line())
+            .collect::<Vec<_>>(),
+        vec!["Cone, James H.", "Doe, Jane"]
+    );
     assert_eq!(f.year, "1969");
     assert_eq!(f.publisher, "Seabury Press");
     assert_eq!(f.isbn, "9780883441581");
