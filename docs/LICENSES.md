@@ -19,7 +19,7 @@ stated per crate, in its `Cargo.toml` `license` field and its own `LICENSE` file
 | `fond-vault` | MIT | Consumed by Zerkalo. |
 | `fond-doc` | MIT | Document primitives; no UI. |
 | `fond-index` | MIT | Search; no UI. |
-| `fond-read-gtk` | **Proprietary** | The reader UI, extracted 2026-09-09 for Sputnik to share (`docs/READER-EXTRACTION.md`). It is a large part of what makes Kartoteka the paid product, so it is shared without being open — Cal's decision. |
+| `fond-read-gtk` | **Proprietary** | The reader UI, extracted 2026-09-09 for Sputnik to share (`docs/READER-EXTRACTION.md`), then extracted again 2026-09-15 into its own repo/app, `github.com/calstfrancis/pereplyot` (root `CLAUDE.md`'s Pereplyot entry) — Kartoteka now consumes it as a pinned git dependency on that repo rather than an in-workspace crate. Still a large part of what makes Kartoteka the paid product, so still shared without being open — Cal's decision. |
 
 The consequence to remember: **any application linking `fond-read-gtk` cannot itself be
 distributed under MIT.** Sputnik's repo root is currently MIT and will need the same split

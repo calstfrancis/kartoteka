@@ -4,7 +4,6 @@ members = [
     "crates/fond-bib",
     "crates/fond-vault",
     "crates/fond-doc",
-    "crates/fond-read-gtk",
     "crates/fond-index",
     "kartoteka-cli",
     "kartoteka-ui-gtk",
@@ -38,3 +37,14 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 keyring = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.41"
+
+# fond-read-gtk (extracted into github.com/calstfrancis/pereplyot, 2026-09-15) pulls
+# fond-bib/fond-doc from this repo over git — without this patch, Cargo treats that git
+# checkout's fond-bib/fond-doc as a *different* crate from kartoteka-ui-gtk's own local
+# path dependency on the same two crates (same content, different SourceId), producing
+# "expected fond_bib::Progress, found fond_bib::Progress" type-mismatch errors at any call
+# site that crosses the fond-read-gtk boundary. Patching pereplyot's transitive kartoteka
+# git dependency back onto these local paths unifies them into one crate instance.
+[patch."https://github.com/calstfrancis/kartoteka"]
+fond-bib = { path = "crates/fond-bib" }
+fond-doc = { path = "crates/fond-doc" }

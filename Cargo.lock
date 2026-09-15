@@ -1092,6 +1092,7 @@ dependencies = [
 [[package]]
 name = "fond-read-gtk"
 version = "0.1.0"
+source = "git+https://github.com/calstfrancis/pereplyot?tag=v0.1.0-dev1#f31597ab130f3c50855839a795fb01b2064140b0"
 dependencies = [
  "fond-bib",
  "fond-doc",
