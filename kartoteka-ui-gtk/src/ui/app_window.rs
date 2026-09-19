@@ -2262,6 +2262,7 @@ fn scrape_url(url: &str) -> ScrapeResult {
         date: &meta.date,
         container: &meta.container,
         publisher: &meta.publisher,
+        location: "",
         doi: &meta.doi,
         isbn: &meta.isbn,
         url,
@@ -2304,6 +2305,9 @@ const ITEM_TYPES: &[(&str, &str)] = &[
     ("Report", "report"),
     ("Thesis", "thesis"),
     ("Manuscript", "manuscript"),
+    // Hayagriva has no native sermon entry type — "manuscript" (an unpublished written text)
+    // is the closest fit and works whether or not the sermon was ever recorded or posted.
+    ("Sermon", "manuscript"),
     ("Web page", "web"),
     ("Blog post", "blog"),
     ("Newspaper article", "newspaper"),
@@ -2368,6 +2372,10 @@ struct NewItemFields<'a> {
     date: &'a str,
     container: &'a str,
     publisher: &'a str,
+    /// Publication location (e.g. the city of publication, "London") — Hayagriva's top-level
+    /// `location:` field, the same one an ISBN lookup already populates via OpenLibrary's
+    /// `publish_places` (see `fond_bib::acquire`), just not previously reachable by hand.
+    location: &'a str,
     doi: &'a str,
     isbn: &'a str,
     url: &'a str,
@@ -2395,6 +2403,12 @@ fn build_entry_yaml(f: &NewItemFields) -> String {
         out.push_str(&format!(
             "  publisher: {}\n",
             yaml_quote(f.publisher.trim())
+        ));
+    }
+    if !f.location.trim().is_empty() {
+        out.push_str(&format!(
+            "  location: {}\n",
+            yaml_quote(f.location.trim())
         ));
     }
     if !f.url.trim().is_empty() {
@@ -2588,7 +2602,10 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.set_title(Some("New item"));
     dialog.set_modal(true);
     dialog.set_transient_for(Some(&widgets.window));
-    dialog.set_default_size(480, -1);
+    // Wide enough that a creator row (role dropdown, two name fields, and four small icon
+    // buttons) doesn't squeeze the Last/First name entries down to an unreadable few pixels —
+    // confirmed live at the old 480 width.
+    dialog.set_default_size(640, -1);
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -2617,6 +2634,9 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         .placeholder_text("Journal / book title")
         .build();
     let publisher = gtk4::Entry::new();
+    let location = gtk4::Entry::builder()
+        .placeholder_text("City of publication, e.g. London")
+        .build();
     let doi = gtk4::Entry::new();
     let isbn = gtk4::Entry::new();
     let url = gtk4::Entry::new();
@@ -2627,6 +2647,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     content.append(&labeled("Year", &year));
     content.append(&labeled("Journal / book", &container));
     content.append(&labeled("Publisher", &publisher));
+    content.append(&labeled("Location", &location));
     content.append(&labeled("DOI", &doi));
     content.append(&labeled("ISBN", &isbn));
     content.append(&labeled("URL", &url));
@@ -2661,6 +2682,7 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 date: &year.text(),
                 container: &container.text(),
                 publisher: &publisher.text(),
+                location: &location.text(),
                 doi: &doi.text(),
                 isbn: &isbn.text(),
                 url: &url.text(),
@@ -2718,7 +2740,9 @@ fn show_create_book_part_dialog(
     dialog.set_title(Some("Create book part"));
     dialog.set_modal(true);
     dialog.set_transient_for(Some(&widgets.window));
-    dialog.set_default_size(460, -1);
+    // See the same width bump (and its comment) in `show_new_item_dialog` — this dialog
+    // embeds the same creator-row editor and hit the identical squeeze at 460px.
+    dialog.set_default_size(620, -1);
 
     let view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
@@ -4996,40 +5020,60 @@ fn refresh_collections(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             // the entry side is a bare key with no room to add a type tag without also
             // touching that call site.
             let drop = gtk4::DropTarget::new(glib::types::Type::STRING, gdk::DragAction::COPY);
-            drop.connect_drop(move |_, value, _, _| {
-                let Ok(text) = value.get::<String>() else {
-                    return false;
-                };
-                let (result, moved_collection) = {
-                    let s = state.borrow();
-                    let Some(lib) = s.library.as_ref() else {
+            // Highlight the row for the whole time a valid drag hovers over it — otherwise
+            // dropping onto a collection row worked but gave no indication beforehand that it
+            // was a valid target at all, so it looked like nothing was happening.
+            {
+                let row = row.clone();
+                drop.connect_enter(move |_, _, _| {
+                    row.add_css_class("fond-drop-target");
+                    gdk::DragAction::COPY
+                });
+            }
+            {
+                let row = row.clone();
+                drop.connect_leave(move |_| {
+                    row.remove_css_class("fond-drop-target");
+                });
+            }
+            {
+                let row = row.clone();
+                drop.connect_drop(move |_, value, _, _| {
+                    row.remove_css_class("fond-drop-target");
+                    let Ok(text) = value.get::<String>() else {
                         return false;
                     };
-                    match text.strip_prefix("collection:") {
-                        Some(dragged_slug) if dragged_slug == slug => (Ok(()), true),
-                        Some(dragged_slug) => {
-                            (lib.reparent_collection(dragged_slug, Some(&slug)), true)
+                    let (result, moved_collection) = {
+                        let s = state.borrow();
+                        let Some(lib) = s.library.as_ref() else {
+                            return false;
+                        };
+                        match text.strip_prefix("collection:") {
+                            Some(dragged_slug) if dragged_slug == slug => (Ok(()), true),
+                            Some(dragged_slug) => {
+                                (lib.reparent_collection(dragged_slug, Some(&slug)), true)
+                            }
+                            None => (lib.add_to_collection(&slug, &text), false),
                         }
-                        None => (lib.add_to_collection(&slug, &text), false),
-                    }
-                };
-                match result {
-                    Ok(()) => {
-                        if moved_collection {
-                            refresh_collections(&state, &widgets);
-                            toast(&widgets, "Moved collection");
-                        } else {
-                            refresh_list(&state, &widgets);
-                            toast(&widgets, "Added to collection");
+                    };
+                    match result {
+                        Ok(()) => {
+                            if moved_collection {
+                                refresh_collections(&state, &widgets);
+                                toast(&widgets, "Moved collection");
+                            } else {
+                                refresh_list(&state, &widgets);
+                                toast(&widgets, "Added to collection");
+                            }
+                            true
                         }
-                        true
+                        Err(e) => {
+                            toast(&widgets, &friendly::bib_error(&e));
+                            false
+                        }
                     }
-                    Err(e) => {
-                        toast(&widgets, &friendly::bib_error(&e));
-                        false
-                    }
-                }
-            });
+                });
+            }
             row.add_controller(drop);
         }
         {
@@ -7539,42 +7583,66 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             base
         } else {
             let base_set: std::collections::HashSet<usize> = base.iter().copied().collect();
-            let matched: Vec<usize> = match s
+            let substring_matches = |q: &str| -> Vec<usize> {
+                let q = q.to_lowercase();
+                s.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| {
+                        e.title.to_lowercase().contains(&q)
+                            || e.author.to_lowercase().contains(&q)
+                            || e.key.to_lowercase().contains(&q)
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            let tantivy_hits: Option<Vec<usize>> = s
                 .index
                 .as_ref()
                 .and_then(|idx| idx.search(&query, 2000).ok())
-            {
-                Some(hits) => hits
-                    .iter()
-                    .filter_map(|h| {
-                        // A `kind:note` hit's key is `<parent key>/<note id>` (or
-                        // `standalone/<note id>`, which has no entry to resolve to) — it never
-                        // matches an entry key directly, so a term that only appears inside a
-                        // child note's body used to vanish from results entirely. Fall back to
-                        // the parent entry so the hit still surfaces.
-                        s.key_to_index.get(&h.key).copied().or_else(|| {
-                            let (parent, _) = h.key.split_once('/')?;
-                            if h.kind == "note" && parent != "standalone" {
-                                s.key_to_index.get(parent).copied()
-                            } else {
-                                None
-                            }
+                .map(|hits| {
+                    hits.iter()
+                        .filter_map(|h| {
+                            // A `kind:note` hit's key is `<parent key>/<note id>` (or
+                            // `standalone/<note id>`, which has no entry to resolve to) — it
+                            // never matches an entry key directly, so a term that only appears
+                            // inside a child note's body used to vanish from results entirely.
+                            // Fall back to the parent entry so the hit still surfaces.
+                            s.key_to_index.get(&h.key).copied().or_else(|| {
+                                let (parent, _) = h.key.split_once('/')?;
+                                if h.kind == "note" && parent != "standalone" {
+                                    s.key_to_index.get(parent).copied()
+                                } else {
+                                    None
+                                }
+                            })
                         })
-                    })
-                    .collect(),
-                None => {
-                    let q = query.to_lowercase();
-                    s.entries
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, e)| {
-                            e.title.to_lowercase().contains(&q)
-                                || e.author.to_lowercase().contains(&q)
-                                || e.key.to_lowercase().contains(&q)
-                        })
-                        .map(|(i, _)| i)
                         .collect()
+                });
+            let matched: Vec<usize> = match tantivy_hits {
+                // tantivy's index does whole-token matching, which is unusable for a search
+                // box that filters on every keystroke — "Dosto" would match nothing until the
+                // user finished typing "Dostoevsky" (confirmed live: `search author:Dosto`
+                // against an indexed "Dostoevsky, Fyodor" returned zero hits). A bare
+                // (unscoped) query unions tantivy's hits with a substring match over
+                // title/author/key, so partial typing works immediately while full-text
+                // fields (notes, PDFs, tags) that only tantivy can reach still match on
+                // complete words. A scoped query (`author:`, `tag:`, `type:`, …) keeps
+                // tantivy's exact semantics only — substring-matching an unrelated field
+                // would silently ignore the scope the user asked for.
+                Some(hits) if query.contains(':') => hits,
+                Some(hits) => {
+                    let mut combined = hits;
+                    let seen: std::collections::HashSet<usize> =
+                        combined.iter().copied().collect();
+                    combined.extend(
+                        substring_matches(&query)
+                            .into_iter()
+                            .filter(|i| !seen.contains(i)),
+                    );
+                    combined
                 }
+                None => substring_matches(&query),
             };
             matched
                 .into_iter()
@@ -8153,6 +8221,10 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     let publisher_entry = gtk4::Entry::builder()
         .text(&current_fields.publisher)
         .build();
+    let location_entry = gtk4::Entry::builder()
+        .text(&current_fields.location)
+        .placeholder_text("City of publication, e.g. London")
+        .build();
     let doi_entry = gtk4::Entry::builder().text(&current_fields.doi).build();
     let isbn_entry = gtk4::Entry::builder().text(&current_fields.isbn).build();
 
@@ -8173,6 +8245,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         let creator_editor = creator_editor.clone();
         let year_entry = year_entry.clone();
         let publisher_entry = publisher_entry.clone();
+        let location_entry = location_entry.clone();
         let doi_entry = doi_entry.clone();
         let isbn_entry = isbn_entry.clone();
         Rc::new(move || {
@@ -8186,6 +8259,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 creators: creator_editor.creators(),
                 year: year_entry.text().trim().to_string(),
                 publisher: publisher_entry.text().trim().to_string(),
+                location: location_entry.text().trim().to_string(),
                 doi: doi_entry.text().trim().to_string(),
                 isbn: isbn_entry.text().trim().to_string(),
             };
@@ -8211,6 +8285,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         &title_entry,
         &year_entry,
         &publisher_entry,
+        &location_entry,
         &doi_entry,
         &isbn_entry,
     ] {
@@ -8716,6 +8791,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     fields.append(&labeled("Creator(s)", &creator_editor.widget));
     fields.append(&labeled("Year", &year_entry));
     fields.append(&labeled("Publisher", &publisher_entry));
+    fields.append(&labeled("Location", &location_entry));
     fields.append(&labeled("DOI", &doi_entry));
     fields.append(&labeled("ISBN", &isbn_entry));
     let key_row = field_row("Citation key", &key);

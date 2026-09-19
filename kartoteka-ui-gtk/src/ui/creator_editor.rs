@@ -93,6 +93,7 @@ fn set_single_toggle_label(button: &gtk4::Button, single: bool) {
 
 fn build_row(
     list: &gtk4::ListBox,
+    scroll: &gtk4::ScrolledWindow,
     rows: &Rc<RefCell<Vec<CreatorRowWidgets>>>,
     on_change: &OnChange,
     creator: Option<&Creator>,
@@ -108,17 +109,24 @@ fn build_row(
     let role_dropdown = gtk4::DropDown::from_strings(&role_labels());
     role_dropdown.set_selected(role_index(role));
 
+    // `width_chars` sets a minimum request, not a cap — `hexpand` still lets these grow with
+    // the row. Without it, a row crowded with the role dropdown plus five buttons squeezes
+    // these down to just a few pixels wide in a narrower dialog (e.g. "New item"), making the
+    // name unreadable while typing.
     let family_entry = gtk4::Entry::builder()
         .placeholder_text("Last name")
         .hexpand(true)
+        .width_chars(8)
         .build();
     let given_entry = gtk4::Entry::builder()
         .placeholder_text("First name")
         .hexpand(true)
+        .width_chars(8)
         .build();
     let single_entry = gtk4::Entry::builder()
         .placeholder_text("Name (e.g. an organization)")
         .hexpand(true)
+        .width_chars(12)
         .build();
 
     let single_field = creator.map(|c| c.single_field).unwrap_or(false);
@@ -176,6 +184,13 @@ fn build_row(
     row.set_activatable(false);
     row.set_child(Some(&hbox));
     list.append(&row);
+    // `scroll`'s propagate-natural-height size gets cached on first measure and does not
+    // reliably re-query when a row is added/removed later — a known GTK4 ScrolledWindow
+    // quirk, confirmed live: `list`'s own `measure()` correctly grows (e.g. 60px -> 120px
+    // for 2 rows) but the ScrolledWindow's allocation stayed at 60px, leaving every row past
+    // the first allocated 0 height (invisible) even though it was really in the `ListBox`.
+    // Forcing a resize here (and in the remove handler below) makes it re-measure.
+    scroll.queue_resize();
 
     let single_field_state = Rc::new(RefCell::new(single_field));
 
@@ -239,12 +254,14 @@ fn build_row(
 
     {
         let list = list.clone();
+        let scroll = scroll.clone();
         let rows = rows.clone();
         let row_ref = row.clone();
         let on_change = on_change.clone();
         remove.connect_clicked(move |_| {
             list.remove(&row_ref);
             rows.borrow_mut().retain(|r| r.row != row_ref);
+            scroll.queue_resize();
             fire_on_change(&on_change);
         });
     }
@@ -314,25 +331,43 @@ impl CreatorListEditor {
         list.set_selection_mode(gtk4::SelectionMode::None);
         list.add_css_class("fond-list");
 
-        let rows: Rc<RefCell<Vec<CreatorRowWidgets>>> = Rc::new(RefCell::new(Vec::new()));
-        let on_change: OnChange = Rc::new(RefCell::new(None));
-        for creator in initial {
-            let row = build_row(&list, &rows, &on_change, Some(creator), CreatorRole::Author);
-            rows.borrow_mut().push(row);
-        }
-
         let scroll = gtk4::ScrolledWindow::new();
         scroll.add_css_class("fond-ground");
         scroll.set_child(Some(&list));
         scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-        scroll.set_propagate_natural_height(true);
-        scroll.set_max_content_height(260);
+        // Not `propagate_natural_height` + `max_content_height`: that combination caches its
+        // measurement on first layout and does not reliably re-measure when a row is added
+        // or removed later — confirmed live (a second "Add creator" row landed in the
+        // `ListBox` with the right data, `list.measure()` correctly reported the taller
+        // size, but the `ScrolledWindow`'s own allocation never grew to show it, even after
+        // `queue_resize()`). A fixed `min_content_height` sidesteps the whole renegotiation:
+        // the box always occupies this height and scrolls internally (GTK4's overlay
+        // scrollbar, invisible until hovered) for anything past it, which GTK recomputes
+        // correctly on every allocation regardless of *when* the row was added. ~168px fits
+        // three rows before scrolling — covers the common cases (single/dual author, or a
+        // translator/editor credit alongside the author) without needing to scroll at all.
+        scroll.set_min_content_height(168);
+
+        let rows: Rc<RefCell<Vec<CreatorRowWidgets>>> = Rc::new(RefCell::new(Vec::new()));
+        let on_change: OnChange = Rc::new(RefCell::new(None));
+        for creator in initial {
+            let row = build_row(
+                &list,
+                &scroll,
+                &rows,
+                &on_change,
+                Some(creator),
+                CreatorRole::Author,
+            );
+            rows.borrow_mut().push(row);
+        }
 
         let add_button = gtk4::Button::from_icon_name("list-add-symbolic");
         add_button.set_label("Add creator");
         add_button.set_halign(gtk4::Align::Start);
         {
             let list = list.clone();
+            let scroll = scroll.clone();
             let rows = rows.clone();
             let on_change = on_change.clone();
             add_button.connect_clicked(move |_| {
@@ -343,7 +378,7 @@ impl CreatorListEditor {
                     .last()
                     .map(|r| role_at(r.role_dropdown.selected()))
                     .unwrap_or(CreatorRole::Author);
-                let new_row = build_row(&list, &rows, &on_change, None, default_role);
+                let new_row = build_row(&list, &scroll, &rows, &on_change, None, default_role);
                 new_row.family_entry.grab_focus();
                 rows.borrow_mut().push(new_row);
                 fire_on_change(&on_change);

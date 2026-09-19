@@ -299,6 +299,15 @@ pub fn book_yaml(
 
 /// Fetch book metadata for an ISBN from OpenLibrary and return it as a Hayagriva YAML
 /// document (placeholder key `_`, since the caller regenerates the key).
+///
+/// OpenLibrary's old "Books API" (`api/books?bibkeys=...&jscmd=data`) now returns a bare
+/// HTTP 404 for every ISBN — confirmed live 2026-09-19, not a transient outage — so this
+/// goes through the per-edition endpoint instead: `GET /isbn/{isbn}.json` (a redirect to
+/// `/books/OL...M.json`), which is still live. That endpoint's JSON shape is different from
+/// the old "data" format `isbn_json_to_yaml` parses (authors are `{"key": "/authors/..."}`
+/// references, not `{"name": ...}`; publishers/publish_places are plain strings, not
+/// `{"name": ...}` objects) — `edition_json_to_data_shape` resolves the author keys with one
+/// extra request each and reshapes the rest, so `isbn_json_to_yaml` doesn't need to change.
 pub fn fetch_isbn_yaml(isbn: &str) -> Result<String> {
     let isbn = isbn.trim().replace(['-', ' '], "");
     if isbn.is_empty() {
@@ -306,17 +315,22 @@ pub fn fetch_isbn_yaml(isbn: &str) -> Result<String> {
             message: "empty ISBN".to_string(),
         });
     }
-    let url =
-        format!("https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=json&jscmd=data");
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| net_err("could not build HTTP client", e))?;
+
+    let edition_url = format!("https://openlibrary.org/isbn/{isbn}.json");
     let response = client
-        .get(&url)
+        .get(&edition_url)
         .send()
         .map_err(|e| net_err("ISBN request failed", e))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(BibError::Import {
+            message: format!("ISBN '{isbn}' not found in OpenLibrary"),
+        });
+    }
     if !response.status().is_success() {
         return Err(BibError::Import {
             message: format!(
@@ -328,7 +342,61 @@ pub fn fetch_isbn_yaml(isbn: &str) -> Result<String> {
     let body = response
         .text()
         .map_err(|e| net_err("could not read ISBN response", e))?;
-    isbn_json_to_yaml(&body, &isbn)
+    let edition: serde_json::Value = serde_json::from_str(&body).map_err(|e| BibError::Import {
+        message: format!("could not parse OpenLibrary response: {e}"),
+    })?;
+
+    let data_shaped = edition_json_to_data_shape(&edition, &client)?;
+    let wrapped = serde_json::json!({ format!("ISBN:{isbn}"): data_shaped }).to_string();
+    isbn_json_to_yaml(&wrapped, &isbn)
+}
+
+/// Reshape an OpenLibrary per-edition record (`/isbn/{isbn}.json` / `/books/OL...M.json`)
+/// into the old Books API "data" shape that `isbn_json_to_yaml` parses: resolves each
+/// `authors[].key` to a name via `/authors/{key}.json`, and wraps `publishers`/
+/// `publish_places` (plain strings in the edition shape) as `{"name": ...}` objects.
+fn edition_json_to_data_shape(
+    edition: &serde_json::Value,
+    client: &reqwest::blocking::Client,
+) -> Result<serde_json::Value> {
+    let mut out = edition.clone();
+    let map = out.as_object_mut().ok_or_else(|| BibError::Import {
+        message: "OpenLibrary response was not a JSON object".to_string(),
+    })?;
+
+    if let Some(authors) = map.get("authors").and_then(|v| v.as_array()).cloned() {
+        let mut resolved = Vec::with_capacity(authors.len());
+        for author in &authors {
+            let Some(key) = author.get("key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let url = format!("https://openlibrary.org{key}.json");
+            let name = client
+                .get(&url)
+                .send()
+                .ok()
+                .filter(|r| r.status().is_success())
+                .and_then(|r| r.json::<serde_json::Value>().ok())
+                .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string));
+            if let Some(name) = name {
+                resolved.push(serde_json::json!({ "name": name }));
+            }
+        }
+        map.insert("authors".to_string(), serde_json::Value::Array(resolved));
+    }
+
+    for field in ["publishers", "publish_places"] {
+        if let Some(arr) = map.get(field).and_then(|v| v.as_array()).cloned() {
+            let wrapped: Vec<serde_json::Value> = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| serde_json::json!({ "name": s }))
+                .collect();
+            map.insert(field.to_string(), serde_json::Value::Array(wrapped));
+        }
+    }
+
+    Ok(serde_json::Value::Object(map.clone()))
 }
 
 /// Minimum plausible size (bytes) for a real OpenLibrary cover JPEG at size `M`. A

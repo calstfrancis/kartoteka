@@ -45,6 +45,14 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.17.0" date="2026-09-19">
+      <description>
+        <p>0.17.0 "Steady Shelf" — fixed ISBN lookup (OpenLibrary retired the old API), a
+        creator-editor bug that hid a second/later author, unreadably narrow name fields,
+        and live search failing on partial names. Added a Location field and a Sermon
+        item type, and a visual highlight when dragging an entry onto a collection.</p>
+      </description>
+    </release>
     <release version="0.16.2" date="2026-09-15">
       <description>
         <p>0.16.2 "Open Ledger" — opening a PDF or EPUB now also records into the shared

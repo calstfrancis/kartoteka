@@ -2,6 +2,34 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.17.0] "Steady Shelf" — 2026-09-19 — Fixed lookup/search/creator-entry bugs, added a location field and a Sermon type
+
+- **Fixed: ISBN lookup returned a bare 404 for every ISBN.** OpenLibrary retired the old
+  "Books API" (`api/books?bibkeys=...&jscmd=data`) this lookup used. It now goes through
+  OpenLibrary's per-edition endpoint instead, resolving author names with one extra
+  request each.
+- **Fixed: the "Add creator" button appeared to do nothing after the first click.** A
+  second (or later) creator row really was being added, but a GTK4 layout quirk in the
+  creator list's scroll area kept it allocated zero height, so it was invisible. The list
+  now reserves enough height for three rows up front and scrolls normally past that.
+- **Fixed: the Last/First name fields in a creator row were squeezed unreadably narrow**
+  in the "New item" and "Create book part" dialogs — both dialogs are wider now, and the
+  name fields have a sane minimum width regardless of dialog size.
+- **Fixed: the live search box couldn't find anything by a partial name** (e.g. typing
+  "Dosto" while it was still filling in "Dostoevsky") — a bare search now matches
+  title/author/key as you type, in addition to the existing full-text search over
+  tags/notes/PDF text. Field-scoped searches (`author:`, `tag:`, …) are unaffected.
+- Added a **Location** field (city of publication) to the "New item" dialog and the
+  inline citation editor — previously only settable via an ISBN lookup, now editable by
+  hand too.
+- Added a **Sermon** item type to the "New item" dialog's Type list. Hayagriva has no
+  native sermon citation type, so this is stored as `manuscript` underneath (an
+  unpublished written text) — the same as picking "Manuscript" directly.
+- Dragging an entry onto a collection in the sidebar (or dragging a collection onto
+  another to reparent it) now highlights the target row for as long as the drag hovers
+  over it — previously there was no visual feedback at all, so it wasn't obvious a drop
+  there would do anything.
+
 ## [0.16.2] "Open Ledger" — 2026-09-15 — Reading history now shared with Pereplyot/Sputnik
 
 - Opening a PDF or EPUB now also records into the shared reading-history log

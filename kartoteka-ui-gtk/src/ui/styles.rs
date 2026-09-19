@@ -58,6 +58,14 @@ const GLOBAL_CSS: &str = "\
     } \
     .bookshelf-badge-read { \
         background: @success_color; \
+    } \
+    /* Collection sidebar row while a valid drag (an entry key, or another collection to \
+       reparent) is hovering over it — the only cue that dropping here will do something, \
+       since there was previously none at all. */ \
+    .fond-drop-target { \
+        background: @accent_bg_color; \
+        color: @accent_fg_color; \
+        border-radius: 6px; \
     }";
 
 /// Loads all static, app-wide CSS once, at startup.

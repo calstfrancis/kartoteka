@@ -224,6 +224,9 @@ pub struct EntryFields {
     /// Publication year as free text (empty = no date).
     pub year: String,
     pub publisher: String,
+    /// Publication location (e.g. the city of publication, "London") — Hayagriva's top-level
+    /// `location:` field.
+    pub location: String,
     pub doi: String,
     pub isbn: String,
 }
@@ -239,6 +242,10 @@ pub fn read_fields(entry: &HEntry) -> EntryFields {
             .publisher()
             .and_then(|p| p.name())
             .map(|name| name.value.to_string())
+            .unwrap_or_default(),
+        location: entry
+            .location()
+            .map(|l| l.value.to_string())
             .unwrap_or_default(),
         doi: entry.doi().unwrap_or_default().to_string(),
         isbn: entry.isbn().unwrap_or_default().to_string(),
@@ -286,6 +293,9 @@ pub fn apply_fields_to_yaml(
     }
     if edited.publisher != current.publisher {
         set_or_remove(inner, "publisher", edited.publisher.trim());
+    }
+    if edited.location != current.location {
+        set_or_remove(inner, "location", edited.location.trim());
     }
 
     // creators — author / editor / affiliated YAML fields, each removed if it ends up empty.
