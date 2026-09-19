@@ -2406,10 +2406,7 @@ fn build_entry_yaml(f: &NewItemFields) -> String {
         ));
     }
     if !f.location.trim().is_empty() {
-        out.push_str(&format!(
-            "  location: {}\n",
-            yaml_quote(f.location.trim())
-        ));
+        out.push_str(&format!("  location: {}\n", yaml_quote(f.location.trim())));
     }
     if !f.url.trim().is_empty() {
         out.push_str(&format!("  url: {}\n", yaml_quote(f.url.trim())));
@@ -7633,8 +7630,7 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 Some(hits) if query.contains(':') => hits,
                 Some(hits) => {
                     let mut combined = hits;
-                    let seen: std::collections::HashSet<usize> =
-                        combined.iter().copied().collect();
+                    let seen: std::collections::HashSet<usize> = combined.iter().copied().collect();
                     combined.extend(
                         substring_matches(&query)
                             .into_iter()
