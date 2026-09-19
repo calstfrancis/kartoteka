@@ -184,6 +184,17 @@ fn build_card() -> gtk4::Box {
                 .map(|key| gdk::ContentProvider::for_value(&key.to_value()))
         });
     }
+    {
+        // `GtkDragSource` shows no icon at all by default — without this, picking up a card
+        // gave no visual feedback that anything was happening. A `WidgetPaintable` snapshot
+        // of the card itself, matching the spreadsheet's equivalent fix.
+        let card_for_icon = card.clone();
+        drag.connect_drag_begin(move |source, _drag| {
+            let paintable = gtk4::WidgetPaintable::new(Some(&card_for_icon));
+            let (w, h) = (card_for_icon.width(), card_for_icon.height());
+            source.set_icon(Some(&paintable), w / 2, h / 2);
+        });
+    }
     card.add_controller(drag);
 
     card

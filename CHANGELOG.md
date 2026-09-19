@@ -2,6 +2,15 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.17.1] "Firm Grip" — 2026-09-19 — Fixed drag-and-drop into collections
+
+- **Fixed: dragging an entry onto a collection gave no visual feedback and, from most
+  columns, didn't work at all.** Only the Key column had a drag source wired up — dragging
+  from Title, Author, or Year (the more natural columns to grab) silently did nothing. Every
+  column now supports the drag, and `GtkDragSource`'s icon (blank by default) is set
+  explicitly to a snapshot of the cell being dragged, so picking up a row now visibly looks
+  like it's being picked up. Same fix applied to the Bookshelf grid's cover cards.
+
 ## [0.17.0] "Steady Shelf" — 2026-09-19 — Fixed lookup/search/creator-entry bugs, added a location field and a Sermon type
 
 - **Fixed: ISBN lookup returned a bare 404 for every ISBN.** OpenLibrary retired the old

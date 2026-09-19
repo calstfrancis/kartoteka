@@ -45,6 +45,14 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.17.1" date="2026-09-19">
+      <description>
+        <p>0.17.1 "Firm Grip" — fixed drag-and-drop onto a collection: only the Key column
+        had a drag source wired up (Title/Author/Year silently did nothing), and no column
+        showed a drag icon at all. Every column now supports the drag, with a visible icon
+        following the cursor; same fix applied to the Bookshelf grid's cover cards.</p>
+      </description>
+    </release>
     <release version="0.17.0" date="2026-09-19">
       <description>
         <p>0.17.0 "Steady Shelf" — fixed ISBN lookup (OpenLibrary retired the old API), a

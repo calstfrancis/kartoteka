@@ -7728,6 +7728,38 @@ struct ColumnSpec {
     width: i32,
 }
 
+/// Attach a drag source to a spreadsheet cell `label` for dragging its entry onto a
+/// collection in the sidebar (see `refresh_collections`'s `DropTarget`). Reads the "row-key"
+/// qdata every column factory already sets on bind (originally added so a right-click
+/// anywhere on the row could resolve which entry it landed on) rather than needing its own
+/// binding, so this drops onto any column's cell, not just one designated column.
+///
+/// Explicitly sets a drag icon — a live snapshot of the cell via `WidgetPaintable` — because
+/// `GtkDragSource` shows *no* icon at all by default. Confirmed live: without this, starting
+/// a drag gave no visual indication anything was happening (as reported), even though the
+/// drag itself worked once it landed on a collection row.
+fn attach_row_drag_source(label: &gtk4::Label) {
+    let drag = gtk4::DragSource::new();
+    drag.set_actions(gdk::DragAction::COPY);
+    {
+        let label = label.clone();
+        drag.connect_prepare(move |_, _, _| {
+            (unsafe { label.data::<String>("row-key") })
+                .map(|p| unsafe { p.as_ref() }.clone())
+                .map(|key| gdk::ContentProvider::for_value(&key.to_value()))
+        });
+    }
+    {
+        let label = label.clone();
+        drag.connect_drag_begin(move |source, _drag| {
+            let paintable = gtk4::WidgetPaintable::new(Some(&label));
+            let (w, h) = (label.width(), label.height());
+            source.set_icon(Some(&paintable), w / 2, h / 2);
+        });
+    }
+    label.add_controller(drag);
+}
+
 /// Add a plain read-only text column bound to one `EntryRow` field. Editing lives entirely
 /// in the detail pane on the right now (see `show_detail`) — the spreadsheet is for
 /// scanning and sorting, not for typing into; a stray click that used to open an inline
@@ -7756,6 +7788,7 @@ fn add_text_column_with(
         let label = gtk4::Label::new(None);
         label.set_xalign(0.0);
         label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        attach_row_drag_source(&label);
         item.set_child(Some(&label));
     });
     {
@@ -7844,17 +7877,7 @@ fn build_entries_column_view() -> (
         label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
         label.add_css_class("monospace");
         label.add_css_class("dim-label");
-        let drag = gtk4::DragSource::new();
-        drag.set_actions(gdk::DragAction::COPY);
-        {
-            let item = item.clone();
-            drag.connect_prepare(move |_, _, _| {
-                item.item()
-                    .and_downcast::<EntryRow>()
-                    .map(|r| gdk::ContentProvider::for_value(&r.key().to_value()))
-            });
-        }
-        label.add_controller(drag);
+        attach_row_drag_source(&label);
         item.set_child(Some(&label));
     });
     key_factory.connect_bind(|_, item| {
