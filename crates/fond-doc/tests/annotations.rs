@@ -1,7 +1,13 @@
 //! Round-trip test for embedded annotations: write a highlight into a PDF, read it back.
 //! Requires PDFium (skips otherwise, like the extraction test).
 
+use std::sync::Mutex;
+
 use fond_doc::{bind_pdfium, embed_highlights, extract_annotations, AnnotationToEmbed};
+
+/// PDFium is not safe to drive from two test threads at once (two tests in this binary running
+/// in parallel abort with "double free or corruption"), so tests that use it hold this.
+static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
 
 fn minimal_pdf(text: &str) -> Vec<u8> {
     let content = format!("BT /F1 24 Tf 72 700 Td ({text}) Tj ET");
@@ -42,6 +48,7 @@ fn minimal_pdf(text: &str) -> Vec<u8> {
 
 #[test]
 fn embed_then_extract_round_trips_a_highlight() {
+    let _guard = PDFIUM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {
@@ -76,6 +83,7 @@ fn embed_then_extract_round_trips_a_highlight() {
 /// covers the gap (and whatever is in it) on export.
 #[test]
 fn multi_line_highlight_keeps_one_quad_per_line() {
+    let _guard = PDFIUM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let pdfium = match bind_pdfium() {
         Ok(p) => p,
         Err(e) => {

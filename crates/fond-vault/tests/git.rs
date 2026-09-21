@@ -125,7 +125,8 @@ fn stage_of_a_deleted_path_records_removal_instead_of_failing() {
 fn push_rejected_by_remote_is_an_error() {
     let remote_dir = tempfile::tempdir().unwrap();
     git2::Repository::init_bare(remote_dir.path()).unwrap();
-    let url = format!("file://{}", remote_dir.path().display());
+    // A plain path, not `file://` + path: on Windows the latter is not a valid libgit2 URL.
+    let url = remote_dir.path().to_str().unwrap().to_string();
 
     let first = tempfile::tempdir().unwrap();
     let v1 = Vault::init(first.path()).unwrap();
