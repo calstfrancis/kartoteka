@@ -113,3 +113,152 @@ fn fsck_exits_nonzero_on_problems() {
     assert!(!out.status.success(), "fsck should fail on a dangling ref");
     assert!(String::from_utf8_lossy(&out.stdout).contains("dangling"));
 }
+
+fn seeded() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(kartoteka(dir.path(), &["init"]).status.success());
+    let snippet = dir.path().join("snippet.yml");
+    std::fs::write(&snippet, SNIPPET).unwrap();
+    assert!(
+        kartoteka(dir.path(), &["add", "--file", snippet.to_str().unwrap()])
+            .status
+            .success()
+    );
+    dir
+}
+
+fn only_key(lib: &Path) -> String {
+    let out = kartoteka(lib, &["list"]);
+    String::from_utf8_lossy(&out.stdout)
+        .split('\t')
+        .next()
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+/// With no terminal on stdin and no --yes, `delete` used to print "Cancelled." and exit 0, so
+/// `delete foo && next-step` carried on as if the entry were gone.
+#[test]
+fn delete_without_yes_and_without_a_terminal_fails_and_deletes_nothing() {
+    let dir = seeded();
+    let key = only_key(dir.path());
+    let out = kartoteka(dir.path(), &["delete", &key]);
+    assert!(
+        !out.status.success(),
+        "reported success without deleting: {out:?}"
+    );
+    assert!(dir
+        .path()
+        .join("entries")
+        .join(format!("{key}.yml"))
+        .exists());
+
+    let out = kartoteka(dir.path(), &["delete", &key, "--yes"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(!dir
+        .path()
+        .join("entries")
+        .join(format!("{key}.yml"))
+        .exists());
+}
+
+#[test]
+fn keys_that_could_escape_the_library_are_rejected() {
+    let dir = seeded();
+    for bad in ["../x", "a/b", ".hidden", "a..b"] {
+        let out = kartoteka(dir.path(), &["show", bad]);
+        assert!(!out.status.success(), "{bad} accepted");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("not a valid citation key"),
+            "{bad}: {out:?}"
+        );
+    }
+}
+
+#[test]
+fn contradictory_acquire_flags_are_a_usage_error() {
+    let dir = seeded();
+    let out = kartoteka(dir.path(), &["acquire", "--doi", "10.1/x", "--isbn", "123"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot be used with"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn search_exits_nonzero_when_nothing_matches_and_zero_when_something_does() {
+    let dir = seeded();
+    assert!(kartoteka(dir.path(), &["reindex"]).status.success());
+    assert!(kartoteka(dir.path(), &["search", "destiny"])
+        .status
+        .success());
+    assert!(!kartoteka(dir.path(), &["search", "zzzznotaword"])
+        .status
+        .success());
+}
+
+#[test]
+fn export_and_annotated_bib_refuse_to_overwrite_without_force() {
+    let dir = seeded();
+    let coll = dir.path().join("collections");
+    std::fs::create_dir_all(&coll).unwrap();
+    let key = only_key(dir.path());
+    std::fs::write(coll.join("c.yml"), format!("name: C\nkeys:\n  - {key}\n")).unwrap();
+    let out_file = dir.path().join("out.typ");
+    std::fs::write(&out_file, "precious").unwrap();
+    let out = kartoteka(
+        dir.path(),
+        &["annotated-bib", "c", "-o", out_file.to_str().unwrap()],
+    );
+    assert!(!out.status.success(), "overwrote an existing file: {out:?}");
+    assert_eq!(std::fs::read_to_string(&out_file).unwrap(), "precious");
+    let out = kartoteka(
+        dir.path(),
+        &[
+            "annotated-bib",
+            "c",
+            "-o",
+            out_file.to_str().unwrap(),
+            "--force",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_ne!(std::fs::read_to_string(&out_file).unwrap(), "precious");
+}
+
+/// A deleted entry must be dropped from the next commit, and `fsck` must say what it finds.
+#[test]
+fn commit_records_deletions() {
+    let dir = seeded();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join(".gitconfig"),
+        "[user]\n\tname = T\n\temail = t@example.com\n",
+    )
+    .unwrap();
+    let key = only_key(dir.path());
+    assert!(
+        kartoteka_with_home(dir.path(), &["commit", "-m", "add"], Some(home.path()))
+            .status
+            .success()
+    );
+    assert!(kartoteka(dir.path(), &["delete", &key, "--yes"])
+        .status
+        .success());
+    assert!(
+        kartoteka_with_home(dir.path(), &["commit", "-m", "del"], Some(home.path()))
+            .status
+            .success()
+    );
+    let repo = fond_vault::git2::Repository::open(dir.path()).unwrap();
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    let entries = tree
+        .get_name("entries")
+        .map(|e| e.to_object(&repo).unwrap().into_tree().unwrap());
+    assert!(
+        entries.map_or(true, |t| t.get_name(&format!("{key}.yml")).is_none()),
+        "deleted entry still in the commit"
+    );
+}

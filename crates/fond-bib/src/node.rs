@@ -58,6 +58,10 @@ pub struct NodeFrontmatter {
     /// edges. A `target` may be an entry key or another node slug.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<Relation>,
+    /// Unmodelled frontmatter keys (e.g. a hand-added `born:`), kept and written back
+    /// verbatim instead of being dropped the first time the node is rewritten.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 /// A parsed node: frontmatter plus the Markdown body prose.

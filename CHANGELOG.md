@@ -2,6 +2,130 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.17.2] "Sound Footing" — 2026-09-21 — Audit fixes: backups, data integrity, search, CLI, release pipeline
+
+Fixes from a full audit of the codebase (fond-bib, fond-index, fond-doc, fond-vault, the CLI,
+packaging and CI). Grouped by what they protect.
+
+### Backups
+- **A push GitHub rejected was reported as "Pushed".** The rejection only shows up in a
+  libgit2 callback that was never set; `push_github` now turns it into an error, fails fast on
+  a revoked token instead of retrying, refuses to push from a detached HEAD, and no longer
+  turns any HEAD error into a parentless root commit (which orphaned history).
+  *The server-side-decline path itself can't be exercised by a local test (libgit2's file
+  transport skips server hooks); the client-side non-fast-forward case is tested.*
+- **Deleted entries were never removed from commits** (`stage_all` only added/updated), so
+  they came back on restore. Deletions are staged now, and `stage()` on a removed path records
+  the removal instead of failing.
+
+### Data integrity
+- **Merging duplicates destroyed most of the merged-away entry.** It kept tags, attachments,
+  prose and annotations and dropped rating, read status, dates, progress, tasks, custom fields,
+  cite prefs, relations, book-part provenance, child notes, the AI sidecar, and any DOI/ISBN the
+  target lacked — and left other records' edges, `related` lists and `derived_from_book`
+  pointing at the deleted key. All of that is now carried over or re-pointed.
+- **`fsck --fix`** deleted valid inverse edges whenever any note failed to parse; it now
+  refuses to repair in that state.
+- **Deleting an entry** could delete an attachment another (unreadable) note still owned; it now
+  keeps every blob if any note can't be read, and ignores hand-edited hashes that would point
+  outside `attachments/`. It also cleans legacy `related:` entries and `derived_from_book`.
+- **`fsck`** no longer aborts at the first corrupt file or panics on a non-ASCII stray filename.
+  New checks: orphaned notes/annotations/AI files, dangling or cyclic collection parents,
+  dangling `related`/`derived_from_book`, and entries still carrying the old top-level
+  `location:`. Several categories it counted but never printed are now printed.
+- Every record write is atomic (temp file + rename); a crash mid-save can no longer truncate the
+  entry or note being edited. Note and node files keep frontmatter keys they don't model, and
+  `custom-fields` is written in a stable order. A batch add writes nothing if any entry in it
+  can't be keyed.
+- Collections: reparenting to a nonexistent collection is rejected. Zotero import keyed
+  collections by name, so same-named subcollections overwrote each other and picked the wrong
+  parent, and re-importing overwrote existing collections and duplicated notes; all fixed.
+
+### Search
+- **The first GUI edit after a CLI `reindex` wiped PDF/EPUB body-text search.** Extracted text
+  is now cached by content hash under `.kartoteka/textcache/`, and every rebuild reads it.
+  "Reindex search" extracts what's missing on a worker thread.
+- A failed rebuild left search with no index at all (the old one was deleted first). The new
+  index is built beside the old and swapped in only when complete, and one unparseable entry no
+  longer aborts it.
+
+### Citations and metadata
+- Chapters got `nodate` in their keys (the parent book's year wasn't consulted); fixed. The
+  ISBN lookup now writes `edition` (not `note`, which styles don't render as an edition),
+  appends subtitles, reads OCLC/LCCN from the edition record, falls back to the work's authors,
+  and reports a failed author lookup instead of silently omitting the author.
+- Editing a conference's publisher no longer deletes its event `location`.
+- Cyrillic, Greek and Hebrew titles/authors are transliterated for citation keys instead of
+  making the entry unaddable; unfoldable text (CJK) falls back to `entry<year>`.
+- PDF text: one unreadable page no longer discards the whole document. EPUB: non-UTF-8
+  chapters are decoded rather than dropped, a zip-bomb size cap, and ISBN-10 check digit `X`
+  keeps its case. Imported multi-line highlights keep one quad per line instead of one big
+  rectangle (*compile-checked and covered by a new test, which skips here because no PDFium is
+  installed on this machine*).
+
+### CLI
+- `delete` with no `--yes` and no terminal now fails (it printed "Cancelled." and exited 0);
+  `search` exits 1 on no matches; contradictory `acquire`/`add-pdf` flags are a usage error;
+  keys like `../x` are rejected; `-o` won't overwrite an existing file without `--force` (or the
+  stored PDF ever); `add-pdf`/`acquire` refresh the search index; a failed attach no longer
+  leaves the entry it just created; `list` skips an unreadable entry with a warning.
+
+### Release pipeline
+- **The release flatpak was built from `main`, not the tag.** CI now pins the manifest to the
+  tagged commit (and `publish-flatpak-local.sh` does too), so a later push to `main` — or
+  re-running an old tag's workflow — can't ship untested code under the old version.
+- The CI gate also requires `version-consistency`, uses the newest run of each check (a stale
+  re-run no longer decides the outcome), paginates, and applies to manual dispatch. Secrets are
+  passed through `env:`, steps run with `pipefail`, and workflow tokens are least-privilege.
+  CI runs clippy and tests with the `acquire` feature and a PDFium pinned to the flatpak's.
+- Publish scripts refuse a dirty tree or a tag not at HEAD, no longer swallow a failed tag push,
+  and read the version from `[package]` only.
+
+### Known, deliberately not changed
+- A relation predicate this version doesn't know still makes that note fail to parse.
+- Scanned (image-only) PDFs still index as empty — there is no OCR.
+- Changing a date's year drops its month/day.
+- The flatpak still has `--filesystem=home`.
+
+- **Fixed: the window could freeze if the system keyring (secret-service) was slow.** Six
+  places read or wrote the GitHub token / WebDAV password directly on the UI thread — the
+  Back up dialog, the WebDAV dialog, the GitHub sign-in and backup wizards, "Push to
+  GitHub", and (worst) every automatic-backup tick, despite its own doc comment saying it
+  ran off the main thread. All keyring access now happens on worker threads.
+
+- **Fixed: editing an existing entry's creators could crash the app.** Clicking "Single
+  field", or a row's up/down reorder buttons, held a lock on internal state while notifying
+  the rest of the form of the change — and that notification itself needed the same lock,
+  so it panicked every time (confirmed: 100% reproducible on any entry being edited in
+  place, not intermittent). Also fixed the disruptive side effect that made this crash easy
+  to stumble into: saving *any* citation field used to reload the whole library and rebuild
+  the entire detail pane, including the creator editor you were actively typing into — so
+  adding a second creator (type a last name, tab to first name) looked like the first-name
+  field had vanished, because the widget really was destroyed and rebuilt mid-edit. A save
+  now just updates the one entry's cached summary in place, leaving the editor alone.
+- **Fixed: the Location field (added in 0.17.0) was written to the wrong place in the YAML,
+  so it never showed up in rendered citations.** It was written as the entry's own top-level
+  `location:` field, but most citation styles' "place of publication" element (CSL
+  `publisher-place`, Zotero's "Place") reads a *nested* `publisher.location` instead — the
+  top-level field feeds a different, rarely-used CSL variable (`event-place`, for a
+  conference/exhibition). Confirmed against Hayagriva's real CSL rendering: with the old
+  shape, a style that reads `publisher-place` silently rendered no location at all,
+  regardless of what was typed in; with the fix, it renders correctly. This affected every
+  path that ever set a location — manual entry, and every ISBN lookup done before this fix,
+  even in prior releases.
+  - **If you already have entries with a location that isn't showing up in citations:**
+    opening that entry now still shows the location in the editor (it falls back to the old
+    field so nothing looks lost), and simply re-saving it (touch the Location field, even to
+    the same value, and let it save) migrates it to the correct spot and removes the old
+    stray field. There's no bulk fixup — this happens per entry, when you touch it.
+  - Also worth knowing, independent of this bug: several modern citation style editions
+    (current Chicago, APA 7th, and the SBL Handbook of Style's own 2nd edition, per an SBL
+    style-guide update) have deliberately dropped place-of-publication from their
+    bibliography format entirely. If you're using one of those styles, no location will
+    render even now that the field is fixed — that's the style's own current guidance, not
+    a bug here. Older-edition or other styles that still include it will now show it
+    correctly.
+
 ## [0.17.1] "Firm Grip" — 2026-09-19 — Fixed drag-and-drop into collections
 
 - **Fixed: dragging an entry onto a collection gave no visual feedback and, from most

@@ -132,7 +132,12 @@ pub fn is_valid_note_id(id: &str) -> bool {
     if id.len() < 12 || id.as_bytes()[4] != b'-' || id.as_bytes()[7] != b'-' {
         return false;
     }
-    let (year, month, day) = (&id[0..4], &id[5..7], &id[8..10]);
+    // `get` (not indexing): a stray file name with a multi-byte character straddling these
+    // offsets would otherwise panic on a non-char-boundary slice — and `fsck`, the tool meant
+    // to flag exactly such stray files, calls this on arbitrary names.
+    let (Some(year), Some(month), Some(day)) = (id.get(0..4), id.get(5..7), id.get(8..10)) else {
+        return false;
+    };
     let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     if !all_digits(year) || !all_digits(month) || !all_digits(day) {
         return false;
@@ -154,6 +159,20 @@ mod tests {
 
     fn p() -> PathBuf {
         PathBuf::from("notes/somekey/test.md")
+    }
+
+    #[test]
+    fn note_id_check_never_panics_on_multibyte_names() {
+        // Multi-byte characters straddling the fixed slice offsets used to panic.
+        for id in [
+            "2026-09-0é-abc",
+            "2026-0é-01-abc",
+            "é026-09-01-abc",
+            "2026-09-01é-abc",
+            "ééééééééééééé",
+        ] {
+            assert!(!is_valid_note_id(id), "{id}");
+        }
     }
 
     #[test]

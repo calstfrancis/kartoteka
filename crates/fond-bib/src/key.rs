@@ -16,6 +16,91 @@ const ARTICLES: &[&str] = &[
     "il", "lo", "gli", "i", "os", "as", "de", "het", "een",
 ];
 
+/// Romanisation for a lowercase Cyrillic, Greek or Hebrew letter (a simplified, key-oriented
+/// scheme — legible and stable, not a scholarly standard); `""` for anything else.
+fn transliterate(c: char) -> &'static str {
+    match c {
+        // Cyrillic (Russian + Ukrainian/Belarusian extras)
+        'а' => "a",
+        'б' => "b",
+        'в' => "v",
+        'г' | 'ґ' => "g",
+        'д' => "d",
+        'е' | 'ё' | 'э' | 'є' => "e",
+        'ж' => "zh",
+        'з' => "z",
+        'и' | 'і' => "i",
+        'й' | 'ы' => "y",
+        'ї' => "yi",
+        'к' => "k",
+        'л' => "l",
+        'м' => "m",
+        'н' => "n",
+        'о' => "o",
+        'п' => "p",
+        'р' => "r",
+        'с' => "s",
+        'т' => "t",
+        'у' | 'ў' => "u",
+        'ф' => "f",
+        'х' => "kh",
+        'ц' => "ts",
+        'ч' => "ch",
+        'ш' => "sh",
+        'щ' => "shch",
+        'ю' => "yu",
+        'я' => "ya",
+        'ъ' | 'ь' => "",
+        // Greek (accents folded)
+        'α' | 'ά' => "a",
+        'β' => "b",
+        'γ' => "g",
+        'δ' => "d",
+        'ε' | 'έ' => "e",
+        'ζ' => "z",
+        'η' | 'ή' => "e",
+        'θ' => "th",
+        'ι' | 'ί' | 'ϊ' | 'ΐ' => "i",
+        'κ' => "k",
+        'λ' => "l",
+        'μ' => "m",
+        'ν' => "n",
+        'ξ' => "x",
+        'ο' | 'ό' => "o",
+        'π' => "p",
+        'ρ' => "r",
+        'σ' | 'ς' => "s",
+        'τ' => "t",
+        'υ' | 'ύ' | 'ϋ' | 'ΰ' => "y",
+        'φ' => "f",
+        'χ' => "ch",
+        'ψ' => "ps",
+        'ω' | 'ώ' => "o",
+        // Hebrew consonants (vowel points and guttural aleph/ayin dropped)
+        'ב' => "b",
+        'ג' => "g",
+        'ד' => "d",
+        'ה' => "h",
+        'ו' => "v",
+        'ז' => "z",
+        'ח' => "h",
+        'ט' => "t",
+        'י' => "y",
+        'כ' | 'ך' => "k",
+        'ל' => "l",
+        'מ' | 'ם' => "m",
+        'נ' | 'ן' => "n",
+        'ס' => "s",
+        'פ' | 'ף' => "p",
+        'צ' | 'ץ' => "ts",
+        'ק' => "q",
+        'ר' => "r",
+        'ש' => "sh",
+        'ת' => "t",
+        _ => "",
+    }
+}
+
 /// Fold a string to lowercase ASCII alphanumerics, mapping common Latin diacritics to
 /// their base letter and dropping everything else (spaces, punctuation, unmapped
 /// non-ASCII). `"Gutiérrez"` → `"gutierrez"`, `"The Destiny"` → `"thedestiny"`.
@@ -54,11 +139,11 @@ pub fn ascii_fold(s: &str) -> String {
             'ý' | 'ÿ' => out.push('y'),
             'ź' | 'ž' | 'ż' => out.push('z'),
             other => {
-                // Unmapped non-ASCII: keep it only if it happens to be alphanumeric in
-                // its own right (e.g. digits from other scripts are rare here); else drop.
-                if other.is_alphanumeric() && other.is_ascii() {
-                    out.push(other);
-                }
+                // Cyrillic / Greek / Hebrew are transliterated rather than dropped — an
+                // entry whose author and title are wholly in one of those scripts (a
+                // Berdyaev in Russian, a Greek NT) used to fold to nothing and could not be
+                // added at all. Anything still unmapped (CJK, …) is dropped.
+                out.push_str(transliterate(other));
             }
         }
     }
@@ -110,10 +195,16 @@ pub fn generate_base_key(
     let family_folded = family.map(ascii_fold).filter(|s| !s.is_empty());
     let title_word = title.and_then(first_significant_word);
 
+    // Author/title present but nothing in them survives folding (e.g. entirely CJK): still
+    // keyable — `entry<year>` (collision-suffixed as usual) rather than refusing the entry.
+    let has_text =
+        family.is_some_and(|f| !f.trim().is_empty()) || title.is_some_and(|t| !t.trim().is_empty());
+
     match (family_folded, title_word) {
         (Some(fam), Some(word)) => Ok(format!("{fam}{year_part}{word}")),
         (Some(fam), None) => Ok(format!("{fam}{year_part}")),
         (None, Some(word)) => Ok(format!("{word}{year_part}")),
+        (None, None) if has_text => Ok(format!("entry{year_part}")),
         (None, None) => Err(BibError::UnkeyableEntry),
     }
 }
@@ -172,6 +263,28 @@ pub fn assign_key(base: &str, existing: &HashSet<String>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn non_latin_scripts_are_transliterated_not_dropped() {
+        assert_eq!(ascii_fold("Бердяев"), "berdyaev");
+        assert_eq!(ascii_fold("Καινή"), "kaine");
+        assert_eq!(ascii_fold("Διαθήκη"), "diatheke");
+        assert_eq!(ascii_fold("Щедрин"), "shchedrin");
+        assert_eq!(ascii_fold("שלום"), "shlvm");
+        assert_eq!(
+            generate_base_key(Some("Бердяев"), Some(1937), Some("О назначении человека")).unwrap(),
+            "berdyaev1937o"
+        );
+    }
+
+    #[test]
+    fn unfoldable_but_present_text_still_gets_a_key() {
+        assert_eq!(
+            generate_base_key(Some("東京"), Some(2001), Some("日本")).unwrap(),
+            "entry2001"
+        );
+        assert!(generate_base_key(None, Some(2001), None).is_err());
+    }
+
     use super::*;
 
     #[test]

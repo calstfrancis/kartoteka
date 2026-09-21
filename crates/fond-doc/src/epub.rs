@@ -511,11 +511,47 @@ fn read_zip_entry<R: std::io::Read + std::io::Seek>(
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
         Err(e) => return Err(DocError::Epub(format!("reading {name}: {e}"))),
     };
-    let mut buf = String::new();
-    entry
-        .read_to_string(&mut buf)
+    // Cap what one entry may expand to: a zip bomb (a few KB claiming gigabytes) would
+    // otherwise exhaust memory just from being indexed.
+    let mut bytes = Vec::new();
+    std::io::Read::take(&mut entry, MAX_ENTRY_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| DocError::Epub(format!("reading {name}: {e}")))?;
-    Ok(Some(buf))
+    if bytes.len() as u64 > MAX_ENTRY_BYTES {
+        return Err(DocError::Epub(format!(
+            "{name} expands to more than {} MiB — refusing to read it",
+            MAX_ENTRY_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(Some(decode_text(&bytes)))
+}
+
+/// Largest single EPUB member (chapter, OPF, …) we will read into memory.
+const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Decode an EPUB member to a `String` without failing on non-UTF-8: honours a UTF-16 byte
+/// order mark, then tries UTF-8, then falls back to Latin-1 (so text is still indexed rather
+/// than the whole chapter — or, for the OPF, the whole book's metadata — being dropped).
+fn decode_text(bytes: &[u8]) -> String {
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+    }
 }
 
 /// The `full-path` of the first `<rootfile>` in `META-INF/container.xml`.
@@ -629,13 +665,19 @@ fn isbn_from_identifier(text: &str, scheme: &Option<String>) -> Option<String> {
         .as_deref()
         .map(|s| s.eq_ignore_ascii_case("isbn"))
         .unwrap_or(false);
-    let lower = text.to_ascii_lowercase();
-    let urn = lower.strip_prefix("urn:isbn:");
+    // Strip the `urn:isbn:` prefix case-insensitively but keep the digits' own case: taking it
+    // from a lowercased copy turned an ISBN-10 check digit `X` into `x`.
+    let urn = text
+        .get(..9)
+        .filter(|p| p.eq_ignore_ascii_case("urn:isbn:"))
+        .map(|_| &text[9..]);
     if scheme_is_isbn || urn.is_some() {
-        let raw = urn
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| text.to_string());
-        let cleaned: String = raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        let raw = urn.unwrap_or(text).to_string();
+        let cleaned: String = raw
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
         if !cleaned.is_empty() {
             return Some(cleaned);
         }
@@ -670,6 +712,34 @@ fn local_name(name: &[u8]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn isbn10_check_digit_x_keeps_its_case() {
+        assert_eq!(
+            isbn_from_identifier("urn:isbn:0-8044-2957-X", &None).as_deref(),
+            Some("080442957X")
+        );
+        assert_eq!(
+            isbn_from_identifier("URN:ISBN:080442957x", &None).as_deref(),
+            Some("080442957X")
+        );
+        assert_eq!(
+            isbn_from_identifier("0-8044-2957-x", &Some("ISBN".into())).as_deref(),
+            Some("080442957X")
+        );
+    }
+
+    #[test]
+    fn decode_text_survives_non_utf8() {
+        // UTF-16LE with BOM, UTF-8 with BOM, and Latin-1 (invalid UTF-8) all decode.
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("héllo".encode_utf16().flat_map(|u| u.to_le_bytes()))
+            .collect();
+        assert_eq!(decode_text(&utf16), "héllo");
+        assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'o', b'k']), "ok");
+        assert_eq!(decode_text(&[b'c', b'a', b'f', 0xE9]), "café");
+    }
+
     use super::*;
     use std::io::Write;
 

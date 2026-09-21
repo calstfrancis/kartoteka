@@ -81,3 +81,25 @@ impl<T: 'static> Receiver<T> {
         });
     }
 }
+
+/// Run `work` on a fresh thread and deliver its result to `done` on the GTK main thread.
+/// For one-shot blocking calls (keyring lookups, mostly) that must never run inline in a
+/// signal handler: the secret-service/D-Bus round trip can hang indefinitely.
+pub fn run_off_main<T, W, D>(work: W, done: D)
+where
+    T: Send + 'static,
+    W: FnOnce() -> T + Send + 'static,
+    D: FnOnce(T) + 'static,
+{
+    let (sender, receiver) = channel::<T>();
+    std::thread::spawn(move || {
+        let _ = sender.send(work());
+    });
+    let mut done = Some(done);
+    receiver.attach(move |value| {
+        if let Some(done) = done.take() {
+            done(value);
+        }
+        ControlFlow::Break
+    });
+}

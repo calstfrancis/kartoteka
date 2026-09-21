@@ -149,3 +149,68 @@ fn reports_unmatched_collection_items() {
     assert_eq!(report.zotero_unmatched, vec!["An Unimported Book"]);
     assert!(!report.is_clean());
 }
+
+/// Two subcollections with the same name under different parents used to share one slug slot,
+/// so both wrote the same file (the first's items were lost) and a child could resolve to the
+/// wrong parent. Re-running the import also used to duplicate every child note and overwrite
+/// any existing collection with the same slug.
+#[test]
+fn same_named_subcollections_keep_their_own_items_and_parents_and_reimport_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(dir.path()).unwrap();
+    let db = dir.path().join("zotero.sqlite");
+    build_zotero_db(&db);
+    {
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "
+            DELETE FROM collections; DELETE FROM collectionItems;
+            INSERT INTO collections VALUES (1,'Theology',NULL),(2,'History',NULL),
+                                           (3,'To read',1),(4,'To read',2);
+            INSERT INTO collectionItems VALUES (3,10,0),(4,11,0);
+            ",
+        )
+        .unwrap();
+    }
+    let opts = ImportOptions {
+        zotero_db: Some(db),
+        ..ImportOptions::default()
+    };
+    let report = lib.import_bibtex(BIB, &opts).unwrap();
+
+    let mut to_read = Vec::new();
+    for slug in &report.collections_created {
+        let c = lib.load_collection(slug).unwrap();
+        if c.name == "To read" {
+            to_read.push(c);
+        }
+    }
+    assert_eq!(
+        to_read.len(),
+        2,
+        "one 'To read' was overwritten: {:?}",
+        report.collections_created
+    );
+    let mut all_keys: Vec<String> = to_read.iter().flat_map(|c| c.keys.clone()).collect();
+    all_keys.sort();
+    assert_eq!(all_keys, vec!["cone1970black", "gutierrez1971teologia"]);
+    let parents: std::collections::HashSet<_> = to_read.iter().map(|c| c.parent.clone()).collect();
+    assert_eq!(parents.len(), 2, "both got the same parent");
+
+    // Import again: child notes are not appended a second time.
+    let before = lib.load_note("cone1970black").unwrap().unwrap().body;
+    let _ = lib.import_bibtex(
+        BIB,
+        &ImportOptions {
+            zotero_db: opts.zotero_db.clone(),
+            overwrite: true,
+            ..ImportOptions::default()
+        },
+    );
+    let after = lib.load_note("cone1970black").unwrap().unwrap().body;
+    assert_eq!(
+        before.matches("liberation").count(),
+        after.matches("liberation").count(),
+        "note duplicated on re-import"
+    );
+}

@@ -57,8 +57,34 @@ pub fn family_name(entry: &HEntry) -> Option<String> {
 }
 
 /// Publication year, if dated.
+///
+/// Falls back to a parent's date (`date_any`, the same lookup CSL's `issued` uses): a book
+/// part keeps its book's date only inside `parent:`, and reading just the entry's own date
+/// made every chapter's generated key contain `nodate` and its duplicate-detection year empty
+/// even though citations rendered the parent's year fine. (The editable Year *field* still
+/// reads the entry's own date — see [`read_fields`] — so editing never copies a parent's year
+/// onto the child.)
 pub fn year(entry: &HEntry) -> Option<i32> {
-    entry.date().map(|d| d.year)
+    entry.date_any().map(|d| d.year)
+}
+
+/// Whether an entry of this (lowercased) type carries its top-level `location:` as a place of
+/// *publication* that the editor should treat as the publisher location. A conference,
+/// exhibition or misc entry uses that field for the event's place (CSL `event-place`) — real
+/// data that must not be read into, or removed by, the publisher-location editor.
+fn top_level_location_is_publication_place(entry_type: &str) -> bool {
+    !matches!(entry_type, "conference" | "exhibition" | "misc")
+}
+
+/// True when the entry's place of publication is only a top-level `location:` (the shape older
+/// versions wrote), so no citation style can see it. Never true for a conference/exhibition/
+/// misc entry, whose top-level `location:` is legitimately the event place.
+pub fn has_legacy_location(entry: &HEntry) -> bool {
+    entry.location().is_some()
+        && entry.publisher().and_then(|p| p.location()).is_none()
+        && top_level_location_is_publication_place(
+            &format!("{:?}", entry.entry_type()).to_lowercase(),
+        )
 }
 
 /// All of the entry's "primary" creators (see [`creator::sort_family_name`]) as a single
@@ -116,8 +142,13 @@ fn parent_block(source: &HEntry, role: CreatorRole) -> Result<serde_yaml_ng::Val
         .unwrap_or_else(|| Value::Mapping(Default::default()));
     if role == CreatorRole::Editor {
         if let Some(map) = inner.as_mapping_mut() {
-            if let Some(author) = map.remove(Value::String("author".to_string())) {
-                map.insert(Value::String("editor".to_string()), author);
+            // Not when the source already has real editors: renaming would overwrite them
+            // (`insert` replaces), silently losing the volume's actual editors.
+            let has_editor = map.contains_key(Value::String("editor".to_string()));
+            if !has_editor {
+                if let Some(author) = map.remove(Value::String("author".to_string())) {
+                    map.insert(Value::String("editor".to_string()), author);
+                }
             }
         }
     }
@@ -224,8 +255,13 @@ pub struct EntryFields {
     /// Publication year as free text (empty = no date).
     pub year: String,
     pub publisher: String,
-    /// Publication location (e.g. the city of publication, "London") — Hayagriva's top-level
-    /// `location:` field.
+    /// Publication location (e.g. the city of publication, "London") — nested under
+    /// `publisher:` as `{name, location}` in the YAML (Hayagriva's `Publisher::location`),
+    /// **not** the entry's own top-level `location:` field. That top-level field feeds a
+    /// different CSL variable (`event-place`, for a conference/exhibition an entry happened
+    /// at) — most citation styles' "place of publication" element (CSL `publisher-place`,
+    /// Zotero's "Place") reads the nested one instead. Confirmed against
+    /// `hayagriva::csl::taxonomy`'s `StandardVariable::PublisherPlace` resolution.
     pub location: String,
     pub doi: String,
     pub isbn: String,
@@ -243,8 +279,21 @@ pub fn read_fields(entry: &HEntry) -> EntryFields {
             .and_then(|p| p.name())
             .map(|name| name.value.to_string())
             .unwrap_or_default(),
+        // Falls back to the entry's own top-level `location:` if `publisher.location` is
+        // unset — entries created before 2026-09-19 (via ISBN lookup or the manual "New
+        // item" form) wrote it there by mistake, and this keeps that data visible/editable
+        // instead of it silently reading as blank. `apply_fields_to_yaml` cleans up the
+        // stray top-level key the next time this entry's publisher/location is saved.
         location: entry
-            .location()
+            .publisher()
+            .and_then(|p| p.location())
+            .or_else(|| {
+                top_level_location_is_publication_place(
+                    &format!("{:?}", entry.entry_type()).to_lowercase(),
+                )
+                .then(|| entry.location())
+                .flatten()
+            })
             .map(|l| l.value.to_string())
             .unwrap_or_default(),
         doi: entry.doi().unwrap_or_default().to_string(),
@@ -291,11 +340,41 @@ pub fn apply_fields_to_yaml(
     if edited.title != current.title {
         set_or_remove(inner, "title", edited.title.trim());
     }
-    if edited.publisher != current.publisher {
-        set_or_remove(inner, "publisher", edited.publisher.trim());
-    }
-    if edited.location != current.location {
-        set_or_remove(inner, "location", edited.location.trim());
+    // publisher/location share one YAML key: a plain string when there's no location (just
+    // `publisher: Name`), or a `{name, location}` mapping when there is — matching
+    // Hayagriva's own `Publisher` serialization (see `EntryFields::location`'s doc comment
+    // for why location can't live at the entry's own top level instead).
+    if edited.publisher != current.publisher || edited.location != current.location {
+        let name = edited.publisher.trim();
+        let location = edited.location.trim();
+        if name.is_empty() && location.is_empty() {
+            inner.remove(key_of("publisher"));
+        } else if location.is_empty() {
+            inner.insert(key_of("publisher"), key_of(name));
+        } else {
+            let mut publisher = serde_yaml_ng::Mapping::new();
+            if !name.is_empty() {
+                publisher.insert(key_of("name"), key_of(name));
+            }
+            publisher.insert(key_of("location"), key_of(location));
+            inner.insert(key_of("publisher"), Value::Mapping(publisher));
+        }
+        // Remove a stray top-level `location:` left by an entry created before this was
+        // fixed (see `EntryFields::location`'s doc comment) — otherwise it sits as inert,
+        // confusing leftover data now that the field it's actually read from is the nested
+        // one above.
+        //
+        // Only when it's the legacy stray this editor was showing (same type rule as
+        // `read_fields`, and not a value the editor never displayed): a conference's own event
+        // place is real data and stays.
+        let type_lower = inner
+            .get(key_of("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if top_level_location_is_publication_place(&type_lower) {
+            inner.remove(key_of("location"));
+        }
     }
 
     // creators — author / editor / affiliated YAML fields, each removed if it ends up empty.

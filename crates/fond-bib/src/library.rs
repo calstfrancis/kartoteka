@@ -78,7 +78,8 @@ impl Library {
         }
         let gitignore = root.join(".gitignore");
         if !gitignore.exists() {
-            fs::write(&gitignore, GITIGNORE_BODY).map_err(|e| BibError::io(&gitignore, e))?;
+            crate::util::write_atomic(&gitignore, GITIGNORE_BODY)
+                .map_err(|e| BibError::io(&gitignore, e))?;
         }
         Library::open(root)
     }
@@ -203,7 +204,7 @@ impl Library {
         let path = self.entry_path(entry.key());
         let text = entry::serialize_entry(entry)?;
         ensure_parent(&path)?;
-        fs::write(&path, text).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, text).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -227,7 +228,7 @@ impl Library {
     pub fn write_note(&self, key: &str, note: &Note) -> Result<PathBuf> {
         let path = self.note_path(key);
         ensure_parent(&path)?;
-        fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -287,7 +288,7 @@ impl Library {
     pub fn write_child_note(&self, key: &str, note_id: &str, note: &ExtraNote) -> Result<PathBuf> {
         let path = self.child_note_path(key, note_id);
         ensure_parent(&path)?;
-        fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -323,7 +324,7 @@ impl Library {
     pub fn write_standalone_note(&self, note_id: &str, note: &ExtraNote) -> Result<PathBuf> {
         let path = self.standalone_note_path(note_id);
         ensure_parent(&path)?;
-        fs::write(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, note.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -356,7 +357,7 @@ impl Library {
     pub fn write_node(&self, slug: &str, node: &Node) -> Result<PathBuf> {
         let path = self.node_path(slug);
         ensure_parent(&path)?;
-        fs::write(&path, node.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, node.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -421,6 +422,23 @@ impl Library {
         self.root.join(ATTACHMENTS_DIR)
     }
 
+    /// `(bare hex hash, blob path)` for each of `key`'s recorded attachments whose blob is
+    /// present on disk. Empty when the entry has no note or it can't be read.
+    pub fn attachment_blobs(&self, key: &str) -> Vec<(String, PathBuf)> {
+        self.load_note(key)
+            .ok()
+            .flatten()
+            .map(|n| n.frontmatter.attachments)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|att| {
+                let hex = strip_hash_prefix(&att.hash).to_string();
+                let path = self.attachment_blob_path(&hex);
+                path.exists().then_some((hex, path))
+            })
+            .collect()
+    }
+
     /// Path where the blob with the given bare hex hash lives.
     pub fn attachment_blob_path(&self, hex: &str) -> PathBuf {
         self.root.join(ATTACHMENTS_DIR).join(hex)
@@ -444,7 +462,7 @@ impl Library {
             .map_err(|e| BibError::io(self.attachments_dir(), e))?;
         let dest = self.attachment_blob_path(&hex);
         if !dest.exists() {
-            fs::write(&dest, &bytes).map_err(|e| BibError::io(&dest, e))?;
+            crate::util::write_atomic(&dest, &bytes).map_err(|e| BibError::io(&dest, e))?;
         }
 
         let mut note = self.load_note(key)?.unwrap_or_default();
@@ -565,7 +583,7 @@ impl Library {
         let dir = self.covers_dir();
         fs::create_dir_all(&dir).map_err(|e| BibError::io(&dir, e))?;
         let path = self.cover_cache_path(isbn);
-        fs::write(&path, bytes).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, bytes).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -775,11 +793,12 @@ impl Library {
         // Expected maintained edges per host, derived from every forward edge in the vault.
         // expected[owner] = edges that owner must carry because of others' forward edges.
         let mut expected: HashMap<String, Vec<Relation>> = HashMap::new();
+        let mut unloadable: HashSet<String> = HashSet::new();
         for id in &host_ids {
-            // A host whose backing file doesn't parse is skipped here (best-effort): fsck's
-            // dedicated entry/node parse checks report it, and we can't reconcile what we
-            // can't read.
+            // A host whose backing file doesn't parse is skipped here: fsck's dedicated
+            // parse checks report it, and we can't reconcile what we can't read.
             let Ok(host) = self.load_host(id) else {
+                unloadable.insert(id.clone());
                 continue;
             };
             for r in host.relations().iter().filter(|r| !r.inverse) {
@@ -794,6 +813,26 @@ impl Library {
                     .or_default()
                     .push(counterpart(r.predicate, id));
             }
+        }
+
+        // Repairing with a host we couldn't read would judge every inverse edge that points
+        // back at it "orphaned" (its forward edges generated no expectations) and delete
+        // valid data. Refuse instead; a plain report still runs, minus those false positives.
+        if fix && !unloadable.is_empty() {
+            let mut names: Vec<&String> = unloadable.iter().collect();
+            names.sort();
+            return Err(BibError::RefusedRepair {
+                message: format!(
+                    "{} note/node file(s) could not be read ({}); fix or remove them first, \
+                     otherwise valid inverse edges pointing at them would be deleted",
+                    names.len(),
+                    names
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
         }
 
         for id in &host_ids {
@@ -812,7 +851,7 @@ impl Library {
             for r in host.relations() {
                 if r.inverse {
                     // Derived asymmetric inverse: keep only if still expected.
-                    if want_ids.contains(&r.identity()) {
+                    if want_ids.contains(&r.identity()) || unloadable.contains(&r.target) {
                         rebuilt.push(r.clone());
                     } else {
                         report
@@ -904,7 +943,7 @@ impl Library {
     pub fn write_annotations(&self, sidecar: &AnnotationSidecar) -> Result<PathBuf> {
         let path = self.annot_path(&sidecar.key);
         ensure_parent(&path)?;
-        fs::write(&path, sidecar.to_json()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, sidecar.to_json()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -924,7 +963,7 @@ impl Library {
     pub fn write_ai(&self, key: &str, ai: &AiMetadata) -> Result<PathBuf> {
         let path = self.ai_path(key);
         ensure_parent(&path)?;
-        fs::write(&path, ai.to_yaml()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, ai.to_yaml()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -943,7 +982,7 @@ impl Library {
     pub fn save_custom_field_defs(&self, defs: &CustomFieldDefs) -> Result<PathBuf> {
         let path = self.custom_fields_path();
         ensure_parent(&path)?;
-        fs::write(&path, defs.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, defs.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -957,7 +996,8 @@ impl Library {
     pub fn save_collection(&self, slug: &str, collection: &Collection) -> Result<PathBuf> {
         let path = self.collection_path(slug);
         ensure_parent(&path)?;
-        fs::write(&path, collection.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, collection.to_text()?)
+            .map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -1062,6 +1102,15 @@ impl Library {
                 message: "would create a cycle".to_string(),
             });
         }
+        // A parent that doesn't exist would leave this collection unreachable in the tree.
+        if let Some(parent) = new_parent {
+            if !self.collection_path(parent).is_file() {
+                return Err(BibError::Collection {
+                    slug: slug.to_string(),
+                    message: format!("parent collection '{parent}' does not exist"),
+                });
+            }
+        }
         let mut collection = self.load_collection(slug)?;
         collection.parent = new_parent.map(|s| s.to_string());
         self.save_collection(slug, &collection)?;
@@ -1118,6 +1167,34 @@ impl Library {
         //    We drop edges wholesale rather than routing through `set_relations`, so a corrupt
         //    counterpart elsewhere can't block the delete.
         report.relations_cleared = self.strip_all_edges_to(key)?;
+        // ...and the two note-only references `strip_all_edges_to` doesn't cover: legacy
+        // untyped `related:` lists and a book-part's `derived_from_book`. They used to be
+        // left dangling (and `fsck` didn't notice).
+        for other in self.keys_sorted()? {
+            if other == key {
+                continue;
+            }
+            let Ok(Some(mut note)) = self.load_note(&other) else {
+                continue;
+            };
+            let before = (
+                note.frontmatter.related.len(),
+                note.frontmatter.derived_from_book.clone(),
+            );
+            note.frontmatter.related.retain(|k| k != key);
+            if note.frontmatter.derived_from_book.as_deref() == Some(key) {
+                note.frontmatter.derived_from_book = None;
+                note.frontmatter.derived_from_role = None;
+            }
+            if before
+                != (
+                    note.frontmatter.related.len(),
+                    note.frontmatter.derived_from_book.clone(),
+                )
+            {
+                self.write_note(&other, &note)?;
+            }
+        }
 
         // 2. Remove `key` from every collection that lists it.
         for slug in self.collection_slugs()? {
@@ -1158,13 +1235,24 @@ impl Library {
 
         // 4. GC attachment blobs no surviving note references (the note above is now gone, so
         //    it no longer counts toward the reference set).
+        //    If any other note can't be read we can't know what it references, so keep every
+        //    blob rather than risk deleting one that's still in use (a leaked blob is
+        //    harmless and `fsck` reports it; a deleted one is gone).
         if !own_hashes.is_empty() {
-            let still_referenced = self.referenced_attachment_hashes()?;
+            let still_referenced = match self.referenced_attachment_hashes() {
+                Ok(set) => set,
+                Err(_) => return Ok(report),
+            };
             for hash in own_hashes {
                 if still_referenced.contains(&hash) {
                     continue;
                 }
-                let hex = hash.rsplit(':').next().unwrap_or(&hash);
+                let hex = strip_hash_prefix(&hash);
+                // A hand-edited hash such as `blake3:../../x` must never let `remove_file`
+                // step outside `attachments/`.
+                if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                    continue;
+                }
                 let blob = self.attachment_blob_path(hex);
                 match fs::remove_file(&blob) {
                     Ok(()) => report.blobs_removed.push(blob),
@@ -1231,7 +1319,10 @@ impl Library {
     fn referenced_attachment_hashes(&self) -> Result<HashSet<String>> {
         let mut set = HashSet::new();
         for key in self.keys_sorted()? {
-            if let Ok(Some(note)) = self.load_note(&key) {
+            // `?`, not `if let Ok(..)`: an unreadable note must fail the whole computation.
+            // Treating it as "references nothing" made blob GC delete attachments that note
+            // still owned.
+            if let Some(note) = self.load_note(&key)? {
                 for a in &note.frontmatter.attachments {
                     set.insert(a.hash.clone());
                 }
@@ -1259,7 +1350,7 @@ impl Library {
     pub fn save_project(&self, slug: &str, project: &Project) -> Result<PathBuf> {
         let path = self.project_path(slug);
         ensure_parent(&path)?;
-        fs::write(&path, project.to_text()?).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, project.to_text()?).map_err(|e| BibError::io(&path, e))?;
         Ok(path)
     }
 
@@ -1304,7 +1395,7 @@ impl Library {
             path: path.clone(),
             message: e.to_string(),
         })?;
-        fs::write(&path, json).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, json).map_err(|e| BibError::io(&path, e))?;
         Ok(map)
     }
 
@@ -1457,34 +1548,57 @@ impl Library {
         Ok(groups)
     }
 
-    /// Merge a duplicate group into `into`: fold the others' tags, attachments,
-    /// annotations, and note prose into the target; delete the others' files; and replace
-    /// them in every collection. `into` must be one of `keys`. Regenerates `library.yml`.
+    /// Merge a duplicate group into `into`. Folds the others' data into the target — tags,
+    /// attachments, prose, annotations, **and** everything else a note carries (rating, read
+    /// status, dates, progress, tasks, custom fields, cite prefs, relations, book-part
+    /// provenance, child notes, AI sidecar, and any bibliographic field the target lacks such
+    /// as a DOI/ISBN) — then deletes the others' files, replaces them in every collection, and
+    /// re-points every other record's edge/`related`/`derived_from_book` at the target so
+    /// nothing is left dangling. Where both sides have a single-valued field, the target's
+    /// wins. `into` must be one of `keys`. Regenerates `library.yml`.
+    ///
+    /// Everything is read and validated before the first write.
     pub fn merge_group(&self, keys: &[String], into: &str) -> Result<()> {
         let others: Vec<&String> = keys.iter().filter(|k| k.as_str() != into).collect();
+        let other_keys: Vec<String> = others.iter().map(|k| k.to_string()).collect();
 
         let mut note = self.load_note(into)?.unwrap_or_default();
-        let mut annots = self
-            .load_annotations(into)?
-            .unwrap_or_else(|| AnnotationSidecar::new(into));
+        let existing_annots = self.load_annotations(into)?;
+        let into_had_annots = existing_annots.is_some();
+        let mut annots = existing_annots.unwrap_or_else(|| AnnotationSidecar::new(into));
 
+        // Read every source up front so a corrupt one aborts before anything is written.
+        let mut other_notes = Vec::new();
+        let mut other_annots = Vec::new();
         for other in &others {
-            if let Some(other_note) = self.load_note(other)? {
-                for tag in other_note.frontmatter.tags {
-                    if !note.frontmatter.tags.contains(&tag) {
-                        note.frontmatter.tags.push(tag);
-                    }
+            other_notes.push(self.load_note(other)?);
+            other_annots.push(self.load_annotations(other)?);
+        }
+        let mut fields = entry::read_fields(&self.load_entry(into)?.entry);
+        let mut fields_changed = false;
+        for other in &others {
+            let of = entry::read_fields(&self.load_entry(other)?.entry);
+            for (mine, theirs) in [
+                (&mut fields.doi, of.doi),
+                (&mut fields.isbn, of.isbn),
+                (&mut fields.publisher, of.publisher),
+                (&mut fields.location, of.location),
+                (&mut fields.year, of.year),
+            ] {
+                if mine.trim().is_empty() && !theirs.trim().is_empty() {
+                    *mine = theirs;
+                    fields_changed = true;
                 }
-                for att in other_note.frontmatter.attachments {
-                    if !note
-                        .frontmatter
-                        .attachments
-                        .iter()
-                        .any(|a| a.hash == att.hash)
-                    {
-                        note.frontmatter.attachments.push(att);
-                    }
-                }
+            }
+            if fields.creators.is_empty() && !of.creators.is_empty() {
+                fields.creators = of.creators;
+                fields_changed = true;
+            }
+        }
+
+        for (other_note, sidecar) in other_notes.into_iter().zip(other_annots) {
+            if let Some(other_note) = other_note {
+                merge_frontmatter(&mut note.frontmatter, other_note.frontmatter);
                 let body = other_note.body.trim();
                 if !body.is_empty() {
                     if !note.body.trim().is_empty() {
@@ -1494,13 +1608,35 @@ impl Library {
                     note.body.push('\n');
                 }
             }
-            if let Some(sidecar) = self.load_annotations(other)? {
+            if let Some(sidecar) = sidecar {
+                // The sidecar records which PDF its quadpoints were authored against; a
+                // freshly created target sidecar must inherit that, or a later re-anchor
+                // check has nothing to compare against.
+                if annots.pdf_hash.is_none() && !into_had_annots {
+                    annots.pdf_hash = sidecar.pdf_hash.clone();
+                }
                 for a in sidecar.annotations {
                     annots.upsert(a);
                 }
             }
         }
 
+        // Edges that pointed at a merged-away key now point at the target; a self-edge that
+        // results (the two duplicates related to each other) is dropped.
+        for r in note.frontmatter.relations.iter_mut() {
+            if other_keys.contains(&r.target) {
+                r.target = into.to_string();
+            }
+        }
+        note.frontmatter.relations.retain(|r| r.target != into);
+        dedupe_relations(&mut note.frontmatter.relations);
+        note.frontmatter
+            .related
+            .retain(|k| k != into && !other_keys.contains(k));
+
+        if fields_changed {
+            self.edit_fields(into, &fields)?;
+        }
         self.write_note(into, &note)?;
         if !annots.annotations.is_empty() {
             annots.key = into.to_string();
@@ -1508,10 +1644,39 @@ impl Library {
         }
 
         for other in &others {
+            // Child notes and the AI sidecar live outside the note file; carry them over
+            // instead of orphaning them.
+            let src_dir = self.child_note_dir(other);
+            if src_dir.is_dir() {
+                let dest_dir = self.child_note_dir(into);
+                fs::create_dir_all(&dest_dir).map_err(|e| BibError::io(&dest_dir, e))?;
+                for ent in fs::read_dir(&src_dir).map_err(|e| BibError::io(&src_dir, e))? {
+                    let ent = ent.map_err(|e| BibError::io(&src_dir, e))?;
+                    let mut dest = dest_dir.join(ent.file_name());
+                    if dest.exists() {
+                        let name = ent.file_name().to_string_lossy().into_owned();
+                        dest = dest_dir.join(format!("{other}-{name}"));
+                    }
+                    fs::rename(ent.path(), &dest).map_err(|e| BibError::io(&dest, e))?;
+                }
+                let _ = fs::remove_dir_all(&src_dir);
+            }
+            let ai_src = self.ai_path(other);
+            if ai_src.is_file() {
+                let ai_dest = self.ai_path(into);
+                if ai_dest.exists() {
+                    let _ = fs::remove_file(&ai_src);
+                } else {
+                    ensure_parent(&ai_dest)?;
+                    fs::rename(&ai_src, &ai_dest).map_err(|e| BibError::io(&ai_dest, e))?;
+                }
+            }
             let _ = fs::remove_file(self.entry_path(other));
             let _ = fs::remove_file(self.note_path(other));
             let _ = fs::remove_file(self.annot_path(other));
         }
+
+        self.repoint_references(&other_keys, into)?;
 
         // Replace merged keys in every collection (deduped, order preserved).
         for slug in self.collection_slugs()? {
@@ -1539,12 +1704,71 @@ impl Library {
         Ok(())
     }
 
+    /// Re-point every record's references to any of `from` (a merged-away key) at `to`: typed
+    /// relation targets on every note and node, legacy `related` lists, and a book-part's
+    /// `derived_from_book`. Unparseable records are skipped, as in `strip_all_edges_to`.
+    fn repoint_references(&self, from: &[String], to: &str) -> Result<()> {
+        let key_set = self.existing_keys()?;
+        let mut host_ids: Vec<String> = self.keys_sorted()?;
+        for slug in self.node_slugs()? {
+            if !key_set.contains(&slug) {
+                host_ids.push(slug);
+            }
+        }
+        for id in &host_ids {
+            let Ok(Some(mut host)) = self.load_host_existing(id) else {
+                continue;
+            };
+            let mut changed = false;
+            for r in host.relations_mut().iter_mut() {
+                if from.contains(&r.target) {
+                    r.target = to.to_string();
+                    changed = true;
+                }
+            }
+            if let RelationHost::Note { note, .. } = &mut host {
+                if note.frontmatter.related.iter().any(|k| from.contains(k)) {
+                    for k in note.frontmatter.related.iter_mut() {
+                        if from.contains(k) {
+                            *k = to.to_string();
+                        }
+                    }
+                    let mut seen = HashSet::new();
+                    note.frontmatter
+                        .related
+                        .retain(|k| k != id && seen.insert(k.clone()));
+                    changed = true;
+                }
+                if note
+                    .frontmatter
+                    .derived_from_book
+                    .as_ref()
+                    .is_some_and(|b| from.contains(b))
+                {
+                    note.frontmatter.derived_from_book = Some(to.to_string());
+                    changed = true;
+                }
+            }
+            if changed {
+                // A host that was the target itself must not end up with an edge to itself.
+                host.relations_mut().retain(|r| r.target != *id);
+                dedupe_relations(host.relations_mut());
+                self.save_host(&host)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Add entries with freshly generated, collision-free citation keys. Writes each
     /// `entries/<key>.yml` and regenerates `library.yml`. Returns the assigned keys.
     pub fn add_entries(&self, entries: &[hayagriva::Entry]) -> Result<Vec<String>> {
         let mut existing = self.existing_keys()?;
         let mut assigned = Vec::with_capacity(entries.len());
 
+        // Two passes: derive every key and serialize every entry first, and only then write.
+        // Writing inside the loop meant an unkeyable (or unserializable) entry part-way through
+        // a batch left the ones before it on disk, un-indexed, with the call reporting failure.
+        let mut pending: Vec<(String, String)> = Vec::with_capacity(entries.len());
         for e in entries {
             let family = entry::family_name(e);
             let year = entry::year(e);
@@ -1552,11 +1776,13 @@ impl Library {
             let base = key::generate_base_key(family.as_deref(), year, title.as_deref())?;
             let assigned_key = key::assign_key(&base, &existing);
             existing.insert(assigned_key.clone());
-
             let text = entry::serialize_entry_as(e, &assigned_key)?;
+            pending.push((assigned_key, text));
+        }
+        for (assigned_key, text) in pending {
             let path = self.entry_path(&assigned_key);
             ensure_parent(&path)?;
-            fs::write(&path, text).map_err(|e| BibError::io(&path, e))?;
+            crate::util::write_atomic(&path, text).map_err(|e| BibError::io(&path, e))?;
             assigned.push(assigned_key);
         }
 
@@ -1584,7 +1810,7 @@ impl Library {
             })?
         };
         let path = self.library_yml_path();
-        fs::write(&path, yaml).map_err(|e| BibError::io(&path, e))?;
+        crate::util::write_atomic(&path, yaml).map_err(|e| BibError::io(&path, e))?;
         Ok(())
     }
 
@@ -1597,7 +1823,11 @@ impl Library {
         // Entry files: parse + filename/inner-key agreement.
         for key in &keys {
             match self.load_entry(key) {
-                Ok(_) => {}
+                Ok(parsed) => {
+                    if entry::has_legacy_location(&parsed.entry) {
+                        report.legacy_locations.push(key.clone());
+                    }
+                }
                 Err(BibError::KeyMismatch { inner, file, .. }) => {
                     report.key_filename_mismatches.push((file, inner));
                 }
@@ -1624,8 +1854,18 @@ impl Library {
         }
 
         // Collections: dangling key references.
+        let mut parents: HashMap<String, Option<String>> = HashMap::new();
         for slug in self.collection_slugs()? {
-            let collection = self.load_collection(&slug)?;
+            let collection = match self.load_collection(&slug) {
+                Ok(c) => c,
+                Err(e) => {
+                    report.unreadable.push((
+                        self.collection_path(&slug).display().to_string(),
+                        e.to_string(),
+                    ));
+                    continue;
+                }
+            };
             for key in &collection.keys {
                 if !key_set.contains(key) {
                     report
@@ -1633,12 +1873,44 @@ impl Library {
                         .push((slug.clone(), key.clone()));
                 }
             }
+            parents.insert(slug.clone(), collection.parent.clone());
+        }
+        // A parent that doesn't exist, or a cycle (only a hand-edit can make one — the UI's
+        // reparenting rejects them).
+        for (slug, parent) in &parents {
+            let Some(parent) = parent else { continue };
+            if !parents.contains_key(parent) {
+                report
+                    .bad_collection_parents
+                    .push((slug.clone(), format!("parent '{parent}' does not exist")));
+                continue;
+            }
+            let mut seen = HashSet::new();
+            let mut cur = Some(slug.clone());
+            while let Some(c) = cur {
+                if !seen.insert(c.clone()) {
+                    report
+                        .bad_collection_parents
+                        .push((slug.clone(), "parent chain forms a cycle".to_string()));
+                    break;
+                }
+                cur = parents.get(&c).cloned().flatten();
+            }
         }
 
         // Attachments: gather every record (from notes), then reconcile with blobs.
         let mut recorded: HashSet<String> = HashSet::new();
         for key in &keys {
-            if let Some(note) = self.load_note(key)? {
+            let note = match self.load_note(key) {
+                Ok(n) => n,
+                Err(e) => {
+                    report
+                        .unreadable
+                        .push((self.note_path(key).display().to_string(), e.to_string()));
+                    continue;
+                }
+            };
+            if let Some(note) = note {
                 for att in &note.frontmatter.attachments {
                     let hex = strip_hash_prefix(&att.hash);
                     recorded.insert(hex.to_string());
@@ -1648,6 +1920,39 @@ impl Library {
                             .push((key.clone(), att.hash.clone()));
                     }
                 }
+                for target in &note.frontmatter.related {
+                    if !key_set.contains(target) {
+                        report
+                            .dangling_references
+                            .push((key.clone(), target.clone()));
+                    }
+                }
+                if let Some(book) = &note.frontmatter.derived_from_book {
+                    if !key_set.contains(book) {
+                        report.dangling_references.push((key.clone(), book.clone()));
+                    }
+                }
+            }
+        }
+        // Record files whose entry is gone (`add_counterpart_edge` can also create a bare
+        // note for a dangling relation target).
+        for stem in self.dir_stems(NOTES_DIR, "md")? {
+            if !key_set.contains(&stem) {
+                report
+                    .orphaned_records
+                    .push(format!("{NOTES_DIR}/{stem}.md"));
+            }
+        }
+        for stem in self.dir_stems(ANNOTS_DIR, "json")? {
+            if !key_set.contains(&stem) {
+                report
+                    .orphaned_records
+                    .push(format!("{ANNOTS_DIR}/{stem}.json"));
+            }
+        }
+        for stem in self.dir_stems(AI_DIR, "yml")? {
+            if !key_set.contains(&stem) {
+                report.orphaned_records.push(format!("{AI_DIR}/{stem}.yml"));
             }
         }
 
@@ -1667,7 +1972,15 @@ impl Library {
                     report.orphaned_attachments.push(name.clone());
                 }
                 // Hash-mismatch: the blob's bytes must hash to its own filename.
-                let bytes = fs::read(&path).map_err(|e| BibError::io(&path, e))?;
+                let bytes = match fs::read(&path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        report
+                            .unreadable
+                            .push((path.display().to_string(), e.to_string()));
+                        continue;
+                    }
+                };
                 let actual = blake3::hash(&bytes).to_hex().to_string();
                 if actual != name {
                     report
@@ -1680,7 +1993,15 @@ impl Library {
         // Annotation sidecars: parse, filename/inner-key agreement, and pdf_hash linkage.
         for stem in self.dir_stems(ANNOTS_DIR, "json")? {
             let path = self.annot_path(&stem);
-            let text = fs::read_to_string(&path).map_err(|e| BibError::io(&path, e))?;
+            let text = match fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    report
+                        .unreadable
+                        .push((path.display().to_string(), e.to_string()));
+                    continue;
+                }
+            };
             let sidecar = match AnnotationSidecar::parse(&text, &path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -1698,7 +2019,9 @@ impl Library {
             if let Some(pdf_hash) = &sidecar.pdf_hash {
                 let hex = strip_hash_prefix(pdf_hash);
                 let attached: bool = self
-                    .load_note(&stem)?
+                    .load_note(&stem)
+                    .ok()
+                    .flatten()
                     .map(|note| {
                         note.frontmatter
                             .attachments
@@ -1715,11 +2038,25 @@ impl Library {
         }
 
         // Typed relations: report-only reconciliation (repair is `reconcile_relations(true)`).
-        report.relations = self.reconcile_relations(false)?;
+        match self.reconcile_relations(false) {
+            Ok(r) => report.relations = r,
+            Err(e) => report
+                .unreadable
+                .push(("relations".to_string(), e.to_string())),
+        }
 
         // Projects: document paths that don't resolve to a readable file.
         for slug in self.project_slugs()? {
-            let project = self.load_project(&slug)?;
+            let project = match self.load_project(&slug) {
+                Ok(p) => p,
+                Err(e) => {
+                    report.unreadable.push((
+                        self.project_path(&slug).display().to_string(),
+                        e.to_string(),
+                    ));
+                    continue;
+                }
+            };
             for doc in &project.documents {
                 if !expand_tilde(doc).is_file() {
                     report
@@ -2016,6 +2353,22 @@ pub struct FsckReport {
     pub unparseable_notes: Vec<(String, String)>,
     /// Paths of child/standalone note files whose filename stem isn't a well-formed note id.
     pub malformed_note_ids: Vec<String>,
+    /// `(path, error)` for any other record that could not be read or parsed — a note, a
+    /// collection, a project, an annotation file or a blob. `fsck` reports these and keeps
+    /// going; it used to abort at the first one, so a single corrupt file meant no report.
+    pub unreadable: Vec<(String, String)>,
+    /// Record files (`notes/<key>.md`, `annots/<key>.json`, `ai/<key>.yml`) for a key that has
+    /// no entry.
+    pub orphaned_records: Vec<String>,
+    /// `(collection slug, detail)`: a `parent` that doesn't exist, or a parent cycle.
+    pub bad_collection_parents: Vec<(String, String)>,
+    /// `(entry key, target)`: a legacy `related` entry or `derived_from_book` naming a key
+    /// with no entry.
+    pub dangling_references: Vec<(String, String)>,
+    /// Entries whose place of publication is still a top-level `location:` (where older
+    /// versions wrote it) instead of `publisher.location` — citation styles never see it.
+    /// Opening the entry and saving its Location field moves it.
+    pub legacy_locations: Vec<String>,
 }
 
 impl FsckReport {
@@ -2042,6 +2395,11 @@ impl FsckReport {
             + self.orphaned_child_note_dirs.len()
             + self.unparseable_notes.len()
             + self.malformed_note_ids.len()
+            + self.unreadable.len()
+            + self.orphaned_records.len()
+            + self.bad_collection_parents.len()
+            + self.dangling_references.len()
+            + self.legacy_locations.len()
     }
 }
 
@@ -2061,6 +2419,61 @@ fn title_dice_similarity(a: &str, b: &str) -> f64 {
     }
     let common = ba.intersection(&bb).count();
     (2.0 * common as f64) / (ba.len() + bb.len()) as f64
+}
+
+/// Fold `other`'s frontmatter into `into`, keeping `into`'s value wherever both have a
+/// single-valued field and unioning the list-valued ones.
+fn merge_frontmatter(into: &mut crate::note::NoteFrontmatter, other: crate::note::NoteFrontmatter) {
+    for tag in other.tags {
+        if !into.tags.contains(&tag) {
+            into.tags.push(tag);
+        }
+    }
+    for att in other.attachments {
+        if !into.attachments.iter().any(|a| a.hash == att.hash) {
+            into.attachments.push(att);
+        }
+    }
+    for k in other.related {
+        if !into.related.contains(&k) {
+            into.related.push(k);
+        }
+    }
+    into.relations.extend(other.relations);
+    for t in other.tasks {
+        if !into.tasks.contains(&t) {
+            into.tasks.push(t);
+        }
+    }
+    for (k, v) in other.custom_fields {
+        into.custom_fields.entry(k).or_insert(v);
+    }
+    into.read_status = into.read_status.or(other.read_status);
+    into.rating = into.rating.or(other.rating);
+    into.progress = into.progress.or(other.progress);
+    into.page_label_override = into.page_label_override.or(other.page_label_override);
+    // Earliest "added" date wins (ISO strings sort chronologically); keep any read date.
+    into.date_added = match (into.date_added.take(), other.date_added) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    into.date_read = into.date_read.take().or(other.date_read);
+    if into.cite.short.is_none() {
+        into.cite.short = other.cite.short;
+    }
+    if into.cite.preferred_style.is_none() {
+        into.cite.preferred_style = other.cite.preferred_style;
+    }
+    if into.derived_from_book.is_none() {
+        into.derived_from_book = other.derived_from_book;
+        into.derived_from_role = other.derived_from_role;
+    }
+}
+
+/// Drop repeated `(predicate, target, inverse)` edges, keeping first-occurrence order.
+fn dedupe_relations(rels: &mut Vec<Relation>) {
+    let mut seen = HashSet::new();
+    rels.retain(|r| seen.insert((r.predicate, r.target.clone(), r.inverse)));
 }
 
 #[cfg(test)]

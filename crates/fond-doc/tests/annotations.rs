@@ -71,3 +71,34 @@ fn embed_then_extract_round_trips_a_highlight() {
         assert!(snippet.contains("highlight"), "snippet was: {snippet:?}");
     }
 }
+
+/// A highlight spanning two lines must come back as two quads, not one bounding box that
+/// covers the gap (and whatever is in it) on export.
+#[test]
+fn multi_line_highlight_keeps_one_quad_per_line() {
+    let pdfium = match bind_pdfium() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("SKIP: PDFium not available ({e})");
+            return;
+        }
+    };
+    let pdf = minimal_pdf("two line highlight");
+    let to_embed = AnnotationToEmbed {
+        page: 1,
+        quadpoints: vec![
+            [72.0, 726.0, 500.0, 726.0, 72.0, 698.0, 500.0, 698.0],
+            [72.0, 660.0, 300.0, 660.0, 72.0, 632.0, 300.0, 632.0],
+        ],
+        contents: None,
+    };
+    let annotated = embed_highlights(pdfium, &pdf, std::slice::from_ref(&to_embed)).unwrap();
+    let extracted = extract_annotations(pdfium, &annotated).unwrap();
+    assert_eq!(extracted.len(), 1);
+    assert_eq!(
+        extracted[0].quadpoints.len(),
+        2,
+        "quads collapsed: {:?}",
+        extracted[0].quadpoints
+    );
+}

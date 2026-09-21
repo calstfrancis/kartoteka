@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: nothing here needs to write to the repo.
+permissions:
+  contents: read
+  checks: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -44,40 +49,41 @@ jobs:
           # Matched by content, not filename: runners use both the old .list form and
           # the deb822 .sources form, and removing only one of them missed it.
           sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
-            | xargs -r sudo rm -f
+            | xargs -r sudo rm -f || true
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy (Linux, full workspace)
         if: runner.os == 'Linux'
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --features fond-bib/acquire -- -D warnings
       - name: Clippy (Windows, excluding the Linux-only GTK crates)
         # Both GTK crates must be excluded, not just the app: fond-read-gtk (the shared
         # reader, extracted from kartoteka-ui-gtk in 0.12.1) pulls glib-sys/gobject-sys,
         # whose build scripts need pkg-config and GTK dev libraries the Windows runner has
         # no way to provide. Adding a GTK crate to this workspace means adding it here.
         if: runner.os == 'Windows'
-        run: cargo clippy --workspace --exclude kartoteka-ui-gtk --exclude fond-read-gtk --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude kartoteka-ui-gtk --exclude fond-read-gtk --all-targets --features fond-bib/acquire -- -D warnings
+      # PDFium is pinned to the same chromium/7961 build the flatpak manifest ships, not
+      # `releases/latest` — CI used to test against a different (and unverified, silently
+      # changing) library than the one users run.
       - name: Fetch PDFium (Linux)
         if: runner.os == 'Linux'
         run: |
           mkdir -p "$HOME/pdfium"
-          curl -fsSL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz \
+          curl -fsSL https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7961/pdfium-linux-x64.tgz \
             | tar -xz -C "$HOME/pdfium"
           echo "PDFIUM_LIB_PATH=$HOME/pdfium/lib" >> "$GITHUB_ENV"
       - name: Fetch PDFium (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          curl.exe -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz
+          curl.exe -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7961/pdfium-win-x64.tgz
           mkdir pdfium; tar -xzf pdfium.tgz -C pdfium
           echo "PDFIUM_LIB_PATH=$PWD\pdfium\bin" >> $env:GITHUB_ENV
       - name: Test (Linux, full workspace)
         if: runner.os == 'Linux'
-        run: cargo test --workspace
+        run: cargo test --workspace --features fond-bib/acquire
       - name: Test (Windows, excluding the Linux-only GTK crates)
         if: runner.os == 'Windows'
-        run: cargo test --workspace --exclude kartoteka-ui-gtk --exclude fond-read-gtk
-      - name: Test (acquire feature)
-        run: cargo test -p fond-bib --features acquire
+        run: cargo test --workspace --exclude kartoteka-ui-gtk --exclude fond-read-gtk --features fond-bib/acquire

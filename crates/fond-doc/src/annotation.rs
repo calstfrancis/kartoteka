@@ -79,11 +79,27 @@ pub fn extract_annotations(pdfium: &Pdfium, bytes: &[u8]) -> Result<Vec<PdfAnnot
                 _ => continue,
             };
 
-            let quadpoints = annotation
-                .bounds()
-                .ok()
-                .map(|r| vec![rect_to_quad(&r)])
-                .unwrap_or_default();
+            // The annotation's real QuadPoints — one quad per line of a multi-line highlight.
+            // Using only its bounding rectangle turned a highlight spanning several lines (or
+            // columns) into one big box, which then exported back over unrelated text.
+            let mut quadpoints: Vec<[f32; 8]> = annotation
+                .attachment_points()
+                .iter()
+                .map(|q| {
+                    [
+                        q.x1.value, q.y1.value, q.x2.value, q.y2.value, q.x3.value, q.y3.value,
+                        q.x4.value, q.y4.value,
+                    ]
+                })
+                .collect();
+            if quadpoints.is_empty() {
+                // No quads recorded (some producers only set the rect): fall back to it.
+                quadpoints = annotation
+                    .bounds()
+                    .ok()
+                    .map(|r| vec![rect_to_quad(&r)])
+                    .unwrap_or_default();
+            }
 
             let contents = annotation.contents().filter(|s| !s.trim().is_empty());
             let snippet = text
@@ -122,8 +138,29 @@ pub fn embed_highlights(
         let mut page = document.pages().get(index)?;
         let mut annotation = page.annotations_mut().create_highlight_annotation()?;
 
-        if let Some(first) = item.quadpoints.first() {
-            annotation.set_bounds(quad_bounds(first))?;
+        // The annotation rect must cover *every* quad, not just the first line's.
+        if !item.quadpoints.is_empty() {
+            let all: Vec<f32> = item.quadpoints.iter().flatten().copied().collect();
+            let xs = all.iter().step_by(2).copied();
+            let ys = all.iter().skip(1).step_by(2).copied();
+            let mut bounds = [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ];
+            for x in xs {
+                bounds[0] = bounds[0].min(x);
+                bounds[2] = bounds[2].max(x);
+            }
+            for y in ys {
+                bounds[1] = bounds[1].min(y);
+                bounds[3] = bounds[3].max(y);
+            }
+            annotation.set_bounds(quad_bounds(&[
+                bounds[0], bounds[3], bounds[2], bounds[3], bounds[0], bounds[1], bounds[2],
+                bounds[1],
+            ]))?;
         }
         for quad in &item.quadpoints {
             annotation

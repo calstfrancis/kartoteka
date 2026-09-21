@@ -12,6 +12,7 @@ use fond_vault::VaultError;
 /// cases below that aren't worth a bespoke sentence.
 pub fn bib_error(e: &BibError) -> String {
     match e {
+        BibError::RefusedRepair { message } => format!("Couldn't repair the library: {message}."),
         BibError::Io { path, source } => io_error("reading or writing a file", path, source),
         BibError::Yaml { path, .. } | BibError::PlainYaml { path, .. } => format!(
             "The file for \"{}\" looks like it was edited by hand and isn't valid anymore. \
@@ -72,6 +73,7 @@ pub fn vault_error(e: &VaultError) -> String {
             }
         }
         VaultError::Io { path, source } => io_error("backing up your library", path, source),
+        VaultError::Push(msg) => format!("Couldn't push to GitHub: {msg}"),
         VaultError::Watch(msg) => format!("Couldn't watch the library folder for changes ({msg})."),
     }
 }

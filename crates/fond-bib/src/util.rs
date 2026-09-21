@@ -1,6 +1,33 @@
 //! Small dependency-free helpers.
 
+use std::io::Write;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Write `contents` to `path` atomically: into a temp file next to it, fsynced, then renamed
+/// over the target. A crash or full disk mid-write leaves the previous file intact instead of
+/// a truncated one — and edits here are read-modify-rewrite of the very file being edited, so
+/// with a plain `fs::write` an interrupted save could destroy an entry or note outright. (A
+/// truncated attachment blob was worse: `store_attachment` skips writing when the blob path
+/// exists, so it was never repaired by re-importing.) The temp name has a `.tmp` extension so
+/// directory scans by `.yml`/`.md`/`.json` never mistake it for a record.
+pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let tmp = path.with_file_name(format!(".{name}.tmp"));
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(contents.as_ref())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
 
 /// Split leading `---`-delimited YAML frontmatter from a Markdown body. Returns
 /// `(yaml, body)` or `None` when there is no frontmatter block. Handles `\n` and `\r\n`

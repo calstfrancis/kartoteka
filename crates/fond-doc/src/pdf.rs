@@ -57,8 +57,8 @@ pub fn bind_pdfium() -> Result<&'static Pdfium> {
     match PDFIUM.get_or_init(bind_pdfium_uncached) {
         Ok(p) => Ok(p),
         Err(e) => Err(DocError::LibraryLoad {
-            path: e.to_string(),
-            message: String::new(),
+            path: "PDFIUM_LIB_PATH or the system library path".to_string(),
+            message: e.to_string(),
         }),
     }
 }
@@ -95,7 +95,10 @@ pub fn extract_text(pdfium: &Pdfium, bytes: &[u8]) -> Result<PdfText> {
     let page_count = document.pages().len();
     let mut pages = Vec::with_capacity(page_count as usize);
     for page in document.pages().iter() {
-        pages.push(page.text()?.all());
+        // One unreadable page must not discard the whole document's text (the `?` here made a
+        // PDF with a single bad page index as nothing at all, with no warning). The page keeps
+        // its slot as empty text so page numbers still line up.
+        pages.push(page.text().map(|t| t.all()).unwrap_or_default());
     }
     Ok(PdfText { page_count, pages })
 }

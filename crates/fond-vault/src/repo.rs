@@ -80,17 +80,27 @@ impl Vault {
     pub fn stage(&self, paths: &[impl AsRef<Path>]) -> Result<()> {
         let mut index = self.repo.index()?;
         for p in paths {
-            index.add_path(p.as_ref())?;
+            let p = p.as_ref();
+            // A path that no longer exists (deleted, or the old name of a rename) is staged
+            // as a removal instead of failing the whole call.
+            if self.workdir.join(p).exists() {
+                index.add_path(p)?;
+            } else {
+                index.remove_path(p)?;
+            }
         }
         index.write()?;
         Ok(())
     }
 
     /// Stage everything, honouring `.gitignore` (so `attachments/` and `.kartoteka/` are
-    /// never staged).
+    /// never staged) — including *deletions*. `add_all` alone only adds/updates, so a file
+    /// removed from the working tree stayed in every later commit and reappeared on restore;
+    /// `update_all` is what drops index entries whose files are gone.
     pub fn stage_all(&self) -> Result<()> {
         let mut index = self.repo.index()?;
         index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)?;
+        index.update_all(["*"].iter(), None)?;
         index.write()?;
         Ok(())
     }
@@ -103,9 +113,12 @@ impl Vault {
         let tree_oid = index.write_tree()?;
         let tree = self.repo.find_tree(tree_oid)?;
 
+        // Only a genuinely unborn HEAD means "first commit". Any other failure (corrupt or
+        // dangling HEAD) used to fall through to a parentless root commit, orphaning history.
         let parents: Vec<git2::Commit> = match self.repo.head() {
             Ok(head) => vec![head.peel_to_commit()?],
-            Err(_) => Vec::new(), // unborn HEAD: this is the first commit
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Vec::new(),
+            Err(e) => return Err(e.into()),
         };
         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
 
@@ -137,13 +150,31 @@ impl Vault {
     /// token (`x-access-token:<token>`). In-process via libgit2 — never shells out to `git`
     /// (`docs/ARCHITECTURE.md` §7). The remote's URL must be an `https://github.com/…` URL.
     pub fn push_github(&self, remote_name: &str, token: &str) -> Result<()> {
-        let branch = self.repo.head()?.shorthand().unwrap_or("main").to_string();
+        let head = self.repo.head()?;
+        if !head.is_branch() {
+            return Err(VaultError::Push(
+                "HEAD is detached — check out a branch before pushing".into(),
+            ));
+        }
+        let branch = head
+            .shorthand()
+            .ok_or_else(|| VaultError::Push("current branch name is not valid UTF-8".into()))?
+            .to_string();
 
         let mut remote = self.repo.find_remote(remote_name)?;
 
         let token = token.to_string();
         let mut callbacks = git2::RemoteCallbacks::new();
+        let attempts = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let attempts_cb = attempts.clone();
         callbacks.credentials(move |_url, _username, allowed| {
+            attempts_cb.set(attempts_cb.get() + 1);
+            if attempts_cb.get() > 1 {
+                return Err(git2::Error::from_str(
+                    "GitHub rejected the stored token — it may have expired or been revoked; \
+                     sign in again",
+                ));
+            }
             if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
                 git2::Cred::userpass_plaintext("x-access-token", &token)
             } else {
@@ -153,11 +184,30 @@ impl Vault {
             }
         });
 
+        // libgit2's `push` returns Ok even when the server rejects the ref (non-fast-forward,
+        // protected branch, hook decline) — that only shows up in this callback. Without it
+        // a rejected push was reported to the user as a success.
+        let rejection: std::rc::Rc<std::cell::RefCell<Option<String>>> = Default::default();
+        {
+            let rejection = rejection.clone();
+            callbacks.push_update_reference(move |reference, status| {
+                if let Some(msg) = status {
+                    *rejection.borrow_mut() = Some(format!("{reference}: {msg}"));
+                }
+                Ok(())
+            });
+        }
         let mut options = git2::PushOptions::new();
         options.remote_callbacks(callbacks);
 
         let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
         remote.push(&[refspec.as_str()], Some(&mut options))?;
+        if let Some(msg) = rejection.borrow_mut().take() {
+            return Err(VaultError::Push(format!(
+                "GitHub rejected the push ({msg}). If you have edited this library elsewhere, \
+                 the remote has changes this copy doesn't."
+            )));
+        }
         Ok(())
     }
 

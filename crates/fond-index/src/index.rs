@@ -146,6 +146,16 @@ fn remove_dir_all_retrying(dir: &Path) -> std::io::Result<()> {
     unreachable!("loop always returns before exhausting ATTEMPTS")
 }
 
+/// The sibling directory a rebuild is staged in before being swapped into place.
+fn staging_dir(dir: &Path) -> std::path::PathBuf {
+    let mut name = dir
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "index".into());
+    name.push(".building");
+    dir.with_file_name(name)
+}
+
 /// An opened search index, ready to query.
 pub struct SearchIndex {
     index: Index,
@@ -171,22 +181,56 @@ impl SearchIndex {
     /// parsing stays out of this crate too); return `None` from either to index no such text
     /// for a key — an entry with neither attachment (or an unavailable extractor) just gets
     /// an empty field, same as always.
+    ///
+    /// The new index is built in a sibling directory and only swapped in once it is complete,
+    /// so a failure part-way through leaves the previous (working) index exactly as it was —
+    /// this used to delete the old index first, so any error left search with no index at all.
+    /// A single unparseable entry, note, sidecar or AI file no longer aborts the build either;
+    /// that record is indexed with what could be read (`fsck` reports the corrupt file).
     pub fn rebuild<F, G>(
         library: &Library,
         dir: &Path,
-        mut pdf_text: F,
-        mut epub_text: G,
+        pdf_text: F,
+        epub_text: G,
     ) -> Result<SearchIndex>
     where
         F: FnMut(&str) -> Option<String>,
         G: FnMut(&str) -> Option<String>,
     {
+        let staging = staging_dir(dir);
+        if staging.exists() {
+            remove_dir_all_retrying(&staging).map_err(|e| IndexError::Io {
+                path: staging.clone(),
+                source: e,
+            })?;
+        }
+        if let Err(e) = Self::build_into(library, &staging, pdf_text, epub_text) {
+            let _ = remove_dir_all_retrying(&staging);
+            return Err(e);
+        }
         if dir.exists() {
             remove_dir_all_retrying(dir).map_err(|e| IndexError::Io {
                 path: dir.to_path_buf(),
                 source: e,
             })?;
         }
+        std::fs::rename(&staging, dir).map_err(|e| IndexError::Io {
+            path: dir.to_path_buf(),
+            source: e,
+        })?;
+        Self::open(dir)
+    }
+
+    fn build_into<F, G>(
+        library: &Library,
+        dir: &Path,
+        mut pdf_text: F,
+        mut epub_text: G,
+    ) -> Result<()>
+    where
+        F: FnMut(&str) -> Option<String>,
+        G: FnMut(&str) -> Option<String>,
+    {
         std::fs::create_dir_all(dir).map_err(|e| IndexError::Io {
             path: dir.to_path_buf(),
             source: e,
@@ -199,7 +243,9 @@ impl SearchIndex {
         let mut writer: IndexWriter = index.writer(50_000_000)?;
 
         for key in library.keys_sorted()? {
-            let parsed = library.load_entry(&key)?;
+            let Ok(parsed) = library.load_entry(&key) else {
+                continue;
+            };
             let e = &parsed.entry;
 
             let title = entry::title_string(e).unwrap_or_default();
@@ -207,7 +253,7 @@ impl SearchIndex {
             let year = entry::year(e).map(|y| y.to_string()).unwrap_or_default();
             let type_ = format!("{:?}", e.entry_type()).to_lowercase();
 
-            let (tags, facets, note_body) = match library.load_note(&key)? {
+            let (tags, facets, note_body) = match library.load_note(&key).ok().flatten() {
                 Some(note) => {
                     // Facets: index each faceted tag's name plus its full `name:value` so
                     // `facet:discipline` scoping finds items that carry that facet.
@@ -230,7 +276,9 @@ impl SearchIndex {
             // AI-generated text, indexed into its own field so it can be scoped/filtered
             // apart from curated text (`ai:` in a query).
             let ai_text = library
-                .load_ai(&key)?
+                .load_ai(&key)
+                .ok()
+                .flatten()
                 .map(|ai| {
                     let mut parts: Vec<String> = Vec::new();
                     parts.extend(ai.summary);
@@ -243,7 +291,9 @@ impl SearchIndex {
                 .unwrap_or_default();
 
             let annotation = library
-                .load_annotations(&key)?
+                .load_annotations(&key)
+                .ok()
+                .flatten()
                 .map(|s| {
                     s.annotations
                         .iter()
@@ -336,7 +386,7 @@ impl SearchIndex {
         }
 
         writer.commit()?;
-        Ok(SearchIndex { index, fields })
+        Ok(())
     }
 
     /// Run a query. Bare terms search the text fields; field scoping (`author:`, `tag:`,

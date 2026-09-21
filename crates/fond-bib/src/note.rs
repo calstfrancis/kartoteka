@@ -3,7 +3,7 @@
 //! See `docs/DATA-MODEL.md`. Keeping this out of `entries/*.yml` is what lets the
 //! generated `library.yml` stay pure Hayagriva.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -151,7 +151,11 @@ pub struct NoteFrontmatter {
     /// `Tag`-type value is comma-separated, a `Number`-type value is numeral text. A field
     /// with no value here just doesn't show one; nothing needs backfilling when a new
     /// field is defined.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "serialize_sorted"
+    )]
     pub custom_fields: HashMap<String, String>,
     /// Set when this entry was created via "Create book part…" from another entry in this
     /// library (that entry's key) — lets "Refresh from source book" re-pull the parent
@@ -164,6 +168,21 @@ pub struct NoteFrontmatter {
     /// instead of guessing. `None` for anything not created this way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_from_role: Option<String>,
+    /// Any frontmatter key this version doesn't model (a hand-added `source:`, a field from a
+    /// newer version). Kept and written back verbatim — Kartoteka rewrites notes constantly
+    /// (relations, attachments, tags, merges), and a typed struct alone silently dropped
+    /// every key it didn't know the first time it did.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, serde_yaml_ng::Value>,
+}
+
+/// Serialize a `HashMap` with its keys sorted. `HashMap` iteration order is random per
+/// process, so every rewrite of a note reordered `custom-fields` and produced noisy git diffs.
+fn serialize_sorted<S: serde::Serializer>(
+    map: &HashMap<String, String>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    map.iter().collect::<BTreeMap<_, _>>().serialize(serializer)
 }
 
 /// Split a faceted tag into `(facet, value)`. A tag containing `:` is faceted

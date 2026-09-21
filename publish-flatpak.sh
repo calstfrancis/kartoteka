@@ -31,10 +31,25 @@ if [[ $# -ne 1 ]]; then
 fi
 VERSION="$1"
 
-CARGO_VERSION=$(grep '^version' kartoteka-ui-gtk/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+CARGO_VERSION=$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version *=/{gsub(/^version *= *"|"$/,""); print; exit}' kartoteka-ui-gtk/Cargo.toml)
 if [[ "$CARGO_VERSION" != "$VERSION" ]]; then
   echo "ERROR: kartoteka-ui-gtk/Cargo.toml says '$CARGO_VERSION', but you passed '$VERSION'."
   echo "Did you forget the version bump? (Ask Claude to do the version bump + docs first.)"
+  exit 1
+fi
+
+# Refuse to publish from a dirty tree, or if the tag is missing / not at HEAD — otherwise
+# `git push origin main` can go out and then fail on the tag, leaving a half-done release.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "ERROR: uncommitted changes in the working tree — commit or stash them first."
+  exit 1
+fi
+if ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+  echo "ERROR: tag v$VERSION does not exist locally — tag the release commit first."
+  exit 1
+fi
+if [[ "$(git rev-parse "v$VERSION^{commit}")" != "$(git rev-parse HEAD)" ]]; then
+  echo "ERROR: v$VERSION does not point at HEAD — refusing to publish a different commit."
   exit 1
 fi
 

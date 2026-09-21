@@ -14,12 +14,12 @@ set -euo pipefail
 
 MANIFEST="packaging/io.github.calstfrancis.Kartoteka.yml"
 
-VERSION=$(grep '^version' kartoteka-ui-gtk/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+VERSION=$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version *=/{gsub(/^version *= *"|"$/,""); print; exit}' kartoteka-ui-gtk/Cargo.toml)
 echo "==> Building Kartoteka $VERSION (local dev install)"
 
 echo "==> Pushing to GitHub (flatpak-builder needs this)..."
 git push origin main
-git push origin "v$VERSION" 2>/dev/null || true
+git push origin "v$VERSION"   # no `|| true`: a real push failure must stop the build
 
 flatpak-builder --force-clean --user --install build-flatpak "$MANIFEST"
 

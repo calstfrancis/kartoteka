@@ -35,6 +35,9 @@ pub enum BibError {
     #[error("cannot derive a citation key: entry has neither an author nor a title")]
     UnkeyableEntry,
 
+    #[error("refusing to repair: {message}")]
+    RefusedRepair { message: String },
+
     #[error("import error: {message}")]
     Import { message: String },
 

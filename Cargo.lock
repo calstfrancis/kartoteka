@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "kartoteka-cli"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "clap",
  "fond-bib",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "kartoteka-ui-gtk"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "async-channel",
  "directories",

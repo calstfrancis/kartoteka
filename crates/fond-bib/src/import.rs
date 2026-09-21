@@ -258,11 +258,17 @@ impl Library {
         // parent's slug regardless of processing order, and even if the parent itself ends
         // up empty of matched items and so gets no file written — same tolerance `fsck`
         // already has for a collection key with no matching entry.
-        let mut used_slugs: HashSet<String> = HashSet::new();
-        let mut name_to_slug: HashMap<String, String> = HashMap::new();
+        //
+        // Keyed by Zotero's collection *id*, not name: two subcollections with the same name
+        // under different parents used to share one map slot, so both wrote the same file and
+        // the first one's items were lost, and a child could resolve to the wrong parent.
+        // Slugs also avoid any collection file already on disk, so re-importing (or importing
+        // into a library that has its own "to-read") never overwrites an existing collection.
+        let mut used_slugs: HashSet<String> = self.collection_slugs()?.into_iter().collect();
+        let mut id_to_slug: HashMap<i64, String> = HashMap::new();
         for coll in &data.collections {
             let slug = unique_slug(&zotero::slugify(&coll.name), &mut used_slugs);
-            name_to_slug.insert(coll.name.clone(), slug);
+            id_to_slug.insert(coll.id, slug);
         }
         for coll in &data.collections {
             let mut keys = Vec::new();
@@ -277,14 +283,11 @@ impl Library {
             if keys.is_empty() {
                 continue; // nothing of this collection matched; skip the empty file
             }
-            let slug = name_to_slug
-                .get(&coll.name)
+            let slug = id_to_slug
+                .get(&coll.id)
                 .cloned()
                 .unwrap_or_else(|| unique_slug(&zotero::slugify(&coll.name), &mut used_slugs));
-            let parent = coll
-                .parent_name
-                .as_ref()
-                .and_then(|p| name_to_slug.get(p).cloned());
+            let parent = coll.parent_id.and_then(|p| id_to_slug.get(&p).cloned());
             let description = coll
                 .parent_name
                 .as_ref()
@@ -297,7 +300,11 @@ impl Library {
                 keys,
             };
             let path = self.collection_path(&slug);
-            std::fs::write(&path, collection.to_text()?).map_err(|e| BibError::io(&path, e))?;
+            if let Some(parent_dir) = path.parent() {
+                std::fs::create_dir_all(parent_dir).map_err(|e| BibError::io(parent_dir, e))?;
+            }
+            crate::util::write_atomic(&path, collection.to_text()?)
+                .map_err(|e| BibError::io(&path, e))?;
             report.collections_created.push(slug);
         }
 
@@ -320,6 +327,11 @@ impl Library {
         for (key, chunks) in per_key_notes {
             let mut note = self.load_note(&key)?.unwrap_or_default();
             for chunk in chunks {
+                // Already there from an earlier import of the same store — re-running used to
+                // append every child note again.
+                if note.body.contains(chunk.trim()) {
+                    continue;
+                }
                 if !note.body.trim().is_empty() {
                     note.body.push_str("\n\n");
                 }
@@ -433,7 +445,7 @@ impl Library {
             .map_err(|e| BibError::io(self.attachments_dir(), e))?;
         let dest = self.attachment_blob_path(&hex);
         if !dest.exists() {
-            std::fs::write(&dest, &bytes).map_err(|e| BibError::io(&dest, e))?;
+            crate::util::write_atomic(&dest, &bytes).map_err(|e| BibError::io(&dest, e))?;
         }
 
         let filename = candidate

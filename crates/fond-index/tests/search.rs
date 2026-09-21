@@ -270,3 +270,41 @@ fn child_and_standalone_notes_are_indexed_and_scopable() {
         format!("cone1970black/{child_id}")
     );
 }
+
+/// One unparseable entry used to abort the whole rebuild — after the old index had already
+/// been deleted — leaving search with no index and every later edit failing silently.
+#[test]
+fn one_corrupt_entry_does_not_break_the_rebuild_and_the_rest_stays_searchable() {
+    let (_dir, lib) = seed();
+    fs::write(
+        lib.entry_path("broken"),
+        "broken: [this is: not valid: hayagriva\n",
+    )
+    .unwrap();
+    let idx = SearchIndex::rebuild(&lib, &index_dir(&lib), |_| None, |_| None)
+        .expect("a corrupt entry must not abort the rebuild");
+    assert_eq!(idx.search("Destiny", 10).unwrap().len(), 1);
+}
+
+/// The index directory is swapped in only when complete: no half-built sibling is left, and
+/// a rebuild replaces the previous contents.
+#[test]
+fn rebuild_swaps_atomically_and_leaves_no_staging_dir() {
+    let (_dir, lib) = seed();
+    let dir = index_dir(&lib);
+    let first = SearchIndex::rebuild(&lib, &dir, |_| None, |_| None).unwrap();
+    assert_eq!(first.search("Destiny", 10).unwrap().len(), 1);
+    drop(first);
+    fs::write(
+        lib.entry_path("new1"),
+        "new1:\n  type: book\n  title: Brand New Title\n  author: Doe, Jane\n  date: 2020\n",
+    )
+    .unwrap();
+    let second = SearchIndex::rebuild(&lib, &dir, |_| None, |_| None).unwrap();
+    assert_eq!(second.search("Brand", 10).unwrap().len(), 1);
+    let staging = dir.with_file_name(format!(
+        "{}.building",
+        dir.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(!staging.exists(), "staging directory left behind");
+}

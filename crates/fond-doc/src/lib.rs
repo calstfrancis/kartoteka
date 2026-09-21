@@ -8,6 +8,7 @@ pub mod annotation;
 pub mod epub;
 pub mod error;
 pub mod pdf;
+pub mod text_cache;
 
 pub use epub::{
     extract_all as extract_epub, extract_metadata as extract_epub_metadata,
@@ -25,6 +26,7 @@ pub use pdf::{
     page_size, render_page, search_document, select_text_in_rect, select_text_range, MarkupKind,
     PdfMeta, PdfOutlineEntry, PdfSearchMatch, PdfText, RenderedPage, TextSelection,
 };
+pub use text_cache::{cached_text, Extraction};
 
 /// Re-exported so callers can name the binding handle without depending on `pdfium-render`.
 pub use pdfium_render::prelude::Pdfium;

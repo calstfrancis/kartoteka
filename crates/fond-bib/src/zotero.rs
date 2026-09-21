@@ -27,6 +27,11 @@ pub struct ZoteroItem {
 /// A Zotero collection and its direct member item ids (in Zotero's order).
 #[derive(Debug, Clone)]
 pub struct ZoteroCollection {
+    /// Zotero's collection id. Names are *not* unique (two subcollections under different
+    /// parents can both be called "To read"), so anything that needs to tell collections
+    /// apart — slug assignment, parent resolution — must key on this, not on `name`.
+    pub id: i64,
+    pub parent_id: Option<i64>,
     pub name: String,
     pub parent_name: Option<String>,
     pub item_ids: Vec<i64>,
@@ -165,12 +170,16 @@ fn read_collections(conn: &Connection) -> rusqlite::Result<Vec<ZoteroCollection>
     for (id, (name, parent)) in &names {
         let parent_name = parent.and_then(|p| names.get(&p).map(|(n, _)| n.clone()));
         collections.push(ZoteroCollection {
+            id: *id,
+            parent_id: *parent,
             name: name.clone(),
             parent_name,
             item_ids: members.get(id).cloned().unwrap_or_default(),
         });
     }
-    collections.sort_by(|a, b| a.name.cmp(&b.name));
+    // Name first for a readable order; id breaks ties so same-named collections (and thus
+    // their `-2` slugs) come out the same on every run instead of in HashMap order.
+    collections.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
     Ok(collections)
 }
 

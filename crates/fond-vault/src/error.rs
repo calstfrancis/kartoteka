@@ -13,6 +13,9 @@ pub enum VaultError {
         source: std::io::Error,
     },
 
+    #[error("push failed: {0}")]
+    Push(String),
+
     #[error("filesystem watch error: {0}")]
     Watch(String),
 }

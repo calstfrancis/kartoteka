@@ -219,22 +219,31 @@ fn build_row(
         let state = single_field_state.clone();
         let on_change = on_change.clone();
         single_toggle.connect_clicked(move |btn| {
-            let mut single = state.borrow_mut();
-            if *single {
-                // Switching to two fields: no guessing — the whole string goes into Last
-                // name, First left blank for the user to redistribute.
-                family_entry.set_text(&single_entry.text());
-                given_entry.set_text("");
-            } else {
-                // Switching to single field: join as "Given Family".
-                let joined = format!("{} {}", given_entry.text(), family_entry.text());
-                single_entry.set_text(joined.trim());
-            }
-            *single = !*single;
-            two_field_box.set_visible(!*single);
-            single_entry.set_visible(*single);
-            swap.set_sensitive(!*single);
-            set_single_toggle_label(btn, *single);
+            // Scoped so the `RefCell` borrow is dropped before `fire_on_change` — that calls
+            // back into `CreatorListEditor::creators()` (the inline editor's per-field
+            // autosave), which borrows this same `single_field` cell for every row. Holding
+            // this borrow across that call is a guaranteed panic ("already borrowed"),
+            // confirmed live: clicking this button on an entry being edited in place crashed
+            // the app every time.
+            let new_value = {
+                let mut single = state.borrow_mut();
+                if *single {
+                    // Switching to two fields: no guessing — the whole string goes into Last
+                    // name, First left blank for the user to redistribute.
+                    family_entry.set_text(&single_entry.text());
+                    given_entry.set_text("");
+                } else {
+                    // Switching to single field: join as "Given Family".
+                    let joined = format!("{} {}", given_entry.text(), family_entry.text());
+                    single_entry.set_text(joined.trim());
+                }
+                *single = !*single;
+                *single
+            };
+            two_field_box.set_visible(!new_value);
+            single_entry.set_visible(new_value);
+            swap.set_sensitive(!new_value);
+            set_single_toggle_label(btn, new_value);
             fire_on_change(&on_change);
         });
     }
@@ -272,13 +281,23 @@ fn build_row(
         let row_ref = row.clone();
         let on_change = on_change.clone();
         up.connect_clicked(move |_| {
-            let mut rows_mut = rows.borrow_mut();
-            if let Some(idx) = rows_mut.iter().position(|r| r.row == row_ref) {
-                if idx > 0 {
-                    rows_mut.swap(idx, idx - 1);
-                    resync_order(&list, &rows_mut);
-                    fire_on_change(&on_change);
+            // Scoped so the `rows` borrow is dropped before `fire_on_change` — see the same
+            // fix (and its comment) on `single_toggle` above; this reorder button had the
+            // identical guaranteed-panic bug via `CreatorListEditor::creators()` re-borrowing
+            // `rows` while this closure's `rows_mut` was still held.
+            let moved = {
+                let mut rows_mut = rows.borrow_mut();
+                match rows_mut.iter().position(|r| r.row == row_ref) {
+                    Some(idx) if idx > 0 => {
+                        rows_mut.swap(idx, idx - 1);
+                        resync_order(&list, &rows_mut);
+                        true
+                    }
+                    _ => false,
                 }
+            };
+            if moved {
+                fire_on_change(&on_change);
             }
         });
     }
@@ -289,13 +308,21 @@ fn build_row(
         let row_ref = row.clone();
         let on_change = on_change.clone();
         down.connect_clicked(move |_| {
-            let mut rows_mut = rows.borrow_mut();
-            if let Some(idx) = rows_mut.iter().position(|r| r.row == row_ref) {
-                if idx + 1 < rows_mut.len() {
-                    rows_mut.swap(idx, idx + 1);
-                    resync_order(&list, &rows_mut);
-                    fire_on_change(&on_change);
+            // Scoped so the `rows` borrow is dropped before `fire_on_change` — see `up`'s
+            // fix just above.
+            let moved = {
+                let mut rows_mut = rows.borrow_mut();
+                match rows_mut.iter().position(|r| r.row == row_ref) {
+                    Some(idx) if idx + 1 < rows_mut.len() => {
+                        rows_mut.swap(idx, idx + 1);
+                        resync_order(&list, &rows_mut);
+                        true
+                    }
+                    _ => false,
                 }
+            };
+            if moved {
+                fire_on_change(&on_change);
             }
         });
     }

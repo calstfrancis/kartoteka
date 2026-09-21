@@ -200,12 +200,18 @@ struct AcqEntry {
     authors: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     date: Option<String>,
+    // A plain string when there's no location, or a `{name, location}` mapping when there
+    // is — matching Hayagriva's own `Publisher` serialization. Built by `publisher_value`;
+    // NOT two separate top-level `publisher`/`location` fields, which was this struct's
+    // bug for a long time (fixed 2026-09-19) — Hayagriva's citation-style rendering reads
+    // the place of publication from the nested `publisher.location`, not a top-level
+    // `location:` (that instead feeds `event-place`, for a conference/exhibition entry).
     #[serde(skip_serializing_if = "Option::is_none")]
-    publisher: Option<String>,
+    publisher: Option<serde_yaml_ng::Value>,
+    // Hayagriva's own `edition` field (CSL `edition`) — not `note`, which most styles never
+    // render as an edition, so "2nd ed." used to never appear in a citation.
     #[serde(skip_serializing_if = "Option::is_none")]
-    location: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
+    edition: Option<String>,
     #[serde(rename = "page-total", skip_serializing_if = "Option::is_none")]
     page_total: Option<u64>,
     #[serde(rename = "serial-number", skip_serializing_if = "Option::is_none")]
@@ -219,6 +225,33 @@ struct Serials {
     oclc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     lccn: Option<String>,
+}
+
+/// Build the `publisher:` YAML value from a name and/or location, matching Hayagriva's own
+/// `Publisher` serialization: a plain string when there's no location, a `{name, location}`
+/// mapping when there is. `None` when both are empty (field omitted entirely).
+fn publisher_value(name: Option<&str>, location: Option<&str>) -> Option<serde_yaml_ng::Value> {
+    use serde_yaml_ng::Value;
+    let name = name.map(str::trim).filter(|s| !s.is_empty());
+    let location = location.map(str::trim).filter(|s| !s.is_empty());
+    match (name, location) {
+        (None, None) => None,
+        (Some(name), None) => Some(Value::String(name.to_string())),
+        (name, Some(location)) => {
+            let mut map = serde_yaml_ng::Mapping::new();
+            if let Some(name) = name {
+                map.insert(
+                    Value::String("name".to_string()),
+                    Value::String(name.to_string()),
+                );
+            }
+            map.insert(
+                Value::String("location".to_string()),
+                Value::String(location.to_string()),
+            );
+            Some(Value::Mapping(map))
+        }
+    }
 }
 
 fn to_yaml_doc(entry: AcqEntry) -> Result<String> {
@@ -246,8 +279,7 @@ pub fn minimal_book_yaml(title: &str, author: Option<&str>, isbn: Option<&str>) 
             .unwrap_or_default(),
         date: None,
         publisher: None,
-        location: None,
-        note: None,
+        edition: None,
         page_total: None,
         serial_number: isbn.map(|i| Serials {
             isbn: i.to_string(),
@@ -364,39 +396,136 @@ fn edition_json_to_data_shape(
         message: "OpenLibrary response was not a JSON object".to_string(),
     })?;
 
-    if let Some(authors) = map.get("authors").and_then(|v| v.as_array()).cloned() {
-        let mut resolved = Vec::with_capacity(authors.len());
-        for author in &authors {
-            let Some(key) = author.get("key").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            let url = format!("https://openlibrary.org{key}.json");
-            let name = client
-                .get(&url)
-                .send()
-                .ok()
-                .filter(|r| r.status().is_success())
-                .and_then(|r| r.json::<serde_json::Value>().ok())
-                .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string));
-            if let Some(name) = name {
-                resolved.push(serde_json::json!({ "name": name }));
-            }
+    // Author keys: the edition's own, or — when the edition lists none — its work's (an
+    // edition record often carries no `authors` at all, which used to give an authorless
+    // entry with no hint why).
+    let mut author_keys: Vec<String> = map
+        .get("authors")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.get("key").and_then(|k| k.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if author_keys.is_empty() {
+        let work_key = map
+            .get("works")
+            .and_then(|w| w.as_array())
+            .and_then(|w| w.first())
+            .and_then(|w| w.get("key"))
+            .and_then(|k| k.as_str())
+            .map(str::to_string);
+        if let Some(work_key) = work_key {
+            let work = fetch_json(client, &format!("https://openlibrary.org{work_key}.json"))?;
+            author_keys = work
+                .get("authors")
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| {
+                            x.get("author")
+                                .and_then(|a| a.get("key"))
+                                .or_else(|| x.get("key"))
+                                .and_then(|k| k.as_str())
+                                .map(str::to_string)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
         }
-        map.insert("authors".to_string(), serde_json::Value::Array(resolved));
     }
+    let mut resolved = Vec::with_capacity(author_keys.len());
+    for key in &author_keys {
+        // A failed lookup is an error, not a silently missing author: a network blip used
+        // to yield a book quietly credited to only some of its authors.
+        let author = fetch_json(client, &format!("https://openlibrary.org{key}.json"))?;
+        if let Some(name) = author.get("name").and_then(|n| n.as_str()) {
+            resolved.push(serde_json::json!({ "name": name }));
+        }
+    }
+    map.insert("authors".to_string(), serde_json::Value::Array(resolved));
+
+    apply_edition_extras(map);
+    Ok(serde_json::Value::Object(map.clone()))
+}
+
+fn fetch_json(client: &reqwest::blocking::Client, url: &str) -> Result<serde_json::Value> {
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| net_err(&format!("OpenLibrary request to {url} failed"), e))?;
+    if !response.status().is_success() {
+        return Err(BibError::Import {
+            message: format!(
+                "OpenLibrary request to {url} failed: HTTP {}",
+                response.status()
+            ),
+        });
+    }
+    response.json::<serde_json::Value>().map_err(|e| {
+        net_err(
+            &format!("could not read OpenLibrary response from {url}"),
+            e,
+        )
+    })
+}
+
+/// The network-free half of reshaping an edition record into the "data" shape
+/// [`isbn_json_to_yaml`] parses: wrap `publishers`/`publish_places` (plain strings on an
+/// edition) as `{name}` objects, append the `subtitle` to the title, and gather identifiers
+/// (an edition keeps `oclc_numbers`/`lccn` at the top level, not under `identifiers`).
+fn apply_edition_extras(map: &mut serde_json::Map<String, serde_json::Value>) {
+    use serde_json::{json, Value};
 
     for field in ["publishers", "publish_places"] {
         if let Some(arr) = map.get(field).and_then(|v| v.as_array()).cloned() {
-            let wrapped: Vec<serde_json::Value> = arr
+            let wrapped: Vec<Value> = arr
                 .iter()
                 .filter_map(|v| v.as_str())
-                .map(|s| serde_json::json!({ "name": s }))
+                .map(|s| json!({ "name": s }))
                 .collect();
-            map.insert(field.to_string(), serde_json::Value::Array(wrapped));
+            map.insert(field.to_string(), Value::Array(wrapped));
         }
     }
 
-    Ok(serde_json::Value::Object(map.clone()))
+    // "Title: Subtitle" — Chicago/SBL want the subtitle, and the edition record keeps it in a
+    // separate field that the mapping used to ignore.
+    if let (Some(title), Some(subtitle)) = (
+        map.get("title")
+            .and_then(|t| t.as_str())
+            .map(str::to_string),
+        map.get("subtitle")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .map(str::to_string),
+    ) {
+        if !subtitle.is_empty() && !title.to_lowercase().contains(&subtitle.to_lowercase()) {
+            let sep = if title.trim_end().ends_with(['?', '!', ':', '.']) {
+                " "
+            } else {
+                ": "
+            };
+            map.insert(
+                "title".to_string(),
+                json!(format!("{}{sep}{subtitle}", title.trim_end())),
+            );
+        }
+    }
+
+    let mut identifiers = map
+        .get("identifiers")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    for (top, ident) in [("oclc_numbers", "oclc"), ("lccn", "lccn")] {
+        if !identifiers.contains_key(ident) {
+            if let Some(arr) = map.get(top).filter(|v| v.is_array()) {
+                identifiers.insert(ident.to_string(), arr.clone());
+            }
+        }
+    }
+    map.insert("identifiers".to_string(), Value::Object(identifiers));
 }
 
 /// Minimum plausible size (bytes) for a real OpenLibrary cover JPEG at size `M`. A
@@ -533,9 +662,8 @@ pub fn isbn_json_to_yaml(json: &str, isbn: &str) -> Result<String> {
         title,
         authors,
         date,
-        publisher,
-        location,
-        note,
+        publisher: publisher_value(publisher.as_deref(), location.as_deref()),
+        edition: note,
         page_total,
         serial_number: Some(Serials {
             isbn: isbn.to_string(),
@@ -715,13 +843,77 @@ mod tests {
             yaml.contains("date: 2007-10") || yaml.contains("date: '2007-10'"),
             "got: {yaml}"
         );
-        assert!(yaml.contains("Penguin Classics"));
-        assert!(yaml.contains("location: London"));
-        assert!(yaml.contains("note: Revised edition"));
+        // Publisher name/location must land nested under one `publisher:` mapping (the shape
+        // Hayagriva's citation-style rendering actually reads the "place of publication"
+        // from — `publisher-place`/Zotero's "Place" — reads `publisher.location`, not a
+        // top-level `location:` on the entry, which feeds a different CSL variable
+        // (`event-place`). A prior version of this code wrote it at the top level and
+        // citations silently rendered without a location as a result.
+        assert!(yaml.contains("publisher:"), "got: {yaml}");
+        assert!(yaml.contains("name: Penguin Classics"), "got: {yaml}");
+        assert!(yaml.contains("location: London"), "got: {yaml}");
+        // A top-level `location:` (2-space indent, sibling of `publisher:`) would be the old,
+        // wrong shape — it must only appear nested under `publisher:` (4-space indent).
+        assert!(
+            !yaml.lines().any(|l| l == "  location: London"),
+            "location must not be a top-level field: {yaml}"
+        );
+        assert!(yaml.contains("edition: Revised edition"), "got: {yaml}");
         assert!(yaml.contains("page-total: 496"));
         assert!(yaml.contains("isbn: '9780140449136'") || yaml.contains("isbn: \"9780140449136\""));
         assert!(yaml.contains("oclc: '123456'") || yaml.contains("oclc: 123456"));
         assert!(yaml.contains("lccn: '2007123456'") || yaml.contains("lccn: 2007123456"));
+    }
+
+    #[test]
+    fn edition_record_extras_subtitle_identifiers_publishers() {
+        let mut map = serde_json::json!({
+            "title": "The Republic",
+            "subtitle": "A dialogue on justice",
+            "publishers": ["Penguin"],
+            "publish_places": ["London"],
+            "oclc_numbers": ["123456"],
+            "lccn": ["2007123456"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        apply_edition_extras(&mut map);
+        assert_eq!(map["title"], "The Republic: A dialogue on justice");
+        assert_eq!(map["publishers"][0]["name"], "Penguin");
+        assert_eq!(map["publish_places"][0]["name"], "London");
+        assert_eq!(map["identifiers"]["oclc"][0], "123456");
+        assert_eq!(map["identifiers"]["lccn"][0], "2007123456");
+
+        // A subtitle already in the title isn't repeated; one after a `?` gets a space.
+        let mut m = serde_json::json!({"title": "Why? ", "subtitle": "Because"})
+            .as_object()
+            .unwrap()
+            .clone();
+        apply_edition_extras(&mut m);
+        assert_eq!(m["title"], "Why? Because");
+        let mut m = serde_json::json!({"title": "Dune: Messiah", "subtitle": "messiah"})
+            .as_object()
+            .unwrap()
+            .clone();
+        apply_edition_extras(&mut m);
+        assert_eq!(m["title"], "Dune: Messiah");
+    }
+
+    #[test]
+    fn isbn_yaml_edition_is_a_real_hayagriva_field_and_round_trips() {
+        let json = r#"{"ISBN:1": {"title": "T", "authors": [{"name": "A B"}],
+            "publish_date": "2001", "edition_name": "2nd ed.",
+            "publishers": [{"name": "P"}], "publish_places": [{"name": "Rome"}]}}"#;
+        let yaml = isbn_json_to_yaml(json, "1").unwrap();
+        let parsed =
+            crate::entry::parse_single(&yaml.replace("_:", "k:"), std::path::Path::new("x"))
+                .expect("generated YAML must be valid Hayagriva");
+        assert!(crate::entry::serialize_entry(&parsed.entry)
+            .unwrap()
+            .contains("edition: 2nd ed."));
+        let f = crate::entry::read_fields(&parsed.entry);
+        assert_eq!((f.publisher.as_str(), f.location.as_str()), ("P", "Rome"));
     }
 
     #[test]

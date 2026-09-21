@@ -18,9 +18,20 @@ on:
         description: "Version to publish (must match kartoteka-ui-gtk/Cargo.toml, e.g. 0.6.0)"
         required: true
 
+# Least privilege for the workflow's own token: it only reads the repo and CI check-runs.
+# Publishing uses the separate FLATPAK_REPO_TOKEN secret, not this token.
+permissions:
+  contents: read
+  checks: read
+
 jobs:
   publish-flatpak:
     runs-on: ubuntu-24.04
+    # `bash -e -o pipefail` (the default `bash -e` has no pipefail), so a failure on the left
+    # of a pipe such as `echo "$KEY" | gpg --import` fails the step instead of vanishing.
+    defaults:
+      run:
+        shell: bash
     # Generous headroom: up to 15 min just waiting on ci.yml (see the polling loop below),
     # plus the actual build — without leaving a hang to run for GitHub's 6-hour default.
     timeout-minutes: 45
@@ -29,27 +40,36 @@ jobs:
 
       # Structural version of a check CLAUDE.md used to ask Cal to remember to do by hand:
       # don't publish a build from a commit whose own CI run didn't pass. ci.yml's single
-      # `test` job runs on a 2-OS matrix, which GitHub reports as two separately-named
+      # `build & test` job runs on a 2-OS matrix, which GitHub reports as two separately-named
       # check-runs — both must succeed, not just the Linux one the flatpak build itself
       # actually uses, since a Windows-only test failure is still a real regression worth
-      # blocking a release over. Skipped on manual dispatch — that path is for testing this
-      # workflow itself.
+      # blocking a release over. Also requires `version-consistency`. Not skipped on manual
+      # dispatch, which signs and publishes too.
       - name: Require CI to have passed for this commit
-        if: github.event_name != 'workflow_dispatch'
+        # Applies to manual dispatch too: a dispatch still signs and publishes, so it must
+        # not be a way around the gate.
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          SHA="${{ github.sha }}"
           # publish-flatpak.sh pushes main and the tag back to back, and ci.yml triggers off
           # the main push — so ci.yml is often still running (conclusion "") when this step
           # first checks, not actually failed. Poll instead of checking once: up to 60
           # attempts, 15s apart (15 minutes).
-          for JOB in "build & test (ubuntu-latest)" "build & test (windows-latest)"; do
+          #
+          # Every job ci.yml defines must succeed, including version-consistency (the guard
+          # against metainfo/version drift). The newest run of each name wins: a re-run leaves
+          # an older run of the same name behind, and a stale failure (or stale success) must
+          # not decide the outcome. --paginate --slurp so more than one page of check-runs
+          # can't hide the job we want.
+          for JOB in "build & test (ubuntu-latest)" "build & test (windows-latest)" "version-consistency"; do
             CONCLUSION=""
             for attempt in $(seq 1 60); do
-              CONCLUSION=$(gh api "repos/${{ github.repository }}/commits/$SHA/check-runs" \
-                --jq ".check_runs[] | select(.name == \"$JOB\") | .conclusion")
+              CONCLUSION=$(gh api --paginate --slurp "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                | jq -r --arg job "$JOB" \
+                  '[.[].check_runs[] | select(.name == $job)] | sort_by(.started_at) | last | .conclusion // ""')
               if [[ -n "$CONCLUSION" ]]; then
                 break
               fi
@@ -57,7 +77,7 @@ jobs:
               sleep 15
             done
             if [[ "$CONCLUSION" != "success" ]]; then
-              echo "ERROR: ci.yml's '$JOB' job for commit $SHA is '$CONCLUSION', not 'success' — refusing to publish."
+              echo "ERROR: ci.yml's '$JOB' job for commit $SHA is '${CONCLUSION:-missing}', not 'success' — refusing to publish."
               exit 1
             fi
             echo "ci.yml '$JOB' for $SHA: $CONCLUSION"
@@ -65,13 +85,21 @@ jobs:
 
       # Mirrors publish-flatpak.sh's own sanity check.
       - name: Verify version matches kartoteka-ui-gtk/Cargo.toml
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
         run: |
           set -euo pipefail
-          VERSION="${{ github.event.inputs.version || '' }}"
+          VERSION="$INPUT_VERSION"
           if [[ -z "$VERSION" ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           fi
-          CARGO_VERSION=$(grep '^version' kartoteka-ui-gtk/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          # Read `version` from the [package] table only, not the first line that happens to
+          # start with "version" (a reordered Cargo.toml would otherwise yield the wrong one).
+          CARGO_VERSION=$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version *=/{gsub(/^version *= *"|"$/,""); print; exit}' kartoteka-ui-gtk/Cargo.toml)
+          if [[ -z "$CARGO_VERSION" ]]; then
+            echo "ERROR: could not read the [package] version from kartoteka-ui-gtk/Cargo.toml."
+            exit 1
+          fi
           if [[ "$CARGO_VERSION" != "$VERSION" ]]; then
             echo "ERROR: kartoteka-ui-gtk/Cargo.toml says version is '$CARGO_VERSION', but this run is for '$VERSION'."
             exit 1
@@ -100,7 +128,8 @@ jobs:
           # blocked a release. We need only Ubuntu's own archives here, so drop it.
           # Matched by content, not filename: runners use both the old .list form and
           # the deb822 .sources form, and removing only one of them missed it.
-          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+          # (`|| true`: with pipefail on, grep finding no match — exit 1 — must not fail this.)
+          { sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || true; } \
             | xargs -r sudo rm -f
           APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
           sudo apt-get update $APT_OPTS
@@ -153,9 +182,14 @@ jobs:
           echo "Retrying once more with --no-static-deltas…"
           flatpak install --user -y --no-static-deltas flathub "${REFS[@]}"
 
+      # Secrets are passed through `env:` and read as shell variables, never interpolated into
+      # the script text — a passphrase containing `"`, `$` or a backtick would otherwise break
+      # the step or be evaluated by the shell.
       - name: Import GPG signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
         run: |
-          echo "${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}" | gpg --batch --import
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
 
       # The signing key has a passphrase, so importing it isn't enough — flatpak build-export
       # (via libostree, via GPGME) asks gpg-agent for a signature and gpg-agent will try to
@@ -164,6 +198,8 @@ jobs:
       # operation in this job (build-export and build-update-repo, both keyed by the same
       # keygrip) then finds it already unlocked and never needs the passphrase again.
       - name: Preset GPG passphrase into the agent
+        env:
+          GPG_PASSPHRASE: ${{ secrets.FLATPAK_GPG_PASSPHRASE }}
         run: |
           set -euo pipefail
           mkdir -p ~/.gnupg
@@ -184,7 +220,21 @@ jobs:
             echo "ERROR: gpg-preset-passphrase not found anywhere expected." >&2
             exit 1
           fi
-          echo "${{ secrets.FLATPAK_GPG_PASSPHRASE }}" | "$PRESET_BIN" --preset "$KEYGRIP"
+          printf '%s\n' "$GPG_PASSPHRASE" | "$PRESET_BIN" --preset "$KEYGRIP"
+
+      # The manifest's git source is `branch: main`, so flatpak-builder would clone whatever
+      # main is *now* — not the commit the tag points at and CI just verified. A later push to
+      # main during the CI wait, or re-running an old tag's workflow, would then ship untested
+      # code under the old version number. Pin it to this exact commit for the build.
+      - name: Pin the manifest to this exact commit
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          MANIFEST=packaging/io.github.calstfrancis.Kartoteka.yml
+          grep -q '^        branch: main$' "$MANIFEST" || { echo "ERROR: expected 'branch: main' in $MANIFEST"; exit 1; }
+          sed -i "s/^        branch: main$/        commit: $SHA/" "$MANIFEST"
+          grep -n 'commit:' "$MANIFEST"
 
       - name: Build flatpak
         run: |
@@ -192,8 +242,10 @@ jobs:
             packaging/io.github.calstfrancis.Kartoteka.yml
 
       - name: Clone public flatpak repo
+        env:
+          REPO_TOKEN: ${{ secrets.FLATPAK_REPO_TOKEN }}
         run: |
-          git clone "https://x-access-token:${{ secrets.FLATPAK_REPO_TOKEN }}@github.com/calstfrancis/flatpak" /tmp/flatpak-checkout
+          git clone "https://x-access-token:${REPO_TOKEN}@github.com/calstfrancis/flatpak" /tmp/flatpak-checkout
 
       - name: Export build into the repo
         run: |

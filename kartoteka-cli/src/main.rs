@@ -87,13 +87,13 @@ enum Command {
     /// is generated. Network is used for --doi/--arxiv/--isbn.
     Acquire {
         /// DOI to look up (e.g. 10.1000/xyz or https://doi.org/10.1000/xyz).
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["arxiv", "isbn", "bibtex_file"])]
         doi: Option<String>,
         /// arXiv id to look up (e.g. 2103.12345).
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["isbn", "bibtex_file"])]
         arxiv: Option<String>,
         /// ISBN to look up (via OpenLibrary).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "bibtex_file")]
         isbn: Option<String>,
         /// Add from a local BibTeX file instead (offline).
         #[arg(long)]
@@ -105,11 +105,11 @@ enum Command {
     AddPdf {
         /// Path to the PDF.
         path: PathBuf,
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["arxiv", "isbn", "key"])]
         doi: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["isbn", "key"])]
         arxiv: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "key")]
         isbn: Option<String>,
         /// Attach to an existing entry with this key instead of acquiring a new one.
         #[arg(long)]
@@ -155,12 +155,16 @@ enum Command {
         /// Write the .typ to this file instead of stdout.
         #[arg(long, short)]
         output: Option<PathBuf>,
+        /// Overwrite --output if it already exists.
+        #[arg(long)]
+        force: bool,
     },
     /// Regenerate library.yml and the search index fully from the files. If PDFium is
     /// available, present PDF attachments are indexed too.
     Reindex,
     /// Full-text search over metadata, notes, annotations, and PDF text. Field scoping:
     /// author: title: tag: type: year:  (e.g. `kartoteka search author:cone tag:christology`).
+    /// Whole words only (`cone`, not `con`). Exits 1 when nothing matches, like grep.
     Search {
         #[arg(required = true)]
         query: Vec<String>,
@@ -187,6 +191,9 @@ enum Command {
         /// Where to write the annotated PDF.
         #[arg(long, short)]
         output: PathBuf,
+        /// Overwrite --output if it already exists.
+        #[arg(long)]
+        force: bool,
     },
     /// Rename stored attachments to a human-readable "Author Year - Title.ext" name built
     /// from citation info, for attachments filed under an old download name (before this
@@ -203,7 +210,8 @@ enum Command {
     Fsck,
     /// Show git working-tree status.
     Status,
-    /// Stage all tracked changes and commit.
+    /// Stage every change in the library — new, modified and deleted files, honouring
+    /// .gitignore — and commit.
     Commit {
         #[arg(short, long)]
         message: String,
@@ -219,6 +227,31 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Reject a citation key that could name a path outside the library (`../x`, `a/b`), since
+/// keys are joined straight into file paths.
+fn check_key(key: &str) -> CliResult<()> {
+    if key.is_empty()
+        || key.contains(['/', '\\', '\0'])
+        || key.starts_with('.')
+        || key.contains("..")
+    {
+        return Err(format!("'{key}' is not a valid citation key").into());
+    }
+    Ok(())
+}
+
+/// Refuse to silently overwrite an existing output file.
+fn check_output(path: &std::path::Path, force: bool) -> CliResult<()> {
+    if path.exists() && !force {
+        return Err(format!(
+            "{} already exists; pass --force to overwrite it",
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn run(cli: Cli) -> CliResult<ExitCode> {
@@ -250,18 +283,28 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
         }
 
         Command::Delete { key, yes } => {
+            check_key(&key)?;
             let library = Library::open(&cli.library)?;
             if !library.existing_keys()?.contains(&key) {
                 return Err(format!("no entry with key '{key}'").into());
             }
             if !yes {
+                // No terminal to ask on (cron, a closed pipe, </dev/null): refuse rather than
+                // treat EOF as "no" and exit 0, which made `delete foo && next-step` proceed
+                // as though the entry were gone. An irreversible command needs an explicit --yes.
+                if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    return Err(
+                        "refusing to delete without confirmation: stdin is not a terminal; pass --yes"
+                            .into(),
+                    );
+                }
                 print!("Delete '{key}' and its note, relations, and collection membership? [y/N] ");
                 std::io::Write::flush(&mut std::io::stdout())?;
                 let mut answer = String::new();
                 std::io::stdin().read_line(&mut answer)?;
                 if !matches!(answer.trim(), "y" | "Y" | "yes") {
-                    println!("Cancelled.");
-                    return Ok(ExitCode::SUCCESS);
+                    eprintln!("Cancelled — nothing was deleted.");
+                    return Ok(ExitCode::FAILURE);
                 }
             }
             let report = library.delete_entry(&key)?;
@@ -282,7 +325,12 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             if json {
                 let mut items = Vec::new();
                 for key in &keys {
-                    let parsed = library.load_entry(key)?;
+                    let Ok(parsed) = library.load_entry(key) else {
+                        eprintln!(
+                            "warning: skipping unreadable entry '{key}' (run `kartoteka fsck`)"
+                        );
+                        continue;
+                    };
                     items.push(serde_json::json!({
                         "key": key,
                         "title": entry::title_string(&parsed.entry),
@@ -293,7 +341,12 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&items)?);
             } else {
                 for key in &keys {
-                    let parsed = library.load_entry(key)?;
+                    let Ok(parsed) = library.load_entry(key) else {
+                        eprintln!(
+                            "warning: skipping unreadable entry '{key}' (run `kartoteka fsck`)"
+                        );
+                        continue;
+                    };
                     let title = entry::title_string(&parsed.entry).unwrap_or_default();
                     let author = entry::family_name(&parsed.entry).unwrap_or_default();
                     let year = entry::year(&parsed.entry)
@@ -306,6 +359,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
         }
 
         Command::Show { key, json } => {
+            check_key(&key)?;
             let library = Library::open(&cli.library)?;
             let raw = library.read_entry_raw(&key)?;
             let note = library.load_note(&key)?;
@@ -367,6 +421,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             for key in &keys {
                 println!("acquired {key}");
             }
+            reindex_after_change(&cli.library, &library);
             Ok(ExitCode::SUCCESS)
         }
 
@@ -380,7 +435,9 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             let library = Library::open(&cli.library)?;
 
             // Resolve the entry the PDF belongs to.
+            let created = key.is_none();
             let target_key = if let Some(k) = key {
+                check_key(&k)?;
                 if !library.entry_path(&k).exists() {
                     return Err(format!("no entry '{k}' to attach to").into());
                 }
@@ -399,15 +456,27 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                     .map(|n| n as u32)
             });
 
-            let att = library.store_attachment(&target_key, &path, pages)?;
+            let att = match library.store_attachment(&target_key, &path, pages) {
+                Ok(att) => att,
+                Err(e) => {
+                    // Don't leave the entry we just created sitting there attachment-less.
+                    if created {
+                        let _ = library.delete_entry(&target_key);
+                    }
+                    return Err(e.into());
+                }
+            };
             println!("attached {} to {target_key} ({})", att.filename, att.hash);
+            reindex_after_change(&cli.library, &library);
             Ok(ExitCode::SUCCESS)
         }
 
         Command::AddEpub { path, isbn, key } => {
             let library = Library::open(&cli.library)?;
 
+            let created = key.is_none();
             let target_key = if let Some(k) = key {
+                check_key(&k)?;
                 if !library.entry_path(&k).exists() {
                     return Err(format!("no entry '{k}' to attach to").into());
                 }
@@ -421,7 +490,15 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             };
 
             // EPUBs have no page count in our model; the record simply omits it.
-            let att = library.store_attachment(&target_key, &path, None)?;
+            let att = match library.store_attachment(&target_key, &path, None) {
+                Ok(att) => att,
+                Err(e) => {
+                    if created {
+                        let _ = library.delete_entry(&target_key);
+                    }
+                    return Err(e.into());
+                }
+            };
             println!("attached {} to {target_key} ({})", att.filename, att.hash);
             reindex_after_change(&cli.library, &library);
             Ok(ExitCode::SUCCESS)
@@ -452,12 +529,14 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             style,
             style_file,
             output,
+            force,
         } => {
             let library = Library::open(&cli.library)?;
             let csl = load_style(&style, style_file.as_deref())?;
             let typ = library.annotated_bibliography_typ(&collection, &csl)?;
             match output {
                 Some(path) => {
+                    check_output(&path, force)?;
                     std::fs::write(&path, typ)?;
                     println!("Wrote {}", path.display());
                 }
@@ -470,61 +549,11 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             let library = Library::open(&cli.library)?;
             library.regenerate_library_yml()?;
 
-            // Extract PDF text only if PDFium is available; otherwise index without it.
-            let pdfium = fond_doc::bind_pdfium().ok();
-            let pdf_text = |key: &str| -> Option<String> {
-                let pdfium = pdfium.as_ref()?;
-                let attachments = library
-                    .load_note(key)
-                    .ok()
-                    .flatten()
-                    .map(|n| n.frontmatter.attachments)
-                    .unwrap_or_default();
-                for att in &attachments {
-                    let hex = att
-                        .hash
-                        .split_once(':')
-                        .map(|(_, h)| h)
-                        .unwrap_or(&att.hash);
-                    let path = library.attachment_blob_path(hex);
-                    if path.exists() {
-                        if let Ok(text) = fond_doc::extract_text_from_file(pdfium, &path) {
-                            return Some(text.full_text());
-                        }
-                    }
-                }
-                None
-            };
-
-            // EPUB text extraction is pure zip+quick-xml (no native library to bind), so
-            // unlike `pdf_text` there's no availability gate — just try every attachment.
-            let epub_text = |key: &str| -> Option<String> {
-                let attachments = library
-                    .load_note(key)
-                    .ok()
-                    .flatten()
-                    .map(|n| n.frontmatter.attachments)
-                    .unwrap_or_default();
-                for att in &attachments {
-                    let hex = att
-                        .hash
-                        .split_once(':')
-                        .map(|(_, h)| h)
-                        .unwrap_or(&att.hash);
-                    let path = library.attachment_blob_path(hex);
-                    if path.exists() {
-                        if let Ok(text) = fond_doc::extract_epub_text(&path) {
-                            return Some(text);
-                        }
-                    }
-                }
-                None
-            };
-
+            let pdfium_available = fond_doc::bind_pdfium().is_ok();
             let index_dir = cli.library.join(".kartoteka").join("index");
-            fond_index::SearchIndex::rebuild(&library, &index_dir, pdf_text, epub_text)?;
+            rebuild_index(&library, &index_dir, true)?;
             let n = library.keys_sorted()?.len();
-            let pdf_note = if pdfium.is_some() {
+            let pdf_note = if pdfium_available {
                 ""
             } else {
                 " (PDFium unavailable — PDF text not indexed)"
@@ -561,10 +590,16 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                     );
                 }
             }
-            Ok(ExitCode::SUCCESS)
+            // grep convention: a scripted `search && …` can tell "found" from "nothing".
+            Ok(if hits.is_empty() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
         }
 
         Command::Annots { key, json } => {
+            check_key(&key)?;
             let library = Library::open(&cli.library)?;
             match library.load_annotations(&key)? {
                 None => {
@@ -634,6 +669,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
         }
 
         Command::PdfText { key } => {
+            check_key(&key)?;
             let library = Library::open(&cli.library)?;
             let attachments = library
                 .load_note(&key)?
@@ -658,6 +694,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
         }
 
         Command::ImportAnnots { key } => {
+            check_key(&key)?;
             let library = Library::open(&cli.library)?;
             let (blob, hash) = pdf_attachment(&library, &key)?;
             let pdfium = fond_doc::bind_pdfium()?;
@@ -692,9 +729,18 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::ExportAnnots { key, output } => {
+        Command::ExportAnnots { key, output, force } => {
+            check_key(&key)?;
             let library = Library::open(&cli.library)?;
             let (blob, _hash) = pdf_attachment(&library, &key)?;
+            // Never write over the stored PDF blob itself (or anything else that exists,
+            // without --force) — `-o` accepts any path.
+            if let (Ok(a), Ok(b)) = (output.canonicalize(), blob.canonicalize()) {
+                if a == b {
+                    return Err("--output is the stored PDF itself; choose another path".into());
+                }
+            }
+            check_output(&output, force)?;
             let sidecar = library
                 .load_annotations(&key)?
                 .ok_or_else(|| format!("no annotations recorded for '{key}'"))?;
@@ -736,6 +782,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             let library = Library::open(&cli.library)?;
             let keys = match key {
                 Some(k) => {
+                    check_key(&k)?;
                     if !library.entry_path(&k).exists() {
                         return Err(format!("no entry '{k}'").into());
                     }
@@ -1067,7 +1114,89 @@ fn print_fsck(report: &FsckReport) {
     for path in &report.malformed_note_ids {
         println!("malformed note id   {path}");
     }
+    for (path, msg) in &report.unparseable_nodes {
+        println!("unparseable node    {path}: {msg}");
+    }
+    for slug in &report.malformed_node_slugs {
+        println!("malformed node slug nodes/{slug}.md");
+    }
+    for (path, msg) in &report.unreadable {
+        println!("unreadable          {path}: {msg}");
+    }
+    for path in &report.orphaned_records {
+        println!("orphaned record     {path} has no matching entry");
+    }
+    for (slug, detail) in &report.bad_collection_parents {
+        println!("collection parent   '{slug}': {detail}");
+    }
+    for key in &report.legacy_locations {
+        println!("legacy location    {key}: place of publication is a top-level `location:` no citation style reads — open it and re-save its Location field");
+    }
+    for (key, target) in &report.dangling_references {
+        println!("dangling reference  {key} refers to missing entry '{target}'");
+    }
+    for (slug, doc) in &report.dangling_project_docs {
+        println!("dangling project    '{slug}' declares missing document {doc}");
+    }
+    if !(report.relations.missing.is_empty()
+        && report.relations.orphaned.is_empty()
+        && report.relations.dangling_targets.is_empty())
+    {
+        println!(
+            "relations           {} missing inverse, {} orphaned inverse, {} dangling target(s) (repair: `kartoteka migrate`/fsck --fix)",
+            report.relations.missing.len(),
+            report.relations.orphaned.len(),
+            report.relations.dangling_targets.len()
+        );
+    }
     println!("\n{} problem(s) found", report.problem_count());
+}
+
+/// Rebuild the search index with PDF and EPUB body text. Extracted text is cached by
+/// attachment hash under `.kartoteka/textcache/`; with `extract_missing` false only the cache
+/// is read (fast — used after every mutation), with it true anything not yet cached is
+/// extracted (PDF text needs PDFium; without it PDFs are simply left out).
+fn rebuild_index(
+    library: &Library,
+    index_dir: &std::path::Path,
+    extract_missing: bool,
+) -> Result<fond_index::SearchIndex, fond_index::IndexError> {
+    let cache = library.root().join(".kartoteka").join("textcache");
+    let pdfium = if extract_missing {
+        fond_doc::bind_pdfium().ok()
+    } else {
+        None
+    };
+    let pdf_text = |key: &str| -> Option<String> {
+        library
+            .attachment_blobs(key)
+            .into_iter()
+            .find_map(|(hex, path)| {
+                fond_doc::cached_text(&cache, &format!("pdf-{hex}"), extract_missing, || {
+                    match pdfium.as_ref() {
+                        None => fond_doc::Extraction::Unavailable,
+                        Some(p) => match fond_doc::extract_text_from_file(p, &path) {
+                            Ok(t) => fond_doc::Extraction::Text(t.full_text()),
+                            Err(_) => fond_doc::Extraction::NoText,
+                        },
+                    }
+                })
+            })
+    };
+    let epub_text = |key: &str| -> Option<String> {
+        library
+            .attachment_blobs(key)
+            .into_iter()
+            .find_map(|(hex, path)| {
+                fond_doc::cached_text(&cache, &format!("epub-{hex}"), extract_missing, || {
+                    match fond_doc::extract_epub_text(&path) {
+                        Ok(t) => fond_doc::Extraction::Text(t),
+                        Err(_) => fond_doc::Extraction::NoText,
+                    }
+                })
+            })
+    };
+    fond_index::SearchIndex::rebuild(library, index_dir, pdf_text, epub_text)
 }
 
 /// Regenerate `library.yml` and, if a search index already exists, rebuild it — used after a
@@ -1080,7 +1209,9 @@ fn reindex_after_change(library_root: &std::path::Path, library: &Library) {
     }
     let index_dir = library_root.join(".kartoteka").join("index");
     if index_dir.join("meta.json").exists() {
-        if let Err(e) = fond_index::SearchIndex::rebuild(library, &index_dir, |_| None, |_| None) {
+        // Cache-only: keep the PDF/EPUB text `kartoteka reindex` already extracted instead of
+        // wiping it, without paying to extract again here.
+        if let Err(e) = rebuild_index(library, &index_dir, false) {
             eprintln!("warning: could not rebuild the search index: {e} (run `kartoteka reindex`)");
         }
     }

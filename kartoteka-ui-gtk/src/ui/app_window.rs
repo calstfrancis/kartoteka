@@ -1546,23 +1546,97 @@ fn apply_theme(name: &str) {
     adw::StyleManager::default().set_color_scheme(scheme);
 }
 
+/// Set while an explicit "Reindex search" (which extracts PDF/EPUB text and can take a while)
+/// is running on its worker thread, so the quick post-edit rebuilds don't fight it over the
+/// index directory.
+static REINDEX_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Rebuild the search index *with* PDF and EPUB body text. Extracted text is cached by
+/// attachment hash under `.kartoteka/textcache/`. With `extract_missing == false` only the
+/// cache is read — fast enough for the rebuild that follows nearly every edit; with `true`
+/// anything not yet cached is extracted (PDF text needs PDFium; without it PDFs are left
+/// out). Every rebuild here used to pass "no text" for all attachments, so the first edit
+/// after a CLI `reindex` silently wiped body-text search.
+fn build_search_index(
+    library: &Library,
+    extract_missing: bool,
+) -> Result<fond_index::SearchIndex, fond_index::IndexError> {
+    let dir = library.root().join(".kartoteka").join("index");
+    let cache = library.root().join(".kartoteka").join("textcache");
+    let pdfium = if extract_missing {
+        fond_doc::bind_pdfium().ok()
+    } else {
+        None
+    };
+    let pdf_text = |key: &str| -> Option<String> {
+        library
+            .attachment_blobs(key)
+            .into_iter()
+            .find_map(|(hex, path)| {
+                fond_doc::cached_text(&cache, &format!("pdf-{hex}"), extract_missing, || {
+                    match pdfium.as_ref() {
+                        None => fond_doc::Extraction::Unavailable,
+                        Some(p) => match fond_doc::extract_text_from_file(p, &path) {
+                            Ok(t) => fond_doc::Extraction::Text(t.full_text()),
+                            Err(_) => fond_doc::Extraction::NoText,
+                        },
+                    }
+                })
+            })
+    };
+    let epub_text = |key: &str| -> Option<String> {
+        library
+            .attachment_blobs(key)
+            .into_iter()
+            .find_map(|(hex, path)| {
+                fond_doc::cached_text(&cache, &format!("epub-{hex}"), extract_missing, || {
+                    match fond_doc::extract_epub_text(&path) {
+                        Ok(t) => fond_doc::Extraction::Text(t),
+                        Err(_) => fond_doc::Extraction::NoText,
+                    }
+                })
+            })
+    };
+    fond_index::SearchIndex::rebuild(library, &dir, pdf_text, epub_text)
+}
+
+/// Explicit "Reindex search": extracts any not-yet-cached PDF/EPUB text, which can take
+/// minutes on a big library, so it runs on a worker thread (with its own `Library` handle)
+/// and reports back with a toast.
 fn reindex(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
-    let rebuilt = {
+    let root = {
         let s = state.borrow();
         let Some(library) = s.library.as_ref() else {
             toast(widgets, "Open a library first");
             return;
         };
-        let dir = library.root().join(".kartoteka").join("index");
-        fond_index::SearchIndex::rebuild(library, &dir, |_| None, |_| None)
+        library.root().to_path_buf()
     };
-    match rebuilt {
-        Ok(index) => {
-            state.borrow_mut().index = Some(index);
-            toast(widgets, "Search index rebuilt");
-        }
-        Err(e) => toast(widgets, &format!("Reindex failed: {e}")),
+    if REINDEX_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        toast(widgets, "Search is already being reindexed");
+        return;
     }
+    toast(widgets, "Reindexing search (extracting PDF and EPUB text)…");
+    worker::run_off_main(
+        move || {
+            let result = Library::open(&root)
+                .map_err(|e| e.to_string())
+                .and_then(|lib| build_search_index(&lib, true).map_err(|e| e.to_string()));
+            REINDEX_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            result
+        },
+        {
+            let state = state.clone();
+            let widgets = widgets.clone();
+            move |result| match result {
+                Ok(index) => {
+                    state.borrow_mut().index = Some(index);
+                    toast(&widgets, "Search index rebuilt");
+                }
+                Err(e) => toast(&widgets, &format!("Reindex failed: {e}")),
+            }
+        },
+    );
 }
 
 /// Rename every attachment in the library to the citation-based "Author Year - Title.ext"
@@ -2399,14 +2473,23 @@ fn build_entry_yaml(f: &NewItemFields) -> String {
     if !f.date.trim().is_empty() {
         out.push_str(&format!("  date: {}\n", f.date.trim()));
     }
-    if !f.publisher.trim().is_empty() {
-        out.push_str(&format!(
-            "  publisher: {}\n",
-            yaml_quote(f.publisher.trim())
-        ));
-    }
-    if !f.location.trim().is_empty() {
-        out.push_str(&format!("  location: {}\n", yaml_quote(f.location.trim())));
+    // publisher/location share one YAML key: a plain string when there's no location, or a
+    // `{name, location}` mapping when there is — matching Hayagriva's own `Publisher`
+    // serialization. A separate top-level `location:` field (this code's shape until
+    // 2026-09-19) doesn't feed the CSL variable most citation styles use for "place of
+    // publication" (`publisher-place`/Zotero's "Place") — that reads the nested
+    // `publisher.location` instead, so citations rendered without a location regardless of
+    // what was typed into this field.
+    let publisher = f.publisher.trim();
+    let location = f.location.trim();
+    if !publisher.is_empty() && location.is_empty() {
+        out.push_str(&format!("  publisher: {}\n", yaml_quote(publisher)));
+    } else if !location.is_empty() {
+        out.push_str("  publisher:\n");
+        if !publisher.is_empty() {
+            out.push_str(&format!("    name: {}\n", yaml_quote(publisher)));
+        }
+        out.push_str(&format!("    location: {}\n", yaml_quote(location)));
     }
     if !f.url.trim().is_empty() {
         out.push_str(&format!("  url: {}\n", yaml_quote(f.url.trim())));
@@ -3609,26 +3692,125 @@ fn show_backup_wizard(
     // the same calls `present_device_dialog` makes, just landing in this wizard's own page
     // instead of a second popup window.
     stack.set_visible_child_name("signin");
-    if let Some(token) = secret_store::load_github_token() {
-        signin_status.set_text("Confirming GitHub sign-in…");
-        let (sender, receiver) = worker::channel::<Result<String, String>>();
-        std::thread::spawn(move || {
-            let _ = sender.send(github::fetch_username(&token).map_err(|e| e.to_string()));
-        });
+    signin_status.set_text("Checking for an existing GitHub sign-in…");
+
+    // Step 1 fallback: no stored token, so run the device flow inline.
+    let start_device_flow = {
         let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let cancelled = cancelled.clone();
+        let signin_status = signin_status.clone();
+        let signin_code = signin_code.clone();
+        let signin_link = signin_link.clone();
         let stack = stack.clone();
         let setup_intro = setup_intro.clone();
-        let dialog = dialog.clone();
-        receiver.attach(move |result| {
-            match result {
-                Ok(username) => {
+        move || {
+            signin_status.set_text("Requesting a sign-in code from GitHub…");
+            let (sender, receiver) =
+                worker::channel::<Result<github::DeviceCodeResponse, String>>();
+            std::thread::spawn(move || {
+                let _ = sender.send(
+                    github::request_device_code(github::CLIENT_ID).map_err(|e| e.to_string()),
+                );
+            });
+            let widgets = widgets.clone();
+            let dialog = dialog.clone();
+            let cancelled = cancelled.clone();
+            let signin_status = signin_status.clone();
+            let signin_code = signin_code.clone();
+            let signin_link = signin_link.clone();
+            let stack = stack.clone();
+            let setup_intro = setup_intro.clone();
+            receiver.attach(move |result| {
+                match result {
+                    Ok(device) => {
+                        signin_status.set_text("Open the page below and enter this code:");
+                        signin_code.set_text(&device.user_code);
+                        signin_code.set_visible(true);
+                        signin_link.set_uri(&device.verification_uri);
+                        signin_link.set_label("Open GitHub");
+                        signin_link.set_visible(true);
+
+                        let (sender2, receiver2) =
+                            worker::channel::<Result<(Result<(), String>, String), String>>();
+                        {
+                            let cancelled = cancelled.clone();
+                            std::thread::spawn(move || {
+                                let result = github::poll_for_access_token(
+                                    github::CLIENT_ID,
+                                    &device,
+                                    &cancelled,
+                                )
+                                .and_then(|token| {
+                                    github::fetch_username(&token).map(|user| (token, user))
+                                })
+                                .map_err(|e| e.to_string())
+                                // Keyring write stays off the main thread (secret-service can hang).
+                                .map(|(token, user)| {
+                                    (secret_store::save_github_token(&token), user)
+                                });
+                                let _ = sender2.send(result);
+                            });
+                        }
+                        let widgets = widgets.clone();
+                        let dialog = dialog.clone();
+                        let stack = stack.clone();
+                        let setup_intro = setup_intro.clone();
+                        receiver2.attach(move |result| {
+                            match result {
+                                Ok((saved, username)) => {
+                                    if let Err(e) = saved {
+                                        toast(
+                                            &widgets,
+                                            &format!("Signed in, but couldn't store token: {e}"),
+                                        );
+                                    }
+                                    setup_intro.set_text(&format!(
+                                        "Signed in as {username}. Choose a name for the GitHub \
+                                         repository that will hold your library:"
+                                    ));
+                                    stack.set_visible_child_name("setup");
+                                }
+                                Err(e) if e.contains("cancelled") => {}
+                                Err(e) => {
+                                    toast(&widgets, &format!("Sign-in failed: {e}"));
+                                    dialog.close();
+                                }
+                            }
+                            glib::ControlFlow::Break
+                        });
+                    }
+                    Err(e) => {
+                        toast(&widgets, &format!("GitHub error: {e}"));
+                        dialog.close();
+                    }
+                }
+                glib::ControlFlow::Break
+            });
+        }
+    };
+
+    // The keyring lookup is a synchronous secret-service round trip that can hang
+    // indefinitely, so it runs off the main thread along with the token check.
+    worker::run_off_main(
+        || {
+            secret_store::load_github_token()
+                .map(|token| github::fetch_username(&token).map_err(|e| e.to_string()))
+        },
+        {
+            let widgets = widgets.clone();
+            let stack = stack.clone();
+            let setup_intro = setup_intro.clone();
+            let dialog = dialog.clone();
+            move |outcome| match outcome {
+                Some(Ok(username)) => {
                     setup_intro.set_text(&format!(
                         "Signed in as {username}. Choose a name for the GitHub repository \
                          that will hold your library:"
                     ));
                     stack.set_visible_child_name("setup");
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     toast(
                         &widgets,
                         &format!(
@@ -3638,87 +3820,10 @@ fn show_backup_wizard(
                     );
                     dialog.close();
                 }
+                None => start_device_flow(),
             }
-            glib::ControlFlow::Break
-        });
-    } else {
-        signin_status.set_text("Requesting a sign-in code from GitHub…");
-        let (sender, receiver) = worker::channel::<Result<github::DeviceCodeResponse, String>>();
-        std::thread::spawn(move || {
-            let _ = sender
-                .send(github::request_device_code(github::CLIENT_ID).map_err(|e| e.to_string()));
-        });
-        let widgets = widgets.clone();
-        let dialog = dialog.clone();
-        let cancelled = cancelled.clone();
-        let signin_status = signin_status.clone();
-        let signin_code = signin_code.clone();
-        let signin_link = signin_link.clone();
-        let stack = stack.clone();
-        let setup_intro = setup_intro.clone();
-        receiver.attach(move |result| {
-            match result {
-                Ok(device) => {
-                    signin_status.set_text("Open the page below and enter this code:");
-                    signin_code.set_text(&device.user_code);
-                    signin_code.set_visible(true);
-                    signin_link.set_uri(&device.verification_uri);
-                    signin_link.set_label("Open GitHub");
-                    signin_link.set_visible(true);
-
-                    let (sender2, receiver2) =
-                        worker::channel::<Result<(String, String), String>>();
-                    {
-                        let cancelled = cancelled.clone();
-                        std::thread::spawn(move || {
-                            let result = github::poll_for_access_token(
-                                github::CLIENT_ID,
-                                &device,
-                                &cancelled,
-                            )
-                            .and_then(|token| {
-                                github::fetch_username(&token).map(|user| (token, user))
-                            })
-                            .map_err(|e| e.to_string());
-                            let _ = sender2.send(result);
-                        });
-                    }
-                    let widgets = widgets.clone();
-                    let dialog = dialog.clone();
-                    let stack = stack.clone();
-                    let setup_intro = setup_intro.clone();
-                    receiver2.attach(move |result| {
-                        match result {
-                            Ok((token, username)) => {
-                                if let Err(e) = secret_store::save_github_token(&token) {
-                                    toast(
-                                        &widgets,
-                                        &format!("Signed in, but couldn't store token: {e}"),
-                                    );
-                                }
-                                setup_intro.set_text(&format!(
-                                    "Signed in as {username}. Choose a name for the GitHub \
-                                     repository that will hold your library:"
-                                ));
-                                stack.set_visible_child_name("setup");
-                            }
-                            Err(e) if e.contains("cancelled") => {}
-                            Err(e) => {
-                                toast(&widgets, &format!("Sign-in failed: {e}"));
-                                dialog.close();
-                            }
-                        }
-                        glib::ControlFlow::Break
-                    });
-                }
-                Err(e) => {
-                    toast(&widgets, &format!("GitHub error: {e}"));
-                    dialog.close();
-                }
-            }
-            glib::ControlFlow::Break
-        });
-    }
+        },
+    );
 }
 
 fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
@@ -3773,7 +3878,11 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     push_label.set_halign(gtk4::Align::Start);
     let push_switch = gtk4::Switch::new();
     push_switch.set_halign(gtk4::Align::End);
-    push_switch.set_active(secret_store::load_github_token().is_some());
+    // Starts off; flipped on shortly after if a token is actually on file (see the
+    // `worker::channel` below) — `secret_store::load_github_token` is a synchronous
+    // secret-service/D-Bus round trip that can hang indefinitely (this app family's own
+    // documented recurring bug class), so it must not run inline here on the main thread,
+    // which would freeze this dialog before it even had a chance to show.
     push_row.append(&push_label);
     push_row.append(&push_switch);
     content.append(&push_row);
@@ -3811,6 +3920,18 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 Err(e) => toast(&widgets, &friendly::vault_error(&e)),
             }
             dialog.close();
+        });
+    }
+
+    {
+        let (sender, receiver) = worker::channel::<bool>();
+        std::thread::spawn(move || {
+            let _ = sender.send(secret_store::load_github_token().is_some());
+        });
+        let push_switch = push_switch.clone();
+        receiver.attach(move |has_token| {
+            push_switch.set_active(has_token);
+            glib::ControlFlow::Break
         });
     }
 
@@ -3900,13 +4021,15 @@ fn present_device_dialog(widgets: &Rc<Widgets>, device: github::DeviceCodeRespon
         });
     }
 
-    let (sender, receiver) = worker::channel::<Result<(String, String), String>>();
+    let (sender, receiver) = worker::channel::<Result<(Result<(), String>, String), String>>();
     {
         let cancelled = cancelled.clone();
         std::thread::spawn(move || {
             let result = github::poll_for_access_token(github::CLIENT_ID, &device, &cancelled)
                 .and_then(|token| github::fetch_username(&token).map(|user| (token, user)))
-                .map_err(|e| e.to_string());
+                .map_err(|e| e.to_string())
+                // Keyring write stays off the main thread (secret-service can hang).
+                .map(|(token, user)| (secret_store::save_github_token(&token), user));
             let _ = sender.send(result);
         });
     }
@@ -3915,7 +4038,7 @@ fn present_device_dialog(widgets: &Rc<Widgets>, device: github::DeviceCodeRespon
     let dialog_for_result = dialog.clone();
     receiver.attach(move |result| {
         match result {
-            Ok((token, username)) => match secret_store::save_github_token(&token) {
+            Ok((saved, username)) => match saved {
                 Ok(()) => toast(&widgets, &format!("Signed in to GitHub as {username}")),
                 Err(e) => toast(
                     &widgets,
@@ -3936,13 +4059,6 @@ fn present_device_dialog(widgets: &Rc<Widgets>, device: github::DeviceCodeRespon
 /// on first push. Runs on a worker thread (a fresh `Vault` is opened there from the path).
 #[allow(deprecated)]
 fn push_to_github(widgets: &Rc<Widgets>, root: PathBuf) {
-    let Some(token) = secret_store::load_github_token() else {
-        toast(
-            widgets,
-            "Sign in to GitHub first (menu → Sign in to GitHub)",
-        );
-        return;
-    };
     let repo_name = root
         .file_name()
         .and_then(|n| n.to_str())
@@ -3953,6 +4069,10 @@ fn push_to_github(widgets: &Rc<Widgets>, root: PathBuf) {
     let (sender, receiver) = worker::channel::<Result<(), String>>();
     std::thread::spawn(move || {
         let result = (|| -> Result<(), String> {
+            // Keyring read is on this worker thread (secret-service can hang).
+            let Some(token) = secret_store::load_github_token() else {
+                return Err("Sign in to GitHub first (menu → Sign in to GitHub)".to_string());
+            };
             let vault = fond_vault::Vault::open(&root).map_err(|e| e.to_string())?;
             if vault.remote_url("origin").is_none() {
                 let clone_url =
@@ -4029,7 +4149,18 @@ fn show_webdav_dialog(
         .text(config.borrow().webdav_username.clone().unwrap_or_default())
         .build();
     let password = gtk4::PasswordEntry::builder().show_peek_icon(true).build();
-    password.set_text(&secret_store::load_webdav_password().unwrap_or_default());
+    // Filled in from the keyring off the main thread (secret-service can hang), and only if
+    // the user hasn't already started typing one by the time it arrives.
+    {
+        let password = password.clone();
+        worker::run_off_main(secret_store::load_webdav_password, move |saved| {
+            if let Some(saved) = saved {
+                if password.text().is_empty() {
+                    password.set_text(&saved);
+                }
+            }
+        });
+    }
 
     content.append(&labeled("WebDAV URL", &url));
     content.append(&labeled("Username", &username));
@@ -4065,14 +4196,14 @@ fn show_webdav_dialog(
                 c.webdav_username = Some(user.clone());
                 c.save();
             }
-            let _ = secret_store::save_webdav_password(&pass);
-
             back_up.set_sensitive(false);
             spinner.start();
 
             let root = root.clone();
             let (sender, receiver) = worker::channel::<Result<usize, String>>();
             std::thread::spawn(move || {
+                // Password to the keyring here, off the main thread (secret-service can hang).
+                let _ = secret_store::save_webdav_password(&pass);
                 let _ = sender.send(webdav::upload_library(&base, &user, &pass, &root));
             });
 
@@ -4208,17 +4339,16 @@ fn run_auto_backup(
         return;
     };
 
-    let github_token = secret_store::load_github_token();
-    let webdav_creds = {
+    // Only the plain config values are read here — `secret_store::load_*` (a synchronous
+    // secret-service/D-Bus round trip that can hang indefinitely, per this app family's own
+    // documented history) moves into the worker thread below instead of running here on the
+    // main thread. This function's own doc comment already promises "runs off the main
+    // thread since a commit/push/upload can take a while" — it just didn't actually keep
+    // that promise for these two calls specifically, freezing the window on every backup
+    // tick if secret-service was ever slow.
+    let (webdav_url, webdav_username) = {
         let c = config.borrow();
-        match (
-            c.webdav_url.clone(),
-            c.webdav_username.clone(),
-            secret_store::load_webdav_password(),
-        ) {
-            (Some(url), Some(user), Some(pass)) if !url.is_empty() => Some((url, user, pass)),
-            _ => None,
-        }
+        (c.webdav_url.clone(), c.webdav_username.clone())
     };
     let message = glib::DateTime::now_local()
         .ok()
@@ -4228,6 +4358,15 @@ fn run_auto_backup(
 
     let (sender, receiver) = worker::channel::<Result<(), String>>();
     std::thread::spawn(move || {
+        let github_token = secret_store::load_github_token();
+        let webdav_creds = match (
+            webdav_url,
+            webdav_username,
+            secret_store::load_webdav_password(),
+        ) {
+            (Some(url), Some(user), Some(pass)) if !url.is_empty() => Some((url, user, pass)),
+            _ => None,
+        };
         let result = (|| -> Result<(), String> {
             let vault = fond_vault::Vault::open(&root)
                 .or_else(|_| fond_vault::Vault::init(&root))
@@ -4378,6 +4517,51 @@ fn show_auto_backup_dialog(
     }
 
     dialog.present();
+}
+
+/// Re-read `key`'s title/author/year/type/isbn from disk and patch just that one entry's
+/// cached `EntrySummary` and spreadsheet row in place, via `EntryRow::set_display` — instead
+/// of `reload_current`'s full library reload plus detail-pane rebuild, which is disruptive
+/// mid-edit (see `show_detail`'s `save_citation` for why this exists). The key itself never
+/// changes from a citation-fields save (`Library::edit_fields` always writes back to the
+/// same path), so there's nothing else in `AppState`/the spreadsheet that needs touching.
+fn update_entry_summary_in_place(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
+    let parsed = {
+        let s = state.borrow();
+        s.library.as_ref().and_then(|lib| lib.load_entry(key).ok())
+    };
+    let Some(parsed) = parsed else {
+        return;
+    };
+    let title = bibentry::title_string(&parsed.entry).unwrap_or_default();
+    let author = bibentry::author_names(&parsed.entry);
+    let year = bibentry::year(&parsed.entry)
+        .map(|y| y.to_string())
+        .unwrap_or_default();
+    let entry_type = format!("{:?}", parsed.entry.entry_type()).to_lowercase();
+    let isbn = parsed.entry.isbn().unwrap_or_default().to_string();
+
+    {
+        let mut s = state.borrow_mut();
+        if let Some(idx) = s.key_to_index.get(key).copied() {
+            if let Some(e) = s.entries.get_mut(idx) {
+                e.title = title.clone();
+                e.author = author.clone();
+                e.year = year.clone();
+                e.entry_type = entry_type;
+                e.isbn = isbn;
+            }
+        }
+    }
+
+    for i in 0..widgets.store.n_items() {
+        if let Some(row) = widgets.store.item(i).and_downcast::<EntryRow>() {
+            if row.key() == key {
+                row.set_display(title, author, year);
+                break;
+            }
+        }
+    }
 }
 
 fn reload_current(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
@@ -4714,15 +4898,13 @@ fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: Path
     // of this fails.
     let index = match fond_index::SearchIndex::open(&index_dir) {
         Ok(idx) => Some(idx),
-        Err(_) => {
-            match fond_index::SearchIndex::rebuild(&library, &index_dir, |_| None, |_| None) {
-                Ok(idx) => Some(idx),
-                Err(e) => {
-                    toast(widgets, &format!("Search index unavailable: {e}"));
-                    None
-                }
+        Err(_) => match build_search_index(&library, false) {
+            Ok(idx) => Some(idx),
+            Err(e) => {
+                toast(widgets, &format!("Search index unavailable: {e}"));
+                None
             }
-        }
+        },
     };
 
     let saved_searches = load_saved_searches(&path);
@@ -8249,15 +8431,26 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
 
     // One save path for the whole citation-fields form: rebuilds a full `EntryFields` from
     // every widget's *current* value (not just whichever one triggered the save) and hands
-    // it to `Library::edit_fields`, which diffs against the entry's on-disk state itself and
-    // writes only what changed. Skips the write (and the reload it would trigger) entirely
-    // when nothing actually differs from `current_fields` — every field commits on its own
-    // focus-out/Enter, so tabbing through an unedited form must not fire a write per field.
+    // it to `Library::edit_fields`, which diffs against `current_fields_cell`'s snapshot and
+    // writes only what changed. Skips the write entirely when nothing actually differs —
+    // every field commits on its own focus-out/Enter, so tabbing through an unedited form
+    // must not fire a write per field.
+    //
+    // `current_fields_cell` (not a plain captured clone) so a successful save can update the
+    // diff snapshot in place instead of needing this whole pane rebuilt from disk to get a
+    // fresh one — rebuilding used to be exactly what happened (via `reload_current` +
+    // `select_key` below), and it was actively harmful for the creator editor specifically:
+    // adding a second creator means typing into two fields in quick succession (family, tab,
+    // given), and the first field's blur-triggered save was tearing down and recreating the
+    // whole pane — including the very "First name" field the user had just tabbed toward —
+    // while they were still mid-edit. Confirmed live and reported as "the field disappeared."
+    let current_fields_cell: Rc<RefCell<fond_bib::entry::EntryFields>> =
+        Rc::new(RefCell::new(current_fields.clone()));
     let save_citation: Rc<dyn Fn()> = {
         let state = state.clone();
         let widgets = widgets.clone();
         let key = key.clone();
-        let current_fields = current_fields.clone();
+        let current_fields_cell = current_fields_cell.clone();
         let type_choices = type_choices.clone();
         let type_drop = type_drop.clone();
         let title_entry = title_entry.clone();
@@ -8271,7 +8464,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             let entry_type = type_choices
                 .get(type_drop.selected() as usize)
                 .map(|(_, t)| t.clone())
-                .unwrap_or_else(|| current_fields.entry_type.clone());
+                .unwrap_or_else(|| current_fields_cell.borrow().entry_type.clone());
             let edited = fond_bib::entry::EntryFields {
                 entry_type,
                 title: title_entry.text().trim().to_string(),
@@ -8282,7 +8475,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 doi: doi_entry.text().trim().to_string(),
                 isbn: isbn_entry.text().trim().to_string(),
             };
-            if edited == current_fields {
+            if edited == *current_fields_cell.borrow() {
                 return;
             }
             let result = {
@@ -8292,8 +8485,8 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             match result {
                 Some(Ok(())) => {
                     rebuild_index_silent(&state);
-                    reload_current(&state, &widgets);
-                    select_key(&state, &widgets, &key);
+                    *current_fields_cell.borrow_mut() = edited;
+                    update_entry_summary_in_place(&state, &widgets, &key);
                 }
                 Some(Err(e)) => toast(&widgets, &friendly::bib_error(&e)),
                 None => {}
@@ -10975,15 +11168,21 @@ fn confirm_delete_node(
 }
 
 fn rebuild_index_silent(state: &Rc<RefCell<AppState>>) {
+    // An explicit reindex is rebuilding the same directory on its worker thread; it finishes
+    // with a fully current index, so skip rather than race it.
+    if REINDEX_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let rebuilt = {
         let s = state.borrow();
-        s.library.as_ref().map(|lib| {
-            let dir = lib.root().join(".kartoteka").join("index");
-            fond_index::SearchIndex::rebuild(lib, &dir, |_| None, |_| None)
-        })
+        s.library.as_ref().map(|lib| build_search_index(lib, false))
     };
-    if let Some(Ok(index)) = rebuilt {
-        state.borrow_mut().index = Some(index);
+    // A failure keeps the previous index (the rebuild only swaps a finished one in), but the
+    // user should know it's now stale rather than have search silently miss their edit.
+    match rebuilt {
+        Some(Ok(index)) => state.borrow_mut().index = Some(index),
+        Some(Err(e)) => eprintln!("kartoteka: search index rebuild failed: {e}"),
+        None => {}
     }
 }
 

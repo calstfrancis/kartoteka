@@ -45,6 +45,16 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.17.2" date="2026-09-21">
+      <description>
+        <p>0.17.2 "Sound Footing" — fixes from a full audit. Backups: a push GitHub
+        rejects is now an error, and deleted entries are committed. Merging duplicates no
+        longer loses ratings, relations, child notes or the AI sidecar; fsck no longer aborts
+        or panics; writes are atomic. Search keeps PDF/EPUB text after edits. Editing
+        creators no longer crashes, and keyring access no longer freezes the window. CLI and
+        release-pipeline hardening.</p>
+      </description>
+    </release>
     <release version="0.17.1" date="2026-09-19">
       <description>
         <p>0.17.1 "Firm Grip" — fixed drag-and-drop onto a collection: only the Key column

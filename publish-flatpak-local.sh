@@ -27,7 +27,8 @@
 set -euo pipefail
 
 GPG_KEY="A2918A9B43B199ADF9879F934AC9D5173DE4BC41"
-FLATPAK_REPO="/tmp/flatpak-checkout"
+# Per-user, not a fixed world-shared /tmp path another user (or a stale run) could own.
+FLATPAK_REPO="${TMPDIR:-/tmp}/flatpak-checkout-$(id -u)"
 MANIFEST="packaging/io.github.calstfrancis.Kartoteka.yml"
 APP_LABEL="Kartoteka"
 
@@ -37,10 +38,25 @@ if [[ $# -ne 1 ]]; then
 fi
 VERSION="$1"
 
-CARGO_VERSION=$(grep '^version' kartoteka-ui-gtk/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+CARGO_VERSION=$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version *=/{gsub(/^version *= *"|"$/,""); print; exit}' kartoteka-ui-gtk/Cargo.toml)
 if [[ "$CARGO_VERSION" != "$VERSION" ]]; then
   echo "ERROR: kartoteka-ui-gtk/Cargo.toml says '$CARGO_VERSION', but you passed '$VERSION'."
   echo "Did you forget the version bump? (Ask Claude to do the version bump + docs first.)"
+  exit 1
+fi
+
+# Refuse to publish from a dirty tree, or if the tag is missing / not at HEAD — otherwise
+# `git push origin main` can go out and then fail on the tag, leaving a half-done release.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "ERROR: uncommitted changes in the working tree — commit or stash them first."
+  exit 1
+fi
+if ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+  echo "ERROR: tag v$VERSION does not exist locally — tag the release commit first."
+  exit 1
+fi
+if [[ "$(git rev-parse "v$VERSION^{commit}")" != "$(git rev-parse HEAD)" ]]; then
+  echo "ERROR: v$VERSION does not point at HEAD — refusing to publish a different commit."
   exit 1
 fi
 
@@ -48,14 +64,21 @@ echo "==> Publishing $APP_LABEL $VERSION (local build)"
 
 echo "==> Pushing source repo to GitHub..."
 git push origin main
-git push origin "v$VERSION" 2>/dev/null || true
+git push origin "v$VERSION"   # no `|| true`: a real push failure must stop the release
+
+# The manifest's git source is `branch: main`; build from a copy pinned to the tagged commit
+# so the published flatpak is exactly the tag, not whatever main has moved on to.
+PINNED="${MANIFEST%.yml}.pinned.yml"
+trap 'rm -f "$PINNED"' EXIT
+sed "s/^        branch: main$/        commit: $(git rev-parse "v$VERSION^{commit}")/" "$MANIFEST" > "$PINNED"
+grep -q "commit: " "$PINNED" || { echo "ERROR: could not pin the manifest to the tag."; exit 1; }
 
 echo "==> Building flatpak (this will take a while)..."
-flatpak-builder --force-clean --user --install build-flatpak "$MANIFEST"
+flatpak-builder --force-clean --user --install build-flatpak "$PINNED"
 
 echo "==> Syncing public flatpak repo..."
 if [[ -d "$FLATPAK_REPO/.git" ]]; then
-  git -C "$FLATPAK_REPO" pull
+  git -C "$FLATPAK_REPO" pull --ff-only
 else
   git clone https://github.com/calstfrancis/flatpak "$FLATPAK_REPO"
 fi

@@ -223,6 +223,249 @@ fn finds_and_merges_duplicates() {
     assert!(note.body.contains("note from b"));
 }
 
+/// Merging used to keep only tags/attachments/body/annotations and silently destroy the rest
+/// of the merged-away entry: rating, read status, tasks, relations, child notes, AI sidecar —
+/// and left other records' edges pointing at the deleted key.
+#[test]
+fn merge_group_keeps_everything_the_duplicate_carried() {
+    use fond_bib::Predicate;
+    let (_dir, lib) = temp_library();
+    let mk = |k: &str, extra: &str| {
+        fs::write(
+            lib.entry_path(k),
+            format!("{k}:\n  type: article\n  title: Black Theology\n  author: Cone, James\n  date: 1970\n{extra}"),
+        )
+        .unwrap();
+    };
+    mk("keep", "");
+    // The duplicate is the one that has the DOI, the rating, the status and the edges.
+    mk("dup", "  serial-number:\n    doi: 10.1/cone\n");
+    mk("third", "");
+    mk("cited", "");
+    fs::write(
+        lib.note_path("dup"),
+        "---\nrating: 4\nread-status: reading\ntasks:\n  - text: reread ch.2\ncustom-fields:\n  mood: dense\n---\nnote from dup\n",
+    )
+    .unwrap();
+    lib.add_relation("dup", Predicate::Cites, "cited").unwrap();
+    lib.add_relation("third", Predicate::Cites, "dup").unwrap();
+    let child = lib.create_child_note("dup", "a child note").unwrap();
+    fs::create_dir_all(lib.root().join("ai")).unwrap();
+    fs::write(
+        lib.ai_path("dup"),
+        "schema: 1\ngenerated-by: x\ngenerated-at: t\n",
+    )
+    .unwrap();
+
+    lib.merge_group(&["keep".to_string(), "dup".to_string()], "keep")
+        .unwrap();
+
+    let note = lib.load_note("keep").unwrap().unwrap();
+    assert_eq!(note.frontmatter.rating, Some(4), "rating lost");
+    assert_eq!(
+        note.frontmatter.read_status,
+        Some(fond_bib::ReadStatus::Reading)
+    );
+    assert_eq!(note.frontmatter.tasks.len(), 1, "task lost");
+    assert_eq!(
+        note.frontmatter
+            .custom_fields
+            .get("mood")
+            .map(String::as_str),
+        Some("dense")
+    );
+    assert!(
+        note.frontmatter
+            .relations
+            .iter()
+            .any(|r| r.target == "cited"),
+        "the duplicate's own edge was lost"
+    );
+    let fields = fond_bib::entry::read_fields(&lib.load_entry("keep").unwrap().entry);
+    assert_eq!(
+        fields.doi, "10.1/cone",
+        "DOI only the duplicate had was lost"
+    );
+
+    // Child note and AI sidecar moved, not orphaned.
+    assert!(lib.child_note_ids("keep").unwrap().contains(&child));
+    assert!(!lib.child_note_dir("dup").exists(), "child notes orphaned");
+    assert!(lib.ai_path("keep").exists() && !lib.ai_path("dup").exists());
+
+    // Someone else's edge to the deleted key now points at the survivor.
+    let third = lib.load_note("third").unwrap().unwrap();
+    assert!(
+        third
+            .frontmatter
+            .relations
+            .iter()
+            .all(|r| r.target != "dup"),
+        "dangling edge to dup"
+    );
+    assert!(third
+        .frontmatter
+        .relations
+        .iter()
+        .any(|r| r.target == "keep"));
+}
+
+const CORRUPT_NOTE: &str =
+    "---\nrelations:\n  - predicate: not-a-real-predicate\n    target: b\n---\nbody\n";
+
+/// One corrupt note used to abort `fsck` at the `?` — no report at all, on exactly the
+/// libraries that need one.
+#[test]
+fn fsck_reports_a_corrupt_note_instead_of_aborting() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a", "b"]);
+    fs::write(lib.note_path("a"), CORRUPT_NOTE).unwrap();
+    let report = lib.fsck().expect("fsck must not abort on one bad note");
+    assert!(
+        report.unreadable.iter().any(|(p, _)| p.ends_with("a.md")),
+        "corrupt note not reported: {report:?}"
+    );
+}
+
+#[test]
+fn fsck_flags_orphaned_records_and_bad_collection_parents() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a"]);
+    fs::write(lib.note_path("ghost"), "---\ntags: [x]\n---\n").unwrap();
+    fs::write(lib.collection_path("x"), "name: X\nparent: y\nkeys: []\n").unwrap();
+    fs::write(lib.collection_path("y"), "name: Y\nparent: x\nkeys: []\n").unwrap();
+    fs::write(
+        lib.collection_path("z"),
+        "name: Z\nparent: nowhere\nkeys: []\n",
+    )
+    .unwrap();
+    let report = lib.fsck().unwrap();
+    assert!(report.orphaned_records.iter().any(|p| p.contains("ghost")));
+    assert!(report
+        .bad_collection_parents
+        .iter()
+        .any(|(s, d)| s == "z" && d.contains("does not exist")));
+    assert!(report
+        .bad_collection_parents
+        .iter()
+        .any(|(_, d)| d.contains("cycle")));
+}
+
+/// `fsck --fix` skipped an unreadable host, then judged every inverse edge pointing at it
+/// "orphaned" and deleted it. It must refuse instead.
+#[test]
+fn reconcile_fix_refuses_when_a_host_is_unreadable() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a", "b", "c"]);
+    lib.add_relation("c", Predicate::Cites, "a").unwrap();
+    let before = fs::read_to_string(lib.note_path("a")).unwrap();
+    fs::write(lib.note_path("b"), CORRUPT_NOTE).unwrap();
+    assert!(
+        lib.reconcile_relations(true).is_err(),
+        "repair ran with an unreadable host"
+    );
+    assert_eq!(
+        fs::read_to_string(lib.note_path("a")).unwrap(),
+        before,
+        "a's inverse edge was touched"
+    );
+    // The read-only report still works.
+    assert!(lib.reconcile_relations(false).is_ok());
+}
+
+/// An unreadable note elsewhere was treated as "references nothing", so deleting an entry
+/// could delete a blob that note still owned.
+#[test]
+fn delete_entry_keeps_blobs_when_another_note_is_unreadable() {
+    let (dir, lib) = temp_library();
+    seed_entries(&lib, &["a", "b"]);
+    let blobs = dir.path().join("attachments");
+    fs::create_dir_all(&blobs).unwrap();
+    fs::write(blobs.join("abcd1234"), b"pdf").unwrap();
+    let att =
+        "---\nattachments:\n  - hash: blake3:abcd1234\n    filename: x.pdf\n    bytes: 3\n---\n";
+    fs::write(lib.note_path("a"), att).unwrap();
+    fs::write(lib.note_path("b"), CORRUPT_NOTE).unwrap();
+    lib.delete_entry("a").unwrap();
+    assert!(
+        blobs.join("abcd1234").exists(),
+        "blob deleted although an unreadable note may own it"
+    );
+}
+
+#[test]
+fn delete_entry_cleans_legacy_related_and_derived_from_book() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a", "b"]);
+    fs::write(
+        lib.note_path("b"),
+        "---\nrelated: [a]\nderived-from-book: a\nderived-from-role: editor\n---\n",
+    )
+    .unwrap();
+    lib.delete_entry("a").unwrap();
+    let b = lib.load_note("b").unwrap().unwrap();
+    assert!(b.frontmatter.related.is_empty());
+    assert!(b.frontmatter.derived_from_book.is_none() && b.frontmatter.derived_from_role.is_none());
+}
+
+/// A chapter keeps its book's date only inside `parent:`; its key used to say `nodate`.
+#[test]
+fn book_part_key_uses_the_parent_books_year() {
+    use fond_bib::{Creator, CreatorRole};
+    let (_dir, lib) = temp_library();
+    let book = fond_bib::entry::parse_single(
+        "book:\n  type: anthology\n  title: Essays on Being\n  author: Doe, Jane\n  date: 1999\n",
+        std::path::Path::new("b"),
+    )
+    .unwrap();
+    let yaml = fond_bib::entry::book_part_yaml(
+        &book.entry,
+        CreatorRole::Editor,
+        "chapter",
+        "On Personhood",
+        &[Creator::new(CreatorRole::Author, "Smith", "John")],
+        "1-10",
+    )
+    .unwrap();
+    let keys = lib.add_from_yaml(&yaml).unwrap();
+    assert!(
+        !keys[0].contains("nodate"),
+        "key lost the parent's year: {}",
+        keys[0]
+    );
+    assert!(keys[0].contains("1999"), "{}", keys[0]);
+    // ...but the editable Year field must not copy the parent's year onto the child.
+    let f = fond_bib::entry::read_fields(&lib.load_entry(&keys[0]).unwrap().entry);
+    assert_eq!(f.year, "");
+}
+
+/// A conference's top-level `location:` is its event place — real data, not a stray
+/// publisher location — and editing the publisher must not delete it.
+#[test]
+fn editing_publisher_keeps_a_conference_event_location() {
+    use fond_bib::entry::{self, EntryFields};
+    let (_dir, lib) = temp_library();
+    fs::write(
+        lib.entry_path("conf"),
+        "conf:\n  type: conference\n  title: Proceedings\n  date: 2020\n  location: Halifax\n",
+    )
+    .unwrap();
+    let current = entry::read_fields(&lib.load_entry("conf").unwrap().entry);
+    assert_eq!(
+        current.location, "",
+        "event place must not show up as a publisher location"
+    );
+    let edited = EntryFields {
+        publisher: "ACM".into(),
+        ..current
+    };
+    lib.edit_fields("conf", &edited).unwrap();
+    let raw = fs::read_to_string(lib.entry_path("conf")).unwrap();
+    assert!(
+        raw.contains("location: Halifax"),
+        "event place deleted: {raw}"
+    );
+}
+
 #[test]
 fn set_related_is_symmetric() {
     let (_dir, lib) = temp_library();
@@ -946,6 +1189,79 @@ fn edit_fields_clearing_a_field_removes_it() {
     assert!(raw.contains("date: 2000"), "unrelated field lost: {raw}");
 }
 
+/// Location must be written nested under `publisher:`, not as the entry's own top-level
+/// `location:` field — that's the shape most citation styles' "place of publication"
+/// element (CSL `publisher-place`, Zotero's "Place") actually reads (see
+/// `EntryFields::location`'s doc comment). Regression test for a real bug: an earlier
+/// version of `apply_fields_to_yaml` wrote a top-level field that no style could ever read.
+#[test]
+fn edit_fields_writes_location_nested_under_publisher() {
+    use fond_bib::entry::{self, EntryFields};
+    let (_dir, lib) = temp_library();
+    fs::write(
+        lib.entry_path("work"),
+        "work:\n  type: book\n  title: T\n  date: 2000\n",
+    )
+    .unwrap();
+
+    let current = entry::read_fields(&lib.load_entry("work").unwrap().entry);
+    let edited = EntryFields {
+        publisher: "Test Press".into(),
+        location: "Testville".into(),
+        ..current
+    };
+    lib.edit_fields("work", &edited).unwrap();
+
+    let raw = fs::read_to_string(lib.entry_path("work")).unwrap();
+    assert!(raw.contains("name: Test Press"), "got: {raw}");
+    assert!(raw.contains("location: Testville"), "got: {raw}");
+    assert!(
+        !raw.lines().any(|l| l == "  location: Testville"),
+        "location must not be a top-level field: {raw}"
+    );
+
+    let after = entry::read_fields(&lib.load_entry("work").unwrap().entry);
+    assert_eq!(after.publisher, "Test Press");
+    assert_eq!(after.location, "Testville");
+}
+
+/// An entry from before this was fixed has `location:` at the top level. It must still read
+/// back into the editor (not silently appear blank, discarding data the user already
+/// entered), and saving any publisher/location change must migrate it into the nested spot
+/// and remove the stale top-level key rather than leaving both around.
+#[test]
+fn edit_fields_migrates_legacy_top_level_location() {
+    use fond_bib::entry::{self, EntryFields};
+    let (_dir, lib) = temp_library();
+    fs::write(
+        lib.entry_path("work"),
+        "work:\n  type: book\n  title: T\n  date: 2000\n  publisher: Old Press\n  location: Oldville\n",
+    )
+    .unwrap();
+
+    let current = entry::read_fields(&lib.load_entry("work").unwrap().entry);
+    assert_eq!(
+        current.location, "Oldville",
+        "legacy top-level location must still populate the editor"
+    );
+
+    // Re-save with the location edited (the common real-world trigger: the user notices and
+    // corrects/confirms it) — this must migrate the field, not just leave the old one in place.
+    let edited = EntryFields {
+        location: "Newville".into(),
+        ..current
+    };
+    lib.edit_fields("work", &edited).unwrap();
+
+    let raw = fs::read_to_string(lib.entry_path("work")).unwrap();
+    assert!(raw.contains("location: Newville"), "got: {raw}");
+    assert!(
+        !raw.lines()
+            .any(|l| l == "  location: Newville" || l == "  location: Oldville"),
+        "stale top-level location key must be removed, not left alongside the nested one: {raw}"
+    );
+}
+
 #[test]
 fn edit_fields_writes_multiple_creator_types_to_separate_yaml_keys() {
     use fond_bib::entry::{self, EntryFields};
@@ -1276,4 +1592,60 @@ fn deleting_entry_removes_its_child_notes() {
     // And fsck no longer sees it as orphaned, since the whole directory is gone.
     let report = lib.fsck().unwrap();
     assert!(report.orphaned_child_note_dirs.is_empty());
+}
+
+/// Notes are rewritten constantly (relations, attachments, tags, merges); frontmatter keys the
+/// model doesn't know used to vanish on the first rewrite, and `custom-fields` came out in a
+/// different random order every time (noisy git diffs).
+#[test]
+fn rewriting_a_note_keeps_unknown_keys_and_orders_custom_fields_stably() {
+    let (_dir, lib) = temp_library();
+    seed_entries(&lib, &["a", "b"]);
+    fs::write(
+        lib.note_path("a"),
+        "---\nsource: my reading group\nzeta: [1, 2]\ncustom-fields:\n  z: 1\n  b: 2\n  m: 3\n  a: 4\n---\nbody\n",
+    )
+    .unwrap();
+    lib.add_relation("a", Predicate::Cites, "b").unwrap();
+    let raw = fs::read_to_string(lib.note_path("a")).unwrap();
+    assert!(
+        raw.contains("source: my reading group"),
+        "unknown key dropped: {raw}"
+    );
+    assert!(raw.contains("zeta:"), "unknown key dropped: {raw}");
+    let pos = |k: &str| raw.find(&format!("  {k}:")).unwrap();
+    assert!(
+        pos("a") < pos("b") && pos("b") < pos("m") && pos("m") < pos("z"),
+        "custom-fields unsorted: {raw}"
+    );
+}
+
+#[test]
+fn rewriting_a_node_keeps_unknown_keys() {
+    let (_dir, lib) = temp_library();
+    fs::write(
+        lib.node_path("augustine"),
+        "---\nnode-type: person\nlabel: Augustine\nborn: 354\n---\n",
+    )
+    .unwrap();
+    let node = lib.load_node("augustine").unwrap();
+    lib.write_node("augustine", &node).unwrap();
+    assert!(fs::read_to_string(lib.node_path("augustine"))
+        .unwrap()
+        .contains("born: 354"));
+}
+
+/// A batch with an unkeyable entry must write nothing, not the entries before it.
+#[test]
+fn add_entries_batch_is_all_or_nothing_on_a_key_failure() {
+    let (_dir, lib) = temp_library();
+    let good = "g:\n  type: book\n  title: Fine Title\n  author: Doe, Jane\n  date: 2000\n";
+    let unkeyable = "u:\n  type: misc\n  date: 2001\n"; // no author, no title
+    let mut entries = fond_bib::entry::parse_all(good, std::path::Path::new("x")).unwrap();
+    entries.extend(fond_bib::entry::parse_all(unkeyable, std::path::Path::new("x")).unwrap());
+    assert!(lib.add_entries(&entries).is_err());
+    assert!(
+        lib.existing_keys().unwrap().is_empty(),
+        "first entry written despite the batch failing"
+    );
 }
