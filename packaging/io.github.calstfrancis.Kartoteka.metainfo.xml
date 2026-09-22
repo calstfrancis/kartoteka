@@ -45,6 +45,15 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.18.0" date="2026-09-22">
+      <description>
+        <p>0.18.0 "Steady Hand" — "Read" now launches the standalone Pereplyot app instead
+        of an embedded copy of its reader that had quietly gone stale. Annotations, reading
+        position, and the page-numbering override all still land in your vault exactly as
+        before; falls back to your system's default file handler if Pereplyot isn't
+        installed.</p>
+      </description>
+    </release>
     <release version="0.17.2" date="2026-09-21">
       <description>
         <p>0.17.2 "Sound Footing" — fixes from a full audit. Backups: a push GitHub

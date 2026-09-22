@@ -2,6 +2,23 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.18.0] "Steady Hand" — 2026-09-22
+
+- **"Read" launches Pereplyot** (`flatpak-spawn --host flatpak run io.github.calstfrancis.Pereplyot`)
+  instead of embedding the `fond-read-gtk` reader crate in-process. The embedded copy was
+  pinned to Pereplyot's own `v0.2.0` while Pereplyot itself had moved on to a real feature
+  pass (bookmarks, rotate, invert-colours, EPUB reading themes, and more, in `v0.3.0`) — one
+  reader implementation to keep current, not a pinned copy that silently drifts stale.
+  Pereplyot is launched with `--vault=<library root> --key=<citation key>`, so annotations,
+  reading position, and the page-numbering override all still land in this vault's
+  `notes/<key>.md`/`annots/<key>.json` exactly as before. If Pereplyot isn't installed,
+  falls back to the same system-default-handler launch "Open externally" already used
+  (`gtk4::FileLauncher`).
+- The "Annotations…" review dialog (list highlights, jump to one, delete) is unaffected —
+  still an in-process `fond-read-gtk` feature, not the full reader UI this change replaces.
+- `fond-read-gtk` bumped to Pereplyot's `v0.4.0` tag (still a dependency, for
+  `fond_read_gtk::history`'s shared cross-app reading log and the annotations dialog above).
+
 ## [0.17.2] "Sound Footing" — 2026-09-21 — Audit fixes: backups, data integrity, search, CLI, release pipeline
 
 Fixes from a full audit of the codebase (fond-bib, fond-index, fond-doc, fond-vault, the CLI,

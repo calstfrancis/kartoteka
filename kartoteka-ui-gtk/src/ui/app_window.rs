@@ -21,8 +21,6 @@ use crate::config::Config;
 use crate::ui::{bookshelf, friendly, worker};
 use crate::{github, secret_store, webdav};
 use fond_read_gtk::annotations::show_annotations_dialog;
-use fond_read_gtk::epub::show_epub_reader;
-use fond_read_gtk::pdf::show_pdf_reader;
 use fond_read_gtk::ReaderHost;
 
 /// Which kind of identifier the acquire dialog is looking up.
@@ -8579,26 +8577,36 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     // Primary: the read action, contextual to whether a PDF/EPUB is attached (and which, or
     // both — M5-SPEC.md Tier 4) or a DOI is known.
     match (pdf_attachment.clone(), epub_attachment.clone()) {
-        (Some((path, _filename, hash)), None) => {
+        (Some((path, filename, hash)), None) => {
             let read_button = gtk4::Button::with_label("Read");
             // Resumes at the saved Progress page, if any — "Read" opening on page 1 every
             // time despite a recorded reading position was the whole gap 5A/M5's Tier 2
-            // exists to close.
+            // exists to close. Pereplyot itself resolves this now (reading the vault note
+            // directly via --vault/--key), but the tooltip wording is decided here since
+            // it's cheap to know already from `note`.
             let start_page = note
                 .as_ref()
                 .and_then(|n| n.frontmatter.progress)
                 .map(|p| p.page)
                 .unwrap_or(1);
             read_button.set_tooltip_text(Some(if start_page > 1 {
-                "Open the built-in PDF reader, resuming where you left off"
+                "Open in Pereplyot, resuming where you left off"
             } else {
-                "Open the built-in PDF reader"
+                "Open in Pereplyot"
             }));
-            let host = KartotekaReaderHost::for_entry(state, widgets, &key);
+            let vault_root = state
+                .borrow()
+                .library
+                .as_ref()
+                .map(|l| l.root().to_path_buf());
             let window = widgets.window.clone();
             let title = title_text.to_string();
+            let key = key.clone();
             read_button.connect_clicked(move |_| {
-                show_pdf_reader(&host, &window, &hash, &path, &title, start_page);
+                let Some(vault_root) = &vault_root else {
+                    return;
+                };
+                open_via_pereplyot(&window, vault_root, &key, &path, &filename);
                 // Shared cross-app reading log (Pereplyot's own History shelf, and
                 // Sputnik's) — records regardless of which app actually opened it.
                 fond_read_gtk::history::record_open(
@@ -8610,21 +8618,29 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             });
             actions.append(&read_button);
         }
-        (None, Some((path, _filename, hash))) => {
+        (None, Some((path, filename, hash))) => {
             let read_button = gtk4::Button::with_label("Read");
             // Resumes at the saved reading position, if any — same Tier 2a resume the PDF
             // "Read" button above already gives.
             let start_progress = note.as_ref().and_then(|n| n.frontmatter.progress);
             read_button.set_tooltip_text(Some(if start_progress.is_some() {
-                "Open the built-in EPUB reader, resuming where you left off"
+                "Open in Pereplyot, resuming where you left off"
             } else {
-                "Open the built-in EPUB reader"
+                "Open in Pereplyot"
             }));
-            let host = KartotekaReaderHost::for_entry(state, widgets, &key);
+            let vault_root = state
+                .borrow()
+                .library
+                .as_ref()
+                .map(|l| l.root().to_path_buf());
             let window = widgets.window.clone();
             let title = title_text.to_string();
+            let key = key.clone();
             read_button.connect_clicked(move |_| {
-                show_epub_reader(&host, &window, &hash, &path, &title, None, start_progress);
+                let Some(vault_root) = &vault_root else {
+                    return;
+                };
+                open_via_pereplyot(&window, vault_root, &key, &path, &filename);
                 fond_read_gtk::history::record_open(
                     fond_read_gtk::history::DocKind::Epub,
                     &hash,
@@ -8643,18 +8659,26 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 "Both a PDF and an EPUB are attached — choose which to open",
             ));
             let (popover, rows) = popover_menu(220);
-            let start_progress = note.as_ref().and_then(|n| n.frontmatter.progress);
-            let start_page = start_progress.map(|p| p.page).unwrap_or(1);
+            let vault_root = state
+                .borrow()
+                .library
+                .as_ref()
+                .map(|l| l.root().to_path_buf());
 
             let row = popover_button(&format!("PDF — {pdf_filename}"), false);
             {
                 let popover = popover.clone();
-                let host = KartotekaReaderHost::for_entry(state, widgets, &key);
+                let vault_root = vault_root.clone();
                 let window = widgets.window.clone();
                 let title = title_text.to_string();
+                let key = key.clone();
+                let pdf_filename = pdf_filename.clone();
                 row.connect_clicked(move |_| {
                     popover.popdown();
-                    show_pdf_reader(&host, &window, &pdf_hash, &pdf_path, &title, start_page);
+                    let Some(vault_root) = &vault_root else {
+                        return;
+                    };
+                    open_via_pereplyot(&window, vault_root, &key, &pdf_path, &pdf_filename);
                     fond_read_gtk::history::record_open(
                         fond_read_gtk::history::DocKind::Pdf,
                         &pdf_hash,
@@ -8668,20 +8692,16 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
             let row = popover_button(&format!("EPUB — {epub_filename}"), false);
             {
                 let popover = popover.clone();
-                let host = KartotekaReaderHost::for_entry(state, widgets, &key);
                 let window = widgets.window.clone();
                 let title = title_text.to_string();
+                let key = key.clone();
+                let epub_filename = epub_filename.clone();
                 row.connect_clicked(move |_| {
                     popover.popdown();
-                    show_epub_reader(
-                        &host,
-                        &window,
-                        &epub_hash,
-                        &epub_path,
-                        &title,
-                        None,
-                        start_progress,
-                    );
+                    let Some(vault_root) = &vault_root else {
+                        return;
+                    };
+                    open_via_pereplyot(&window, vault_root, &key, &epub_path, &epub_filename);
                     fond_read_gtk::history::record_open(
                         fond_read_gtk::history::DocKind::Epub,
                         &epub_hash,
@@ -9574,6 +9594,64 @@ fn open_pdf(window: &adw::ApplicationWindow, blob: &std::path::Path, filename: &
     }
     let launcher = gtk4::FileLauncher::new(Some(&gio::File::for_path(&target)));
     launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
+}
+
+/// Whether this process is running inside a flatpak sandbox — `flatpak-spawn --host` only
+/// works, and is only needed, there; a non-flatpak install (`cargo run`, an AppImage) can
+/// just exec `flatpak` directly.
+fn in_flatpak_sandbox() -> bool {
+    std::path::Path::new("/.flatpak-info").exists()
+}
+
+/// A `flatpak` invocation, routed through the host when sandboxed — the same
+/// `flatpak-spawn --host` pattern Pereprava's `host_exec.py` uses for reaching host
+/// commands from inside the sandbox, ported to Rust since this is the first Rust app in the
+/// suite to need it. Callers append their own subcommand/args.
+fn host_flatpak_command() -> std::process::Command {
+    if in_flatpak_sandbox() {
+        let mut cmd = std::process::Command::new("flatpak-spawn");
+        cmd.arg("--host").arg("flatpak");
+        cmd
+    } else {
+        std::process::Command::new("flatpak")
+    }
+}
+
+/// Open `path` in the standalone Pereplyot app, routing its annotations/reading-position
+/// straight into this vault (`--vault=<root> --key=<key>` — see Pereplyot's own README for
+/// what that CLI mode does) rather than embedding the reader in-process. Falls back to
+/// `open_pdf`'s system-default-handler launch if Pereplyot isn't installed (or the spawn
+/// itself fails), so opening a document never just does nothing.
+fn open_via_pereplyot(
+    window: &adw::ApplicationWindow,
+    vault_root: &std::path::Path,
+    key: &str,
+    blob: &std::path::Path,
+    filename: &str,
+) {
+    let installed = host_flatpak_command()
+        .args(["info", "io.github.calstfrancis.Pereplyot"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+
+    if installed {
+        let spawned = host_flatpak_command()
+            .arg("run")
+            .arg("io.github.calstfrancis.Pereplyot")
+            .arg("--")
+            .arg(format!("--vault={}", vault_root.display()))
+            .arg(format!("--key={key}"))
+            .arg(blob)
+            .spawn();
+        if spawned.is_ok() {
+            return;
+        }
+    }
+
+    open_pdf(window, blob, filename);
 }
 
 /// Kartoteka's implementation of the reader's [`ReaderHost`] boundary: it resolves a

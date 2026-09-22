@@ -2,8 +2,8 @@
     {
         "type": "git",
         "url": "https://github.com/calstfrancis/pereplyot",
-        "commit": "b74784e5e931633be386099e9f3080a3714edeeb",
-        "dest": "flatpak-cargo/git/pereplyot-b74784e"
+        "commit": "140d9efea47fbb9f954c8c848762f58ab2139e5f",
+        "dest": "flatpak-cargo/git/pereplyot-140d9ef"
     },
     {
         "type": "archive",
@@ -1464,7 +1464,7 @@
     {
         "type": "shell",
         "commands": [
-            "cp -r --reflink=auto \"flatpak-cargo/git/pereplyot-b74784e/crates/fond-read-gtk\" \"cargo/vendor/fond-read-gtk\""
+            "cp -r --reflink=auto \"flatpak-cargo/git/pereplyot-140d9ef/crates/fond-read-gtk\" \"cargo/vendor/fond-read-gtk\""
         ]
     },
     {
@@ -6304,7 +6304,7 @@
     },
     {
         "type": "inline",
-        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/calstfrancis/pereplyot\"]\ngit = \"https://github.com/calstfrancis/pereplyot\"\nreplace-with = \"vendored-sources\"\ntag = \"v0.2.0\"\n",
+        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/calstfrancis/pereplyot\"]\ngit = \"https://github.com/calstfrancis/pereplyot\"\nreplace-with = \"vendored-sources\"\ntag = \"v0.4.0\"\n",
         "dest": "cargo",
         "dest-filename": "config"
     }
