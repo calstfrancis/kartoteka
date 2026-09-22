@@ -113,14 +113,35 @@ echo "==> Signature verified for $APP_ID"
 # shared /tmp/flatpak-checkout getting cleared, etc.) — it would otherwise get
 # silently committed as if the deletion were intentional. This is exactly how
 # Zerkalo's own `.Debug` extension ref ended up with a missing object for
-# months before anyone noticed (found 2026-09-17). Refuse to publish if the
-# repo isn't fully intact.
-echo "==> Verifying repo integrity..."
-if ! ostree --repo="$FLATPAK_REPO" fsck; then
-  echo "ERROR: ostree fsck found a problem in $FLATPAK_REPO — refusing to publish."
-  echo "Investigate and repair the repo before committing; do not just re-run this script."
+# months before anyone noticed (found 2026-09-17).
+#
+# A whole-repo `ostree fsck` is the wrong tool for this: it has no way to scope
+# to just this app's ref, and the shared repo carries that same pre-existing
+# Zerkalo `.Debug` breakage (confirmed 2026-09-22 publishing Pereplyot — an
+# orphaned ref pointing at a `.dirtree` object deleted from the repo since
+# around Zerkalo 0.13.9, unrelated to any app's publish) — so a blanket fsck
+# refuses to publish anything, for any app, until that's fixed separately.
+# Instead: verify this app's own freshly-exported commit is actually
+# traversable, and refuse to publish if `git add -A` is about to stage any
+# object *deletion* — objects are content-addressed and append-only, so a
+# normal publish should never remove one; a deletion showing up here is
+# exactly the failure mode above.
+echo "==> Verifying this export is traversable..."
+if ! ostree --repo="$FLATPAK_REPO" ls -R "$COMMIT" > /dev/null; then
+  echo "ERROR: commit $COMMIT for $APP_ID is not fully traversable — refusing to publish."
+  echo "Investigate and repair the export before committing; do not just re-run this script."
   exit 1
 fi
+echo "==> Checking for unintended object deletions..."
+cd "$FLATPAK_REPO"
+DELETED_OBJECTS="$(git status --porcelain -- objects/ | awk '$1 == "D" {print $2}')"
+if [[ -n "$DELETED_OBJECTS" ]]; then
+  echo "ERROR: this publish would delete objects the repo still references:"
+  echo "$DELETED_OBJECTS"
+  echo "Refusing to publish. Investigate before committing; do not just re-run this script."
+  exit 1
+fi
+cd - > /dev/null
 
 echo "==> Pushing flatpak repo..."
 cd "$FLATPAK_REPO"
