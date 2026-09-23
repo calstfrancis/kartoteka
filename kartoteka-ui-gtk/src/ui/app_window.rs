@@ -9641,7 +9641,6 @@ fn open_via_pereplyot(
         let spawned = host_flatpak_command()
             .arg("run")
             .arg("io.github.calstfrancis.Pereplyot")
-            .arg("--")
             .arg(format!("--vault={}", vault_root.display()))
             .arg(format!("--key={key}"))
             .arg(blob)

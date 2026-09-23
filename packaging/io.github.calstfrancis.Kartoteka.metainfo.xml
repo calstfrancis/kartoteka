@@ -45,6 +45,13 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.18.1" date="2026-09-23">
+      <description>
+        <p>0.18.1 "Steady Passage" — fixed "Read" silently doing nothing: the Pereplyot
+        launch was passing it a stray argument that made it exit before showing a
+        window.</p>
+      </description>
+    </release>
     <release version="0.18.0" date="2026-09-22">
       <description>
         <p>0.18.0 "Steady Hand" — "Read" now launches the standalone Pereplyot app instead

@@ -2,6 +2,15 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.18.1] "Steady Passage" — 2026-09-23
+
+- **Fixed: "Read" silently did nothing.** The Pereplyot launch (`flatpak run
+  io.github.calstfrancis.Pereplyot`, added in 0.18.0) inserted a stray `--` before
+  Pereplyot's own `--vault=`/`--key=` flags. `flatpak run` doesn't need that separator —
+  it forwards everything after the app ID to Pereplyot verbatim — so the `--` arrived as
+  Pereplyot's literal first argument, which its parser rejected, exiting immediately
+  before ever showing a window. Removed.
+
 ## [0.18.0] "Steady Hand" — 2026-09-22
 
 - **"Read" launches Pereplyot** (`flatpak-spawn --host flatpak run io.github.calstfrancis.Pereplyot`)
