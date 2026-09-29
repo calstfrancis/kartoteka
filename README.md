@@ -34,10 +34,11 @@ files with one command. `library.yml` is regenerated on every write, so
   the entry's citation info, instead of keeping a download's original filename; a
   "Rename attachments to citations…" action (hamburger menu, or `kartoteka
   rename-attachments`) backfills attachments added before this existed.
-- Built-in PDF and EPUB readers with highlighting, underline/strikeout, freestanding
-  notes, in-document and whole-book search, reading-position resume, undo/redo, and a
-  two-page facing-pages view for PDFs. Reads KEPUB (Kobo's EPUB variant) even with no
-  file extension.
+- Reads PDFs and EPUBs in [Pereplyot](https://github.com/calstfrancis/pereplyot), a
+  separate reader app (install it from the same flatpak repo), with highlights, notes,
+  reading position, and page numbering saved straight into this library. "Annotations…"
+  opens the entry's highlights and notes there too. Without Pereplyot, "Read" falls back
+  to your default document viewer.
 - Nestable collections you can rename, reparent, and delete from the sidebar, with
   drag-and-drop to file entries into them from either the spreadsheet or Bookshelf view.
 - A guided "Set up backup…" wizard walks through GitHub sign-in, repository creation,

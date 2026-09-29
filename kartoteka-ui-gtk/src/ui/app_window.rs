@@ -20,8 +20,6 @@ use fond_bib::{entry as bibentry, Library};
 use crate::config::Config;
 use crate::ui::{bookshelf, friendly, worker};
 use crate::{github, secret_store, webdav};
-use fond_read_gtk::annotations::show_annotations_dialog;
-use fond_read_gtk::ReaderHost;
 
 /// Which kind of identifier the acquire dialog is looking up.
 #[derive(Clone, Copy)]
@@ -8540,7 +8538,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 if !path.exists() || detect_attachment_kind(&att.filename, &path) != Some(wanted) {
                     return None;
                 }
-                Some((path, att.filename.clone(), att.hash.clone()))
+                Some((path, att.filename.clone()))
             })
         })
     };
@@ -8577,7 +8575,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     // Primary: the read action, contextual to whether a PDF/EPUB is attached (and which, or
     // both — M5-SPEC.md Tier 4) or a DOI is known.
     match (pdf_attachment.clone(), epub_attachment.clone()) {
-        (Some((path, filename, hash)), None) => {
+        (Some((path, filename)), None) => {
             let read_button = gtk4::Button::with_label("Read");
             // Resumes at the saved Progress page, if any — "Read" opening on page 1 every
             // time despite a recorded reading position was the whole gap 5A/M5's Tier 2
@@ -8606,19 +8604,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 let Some(vault_root) = &vault_root else {
                     return;
                 };
-                open_via_pereplyot(&window, vault_root, &key, &path, &filename);
-                // Shared cross-app reading log (Pereplyot's own History shelf, and
-                // Sputnik's) — records regardless of which app actually opened it.
-                fond_read_gtk::history::record_open(
-                    fond_read_gtk::history::DocKind::Pdf,
-                    &hash,
-                    &path,
-                    &title,
-                );
+                open_via_pereplyot(&window, vault_root, &key, &path, &filename, &title);
             });
             actions.append(&read_button);
         }
-        (None, Some((path, filename, hash))) => {
+        (None, Some((path, filename))) => {
             let read_button = gtk4::Button::with_label("Read");
             // Resumes at the saved reading position, if any — same Tier 2a resume the PDF
             // "Read" button above already gives.
@@ -8640,17 +8630,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 let Some(vault_root) = &vault_root else {
                     return;
                 };
-                open_via_pereplyot(&window, vault_root, &key, &path, &filename);
-                fond_read_gtk::history::record_open(
-                    fond_read_gtk::history::DocKind::Epub,
-                    &hash,
-                    &path,
-                    &title,
-                );
+                open_via_pereplyot(&window, vault_root, &key, &path, &filename, &title);
             });
             actions.append(&read_button);
         }
-        (Some((pdf_path, pdf_filename, pdf_hash)), Some((epub_path, epub_filename, epub_hash))) => {
+        (Some((pdf_path, pdf_filename)), Some((epub_path, epub_filename))) => {
             // Both a PDF and an EPUB are attached (presumably the same work in two formats)
             // — a small chooser instead of silently opening whichever the attachments list
             // happened to list first.
@@ -8678,13 +8662,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                     let Some(vault_root) = &vault_root else {
                         return;
                     };
-                    open_via_pereplyot(&window, vault_root, &key, &pdf_path, &pdf_filename);
-                    fond_read_gtk::history::record_open(
-                        fond_read_gtk::history::DocKind::Pdf,
-                        &pdf_hash,
-                        &pdf_path,
-                        &title,
-                    );
+                    open_via_pereplyot(&window, vault_root, &key, &pdf_path, &pdf_filename, &title);
                 });
             }
             rows.append(&row);
@@ -8701,11 +8679,12 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                     let Some(vault_root) = &vault_root else {
                         return;
                     };
-                    open_via_pereplyot(&window, vault_root, &key, &epub_path, &epub_filename);
-                    fond_read_gtk::history::record_open(
-                        fond_read_gtk::history::DocKind::Epub,
-                        &epub_hash,
+                    open_via_pereplyot(
+                        &window,
+                        vault_root,
+                        &key,
                         &epub_path,
+                        &epub_filename,
                         &title,
                     );
                 });
@@ -8849,25 +8828,36 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 let widgets = widgets.clone();
                 let key = key.clone();
                 let title = title_text.to_string();
-                let pdf = pdf_attachment
-                    .clone()
-                    .map(|(path, _filename, hash)| (hash, path));
-                let epub = epub_attachment
-                    .clone()
-                    .map(|(path, _filename, hash)| (hash, path));
-                let host = KartotekaReaderHost::for_entry(&state, &widgets, &key);
-                let window = widgets.window.clone();
-                let document_id = key.clone();
+                // Pereplyot's own Annotations dialog, via `--annotations` — one PDF or EPUB per
+                // launch, the PDF when both are attached.
+                let blob = pdf_attachment
+                    .as_ref()
+                    .or(epub_attachment.as_ref())
+                    .map(|(path, _filename)| path.clone());
+                let vault_root = state
+                    .borrow()
+                    .library
+                    .as_ref()
+                    .map(|l| l.root().to_path_buf());
                 row.connect_clicked(move |_| {
                     popover.popdown();
-                    show_annotations_dialog(
-                        &host,
-                        &window,
-                        &document_id,
-                        pdf.clone(),
-                        epub.clone(),
-                        &title,
-                    );
+                    let Some(vault_root) = &vault_root else {
+                        return;
+                    };
+                    let Some(blob) = &blob else {
+                        toast(&widgets, "Attach the PDF or EPUB to review its annotations");
+                        return;
+                    };
+                    let launched = spawn_pereplyot(&[
+                        format!("--vault={}", vault_root.display()),
+                        format!("--key={key}"),
+                        format!("--title={title}"),
+                        "--annotations".to_string(),
+                        blob.display().to_string(),
+                    ]);
+                    if !launched {
+                        toast(&widgets, "Install Pereplyot to review annotations");
+                    }
                 });
                 rows.append(&row);
             }
@@ -9617,9 +9607,28 @@ fn host_flatpak_command() -> std::process::Command {
     }
 }
 
+/// Run the installed Pereplyot flatpak with `args`, reporting whether it was actually
+/// launched (installed, and the spawn itself succeeded).
+fn spawn_pereplyot(args: &[String]) -> bool {
+    let installed = host_flatpak_command()
+        .args(["info", "io.github.calstfrancis.Pereplyot"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    installed
+        && host_flatpak_command()
+            .arg("run")
+            .arg("io.github.calstfrancis.Pereplyot")
+            .args(args)
+            .spawn()
+            .is_ok()
+}
+
 /// Open `path` in the standalone Pereplyot app, routing its annotations/reading-position
 /// straight into this vault (`--vault=<root> --key=<key>` — see Pereplyot's own README for
-/// what that CLI mode does) rather than embedding the reader in-process. Falls back to
+/// what that CLI mode does). Pereplyot also records it in its History shelf. Falls back to
 /// `open_pdf`'s system-default-handler launch if Pereplyot isn't installed (or the spawn
 /// itself fails), so opening a document never just does nothing.
 fn open_via_pereplyot(
@@ -9628,114 +9637,16 @@ fn open_via_pereplyot(
     key: &str,
     blob: &std::path::Path,
     filename: &str,
+    title: &str,
 ) {
-    let installed = host_flatpak_command()
-        .args(["info", "io.github.calstfrancis.Pereplyot"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
-
-    if installed {
-        let spawned = host_flatpak_command()
-            .arg("run")
-            .arg("io.github.calstfrancis.Pereplyot")
-            .arg(format!("--vault={}", vault_root.display()))
-            .arg(format!("--key={key}"))
-            .arg(blob)
-            .spawn();
-        if spawned.is_ok() {
-            return;
-        }
-    }
-
-    open_pdf(window, blob, filename);
-}
-
-/// Kartoteka's implementation of the reader's [`ReaderHost`] boundary: it resolves a
-/// citation key against whatever library is currently open, and routes notifications to the
-/// main window's toast overlay.
-///
-/// The library is looked up per call rather than captured once, deliberately — that is what
-/// the reader did inline before this boundary existed, and it means a reader left open
-/// across a library switch keeps writing to the library that is open *now*. Preserved as-is
-/// here so the extraction changes no behaviour; whether it is the right behaviour is a
-/// separate question (see `docs/READER-EXTRACTION.md`).
-struct KartotekaReaderHost {
-    state: Rc<RefCell<AppState>>,
-    widgets: Rc<Widgets>,
-    key: String,
-}
-
-impl KartotekaReaderHost {
-    fn for_entry(
-        state: &Rc<RefCell<AppState>>,
-        widgets: &Rc<Widgets>,
-        key: &str,
-    ) -> Rc<dyn ReaderHost> {
-        Rc::new(KartotekaReaderHost {
-            state: state.clone(),
-            widgets: widgets.clone(),
-            key: key.to_string(),
-        })
-    }
-
-    /// Run `f` against the open library, if there is one. Every method here is a no-op
-    /// without one, matching the `if let Some(library) = …` guards this replaced.
-    fn with_library<T>(&self, f: impl FnOnce(&Library) -> T) -> Option<T> {
-        self.state.borrow().library.as_ref().map(f)
-    }
-
-    /// Read-modify-write the entry's note frontmatter. Used for the only two fields the
-    /// reader touches: reading progress and the page-numbering override.
-    fn edit_note(&self, f: impl FnOnce(&mut fond_bib::Note)) {
-        self.with_library(|library| {
-            if let Ok(Some(mut note)) = library.load_note(&self.key) {
-                f(&mut note);
-                let _ = library.write_note(&self.key, &note);
-            }
-        });
-    }
-}
-
-impl ReaderHost for KartotekaReaderHost {
-    fn load_annotations(&self) -> fond_bib::AnnotationSidecar {
-        // Absent, unreadable, and "no library open" all collapse to an empty sidecar —
-        // exactly what the `.ok().flatten().unwrap_or_else(…)` at each call site did before
-        // this boundary existed.
-        self.with_library(|library| library.load_annotations(&self.key).ok().flatten())
-            .flatten()
-            .unwrap_or_else(|| fond_bib::AnnotationSidecar::new(&self.key))
-    }
-
-    fn save_annotations(&self, sidecar: &fond_bib::AnnotationSidecar) -> Result<(), String> {
-        // "No library open" becomes an Err rather than a silent Ok. The call sites this
-        // replaced had a distinct `None` arm reporting exactly that, and collapsing it into
-        // success would mean telling the user an annotation was saved when it was not.
-        match self.with_library(|library| library.write_annotations(sidecar)) {
-            Some(Ok(_)) => Ok(()),
-            Some(Err(e)) => Err(e.to_string()),
-            None => Err("No open library".to_string()),
-        }
-    }
-
-    fn save_progress(&self, progress: fond_bib::Progress) {
-        self.edit_note(|note| note.frontmatter.progress = Some(progress));
-    }
-
-    fn page_label_override(&self) -> Option<fond_bib::PageLabelOverride> {
-        self.with_library(|library| library.load_note(&self.key).ok().flatten())
-            .flatten()
-            .and_then(|note| note.frontmatter.page_label_override)
-    }
-
-    fn set_page_label_override(&self, value: Option<fond_bib::PageLabelOverride>) {
-        self.edit_note(|note| note.frontmatter.page_label_override = value);
-    }
-
-    fn notify(&self, message: &str) {
-        toast(&self.widgets, message);
+    let launched = spawn_pereplyot(&[
+        format!("--vault={}", vault_root.display()),
+        format!("--key={key}"),
+        format!("--title={title}"),
+        blob.display().to_string(),
+    ]);
+    if !launched {
+        open_pdf(window, blob, filename);
     }
 }
 

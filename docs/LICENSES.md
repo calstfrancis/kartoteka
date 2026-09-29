@@ -19,11 +19,11 @@ stated per crate, in its `Cargo.toml` `license` field and its own `LICENSE` file
 | `fond-vault` | MIT | Consumed by Zerkalo. |
 | `fond-doc` | MIT | Document primitives; no UI. |
 | `fond-index` | MIT | Search; no UI. |
-| `fond-read-gtk` | **Proprietary** | The reader UI, extracted 2026-09-09 for Sputnik to share (`docs/READER-EXTRACTION.md`), then extracted again 2026-09-15 into its own repo/app, `github.com/calstfrancis/pereplyot` (root `CLAUDE.md`'s Pereplyot entry) — Kartoteka now consumes it as a pinned git dependency on that repo rather than an in-workspace crate. Still a large part of what makes Kartoteka the paid product, so still shared without being open — Cal's decision. |
+| `fond-read-gtk` | **Proprietary** | The reader UI, extracted 2026-09-09 for Sputnik to share (`docs/READER-EXTRACTION.md`), then extracted again 2026-09-15 into its own repo/app, `github.com/calstfrancis/pereplyot` (root `CLAUDE.md`'s Pereplyot entry) — Kartoteka no longer links it at all (2026-09-28): it launches the installed Pereplyot app to read documents and review annotations instead. Still a large part of what makes Kartoteka the paid product, so still shared without being open — Cal's decision. |
 
 The consequence to remember: **any application linking `fond-read-gtk` cannot itself be
-distributed under MIT.** Sputnik's repo root is currently MIT and will need the same split
-Kartoteka has (an MIT core crate, a proprietary UI crate) before its reader milestone.
+distributed under MIT.** Neither Kartoteka nor Sputnik links it any more (both launch
+Pereplyot as a separate program), so this now only constrains Pereplyot itself.
 
 Legend: ✅ permits proprietary distribution · ⚠️ permits it but with a condition to honour
 · ⛔ incompatible, do not use.

@@ -2,6 +2,20 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.18.2] "Lending Desk" — 2026-09-29
+
+- **"Annotations…" now opens in Pereplyot**, like "Read" already does, instead of a copy of
+  the dialog built into Kartoteka. It's the same dialog, but it's always the version from
+  whichever Pereplyot is installed (including its new colour labels), and "Go to page"
+  opens the passage in Pereplyot.
+- **Documents opened from Kartoteka show their library title in Pereplyot**, rather than
+  whatever title the file's own metadata has.
+- **Kartoteka no longer builds in any part of Pereplyot**, so it never needs a new release
+  just to keep up with Pereplyot's. It also stops writing Pereplyot's History list itself:
+  Pereplyot records the documents it opens.
+- **Needs Pereplyot 0.8.0 or later** — older versions don't understand the new launch
+  options and won't open anything. `flatpak update` brings both up to date together.
+
 ## [0.18.1] "Steady Passage" — 2026-09-23
 
 - **Fixed: "Read" silently did nothing.** The Pereplyot launch (`flatpak run

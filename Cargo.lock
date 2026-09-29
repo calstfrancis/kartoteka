@@ -1090,21 +1090,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fond-read-gtk"
-version = "0.1.0"
-source = "git+https://github.com/calstfrancis/pereplyot?tag=v0.4.0#140d9efea47fbb9f954c8c848762f58ab2139e5f"
-dependencies = [
- "fond-bib",
- "fond-doc",
- "glib",
- "gtk4",
- "libadwaita",
- "serde",
- "serde_json",
- "webkit6",
-]
-
-[[package]]
 name = "fond-vault"
 version = "0.1.0"
 dependencies = [
@@ -2116,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "kartoteka-cli"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "clap",
  "fond-bib",
@@ -2129,14 +2114,13 @@ dependencies = [
 
 [[package]]
 name = "kartoteka-ui-gtk"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "async-channel",
  "directories",
  "fond-bib",
  "fond-doc",
  "fond-index",
- "fond-read-gtk",
  "fond-vault",
  "glib",
  "gtk4",
