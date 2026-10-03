@@ -11,7 +11,7 @@ opaque database. The search index and metadata cache are disposable and rebuild 
 files with one command. `library.yml` is regenerated on every write, so
 `#bibliography("library.yml")` in Typst is always current.
 
-> Status: **0.19.0 "Front Desk"**. A full GTK4/libadwaita desktop app (`kartoteka-gtk`)
+> Status: **0.20.0 "Open Stacks"**. A full GTK4/libadwaita desktop app (`kartoteka-gtk`)
 > ships alongside the headless CLI (`kartoteka`), distributed as a flatpak — see **Install**
 > below. `CHANGELOG.md` is the record of what has shipped; `docs/UX-REVIEW.md` is the current
 > list of what to improve next.
@@ -30,8 +30,9 @@ files with one command. `library.yml` is regenerated on every write, so
 - A Bookshelf view — a cover-grid alternative to the spreadsheet, showing just your book
   entries with cover art (fetched by ISBN from OpenLibrary and cached locally) and a
   reading-status badge, for when Kartoteka is doing double duty as a reading tracker.
-- Import from Zotero (BetterBibTeX and the Zotero SQLite store), or acquire references by
-  DOI, arXiv, or ISBN. Drop a PDF or EPUB in and it identifies itself.
+- Import from Zotero, Mendeley or EndNote (BibTeX/Better BibTeX, RIS or CSL JSON exports, plus
+  the Zotero SQLite store for collections and notes), or add a reference by pasting a DOI, link,
+  ISBN or BibTeX record, or by searching a title. Drop a PDF or EPUB in and it identifies itself.
 - Attachments are automatically renamed to a human-readable "Author Year - Title.ext" from
   the entry's citation info, instead of keeping a download's original filename; a
   "Rename attachments to citations…" action (hamburger menu, or `kartoteka

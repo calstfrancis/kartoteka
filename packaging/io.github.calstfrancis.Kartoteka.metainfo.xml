@@ -45,6 +45,16 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.20.0" date="2026-10-03">
+      <description>
+        <p>0.20.0 "Open Stacks" — import from RIS and CSL JSON as well as BibTeX, so an export
+        from Zotero, Mendeley, EndNote or a publisher's "Export citation" button comes straight
+        in. Better BibTeX keys in a CSL JSON export are kept, so documents that cite them keep
+        working; anything already in your library is skipped, so importing twice adds nothing. A
+        .bib, .ris or .json file dropped onto the window opens Import with it already chosen, and
+        the Import window explains how to export from Zotero and finds your Zotero folder.</p>
+      </description>
+    </release>
     <release version="0.19.0" date="2026-10-03">
       <description>
         <p>0.19.0 "Front Desk" — one Add box for everything: paste a DOI, link, ISBN or BibTeX

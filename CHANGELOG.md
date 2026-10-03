@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased]
+## [0.20.0] "Open Stacks" — 2026-10-03 — Import from Zotero, Mendeley and EndNote exports (RIS, CSL JSON)
 
 - **Import from RIS and CSL-JSON, not just BibTeX.** Zotero, Mendeley, EndNote and every
   publisher's "Export citation" button can produce RIS; Zotero and Better BibTeX can export CSL
