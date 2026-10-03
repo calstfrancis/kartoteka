@@ -53,9 +53,10 @@
         what each option holds (GitHub backups do not include PDFs). Cite with a page
         (@key[p. 12]); highlights as Typst (kartoteka annots --typst); edit a reference's
         journal, volume, issue, pages and URL; export without needing a collection, in any
-        citation style including Turabian; the citation key is always on the card. Fixed
-        "Used in" missing #cite(&lt;key&gt;) citations, and notes with a relation type from a
-        newer version no longer fail to load.</p>
+        citation style including Turabian; the citation key is always on the card. Search as you
+        type now ignores accents and word order. Fixed "Used in" missing #cite(&lt;key&gt;)
+        citations, and notes with a relation type from a newer version no longer fail to
+        load.</p>
       </description>
     </release>
     <release version="0.18.2" date="2026-09-29">

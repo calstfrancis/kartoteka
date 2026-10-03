@@ -46,8 +46,12 @@ never vendored into the git repo. If you bump the pinned `chromium/NNNN` URL, up
 
 ## Building
 
-Per the Fond workflow, **Claude does the version bump + docs + commit + tag; Cal runs the
-build.** flatpak-builder is never run by Claude.
+Per the Fond workflow, **when Cal says "release", Claude does the entire release with nothing
+left for Cal to run**: version bump, CHANGELOG/metainfo/README, the gate (fmt, clippy, tests,
+`check-versions.sh`), commit, merge to `main`, tag, push of `main` and the tag (which starts
+`release-flatpak.yml`), and then watches that workflow to completion and reports the result.
+flatpak-builder is never run locally by Claude; CI does the build. `./dev-build.sh` is still
+Cal's, for local dev builds.
 
 - Dev build: `./dev-build.sh` (builds + installs locally; does not publish).
 - Release: `./publish-flatpak.sh <version>` — as of 2026-08-20, this just pushes the commit
