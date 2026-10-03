@@ -45,6 +45,15 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.20.1" date="2026-10-03">
+      <description>
+        <p>0.20.1 "Ready Shelf" — fixed: some results from searching by title couldn't be added
+        ("needs at least an author or a title"), even though the result showed both. Anything
+        the fetched record leaves out is now filled in from the result you picked, and if the
+        full record can't be fetched at all, the result is added with the details the search
+        showed.</p>
+      </description>
+    </release>
     <release version="0.20.0" date="2026-10-03">
       <description>
         <p>0.20.0 "Open Stacks" — import from RIS and CSL JSON as well as BibTeX, so an export

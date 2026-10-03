@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## Unreleased
+## [0.20.1] "Ready Shelf" — 2026-10-03 — Every title-search result can be added
 
 - **Fixed: some title-search results couldn't be added ("needs at least an author or a
   title").** Picking a result fetched its full record afresh. For some books and chapters,
