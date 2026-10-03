@@ -33,6 +33,15 @@ files with one command. `library.yml` is regenerated on every write, so
 - Import from Zotero, Mendeley or EndNote (BibTeX/Better BibTeX, RIS or CSL JSON exports, plus
   the Zotero SQLite store for collections and notes), or add a reference by pasting a DOI, link,
   ISBN or BibTeX record, or by searching a title. Drop a PDF or EPUB in and it identifies itself.
+- Paste a link to a podcast episode, radio interview, or video and it comes in as one, ready to
+  cite: show or channel, host or interviewer, the person interviewed, date, and running time.
+  Kartoteka reads the page's structured data (schema.org JSON-LD and microdata, which covers
+  YouTube and most podcast platforms) and CBC's player data. When the host and guest are worked
+  out from the episode's description instead, the new entry opens so you can check them.
+- Podcast episodes, interviews, TV/video episodes, videos and audio recordings are item types
+  of their own, with Interviewer and Running time fields, so they cite correctly in Chicago,
+  APA, MLA and SBL (e.g. "Hao, Karen. "Empire of AI." Interview by Nahlah Ayed. *Ideas*. CBC
+  Radio, 2026. 54:00.").
 - Attachments are automatically renamed to a human-readable "Author Year - Title.ext" from
   the entry's citation info, instead of keeping a download's original filename; a
   "Rename attachments to citations…" action (hamburger menu, or `kartoteka

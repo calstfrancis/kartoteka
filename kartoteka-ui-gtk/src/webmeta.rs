@@ -1,19 +1,43 @@
-//! Minimal HTML citation-metadata scraper for "Add from URL". Reads the `<meta>` tags that
-//! publishers, repositories, and Google Scholar rely on — Highwire Press (`citation_*`),
-//! Dublin Core (`DC.*`), and Open Graph (`og:*`) — into a small struct the New-item YAML
-//! builder can consume. Deliberately dependency-free (no full HTML parser): it scans for
-//! `<meta>` tags and pulls `name`/`property` + `content` attributes.
+//! HTML citation-metadata scraper for "Add from URL". Reads what a page says about itself, in
+//! order of how much it's worth:
+//!
+//! 1. The `<meta>` tags publishers, repositories, and Google Scholar rely on — Highwire Press
+//!    (`citation_*`), Dublin Core (`DC.*`) — plus Open Graph (`og:*`) and schema.org microdata
+//!    (`itemprop`, which is how YouTube describes a video).
+//! 2. Schema.org JSON-LD ([`jsonld`]) — authors, durations, and the show an episode is from.
+//! 3. Site readers for pages whose real subject isn't in either: a CBC story page
+//!    ([`cbc`]) plays a program episode that only its embedded player state describes.
+//!
+//! Recorded media come out shaped the way [`fond_bib::item_kind`] describes (an episode inside
+//! its show, the running time, "Interview by …"), so they cite properly. Who hosted and who was
+//! interviewed is guessed from the episode's text ([`people`]) when nothing structured says.
+//! Dependency-light: no full HTML parser — tags are scanned for directly.
 
-/// Citation fields distilled from a page's `<meta>` tags.
+mod cbc;
+mod jsonld;
+mod people;
+
+/// Recorded audio or video.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Media {
+    #[default]
+    Audio,
+    Video,
+}
+
+/// Citation fields distilled from a page.
 #[derive(Debug, Default, PartialEq)]
 pub struct WebMeta {
     pub title: String,
-    /// Author names, ideally "Family, Given" (as Highwire emits them).
+    /// Author names, ideally "Family, Given" (as Highwire emits them) or natural order.
     pub authors: Vec<String>,
+    /// An organization or channel as sole author (a YouTube channel) — written as one name,
+    /// never split into given/family.
+    pub org_author: String,
     /// Whatever precision the source date actually has — `YYYY`, `YYYY-MM`, or
     /// `YYYY-MM-DD` — all of which Hayagriva's date parser accepts directly.
     pub date: String,
-    /// Journal / book / site title.
+    /// Journal / book / site title — or, for an episode, its show.
     pub container: String,
     pub publisher: String,
     pub doi: String,
@@ -27,14 +51,92 @@ pub struct WebMeta {
     pub language: String,
     /// A direct PDF link advertised by the page, if any (may be relative).
     pub pdf_url: String,
-    /// Hayagriva entry type inferred from the tags.
+    /// Hayagriva entry type inferred from the page.
     pub entry_type: String,
+    /// Hayagriva type for the container's `parent:` (empty = the entry type's usual one).
+    pub parent_type: String,
+    /// Medium label or "Interview by NAME" (see `fond_bib::item_kind`).
+    pub genre: String,
+    /// Running time, `mm:ss` / `hh:mm:ss`.
+    pub runtime: String,
+    /// The people (host, guest) were guessed from the page's text, so worth a look.
+    pub people_guessed: bool,
 }
 
 impl WebMeta {
-    /// Build from a page's HTML. `page_url` is the URL fetched, used as the fallback `url`
-    /// isn't stored here (the caller supplies it) but drives relative-PDF resolution.
+    /// Build from a page's HTML alone (no site readers that need the URL).
+    #[cfg(test)]
     pub fn from_html(html: &str) -> WebMeta {
+        WebMeta::from_page(html, "")
+    }
+
+    /// Build from a page's HTML; `page_url` is where it was fetched from.
+    pub fn from_page(html: &str, page_url: &str) -> WebMeta {
+        let mut m = WebMeta::from_meta_tags(html);
+        let ld = jsonld::main_work(html);
+
+        // Written works: JSON-LD fills what the meta tags left out (news sites often put
+        // their bylines only there).
+        if let Some(ld) = ld.as_ref().filter(|ld| ld.media.is_none()) {
+            if m.authors.is_empty() {
+                m.authors = ld.authors.clone();
+            }
+            if m.date.is_empty() {
+                m.date = best_effort_date(&ld.date);
+            }
+            if m.title.is_empty() {
+                m.title = ld.title.clone();
+            }
+        }
+
+        let cbc = page_url
+            .contains("cbc.ca/")
+            .then(|| cbc::media(html))
+            .flatten();
+        if let Some(c) = cbc {
+            m.apply_media(Episode {
+                media: c.media,
+                title: c.title,
+                series: c.show,
+                publisher: c.network,
+                date: c.date,
+                duration: c.duration,
+                description: c.description,
+                ..Default::default()
+            });
+        } else if let Some(ld) = ld.filter(|ld| ld.media.is_some()) {
+            // Microdata fills what the JSON-LD left out (YouTube's has no channel or length).
+            let micro = m.itemprop_video(html).unwrap_or_default();
+            let site = m.container.clone();
+            m.apply_media(Episode {
+                media: ld.media.unwrap_or_default(),
+                title: ld.title,
+                series: ld.series,
+                publisher: if ld.publisher.is_empty() {
+                    site
+                } else {
+                    ld.publisher
+                },
+                date: ld.date,
+                duration: ld.duration.or(micro.duration),
+                description: ld.description,
+                org_author: if ld.authors.is_empty() && ld.org_author.is_empty() {
+                    micro.org_author
+                } else {
+                    ld.org_author
+                },
+                authors: ld.authors,
+                hosts: ld.hosts,
+                guests: ld.guests,
+            });
+        } else if let Some(video) = m.itemprop_video(html) {
+            m.apply_media(video);
+        }
+        m
+    }
+
+    /// The `<meta>`-tag reading: Highwire, Dublin Core, Open Graph.
+    fn from_meta_tags(html: &str) -> WebMeta {
         let tags = meta_tags(html);
         let first = |keys: &[&str]| -> String {
             for (name, content) in &tags {
@@ -62,7 +164,6 @@ impl WebMeta {
         let mut m = WebMeta {
             title: first(&["citation_title", "dc.title", "og:title", "twitter:title"]),
             authors: all(&["citation_author", "dc.creator", "citation_authors"]),
-            date: String::new(),
             container: first(&[
                 "citation_journal_title",
                 "citation_conference_title",
@@ -77,7 +178,7 @@ impl WebMeta {
             pages,
             language: first(&["citation_language", "dc.language"]),
             pdf_url: first(&["citation_pdf_url"]),
-            entry_type: String::new(),
+            ..Default::default()
         };
 
         // A single "A; B" or "A, B and C" authors field → split it.
@@ -119,10 +220,133 @@ impl WebMeta {
         m
     }
 
+    /// A video described by schema.org microdata (`itemprop`), as YouTube does: the first
+    /// `name` is the video's, the channel is the `name` on a `<link>` inside its author.
+    fn itemprop_video(&self, html: &str) -> Option<Episode> {
+        let tags = meta_tags(html);
+        let get = |key: &str| {
+            tags.iter()
+                .find(|(n, c)| n == key && !c.trim().is_empty())
+                .map(|(_, c)| c.trim().to_string())
+                .unwrap_or_default()
+        };
+        let og_type = get("og:type");
+        let duration = jsonld::iso_duration_seconds(&get("itemprop:duration"));
+        if !og_type.starts_with("video") && duration.is_none() {
+            return None;
+        }
+        let title = get("itemprop:name");
+        Some(Episode {
+            media: Media::Video,
+            title: if title.is_empty() {
+                self.title.clone()
+            } else {
+                title
+            },
+            publisher: self.container.clone(),
+            date: [get("itemprop:datepublished"), get("itemprop:uploaddate")]
+                .into_iter()
+                .find(|d| !d.is_empty())
+                .unwrap_or_default(),
+            duration,
+            org_author: get("itemprop-link:name"),
+            ..Default::default()
+        })
+    }
+
+    /// Turn the page's reading into recorded media: an episode of a show (`scene` inside an
+    /// `audio`/`video` parent), or a standalone recording — with "Interview by …" when it is
+    /// one, the guest then being its author.
+    fn apply_media(&mut self, e: Episode) {
+        if !e.title.is_empty() {
+            self.title = e.title.trim().to_string();
+        }
+        let date = best_effort_date(&e.date);
+        if !date.is_empty() {
+            self.date = date;
+        }
+        self.runtime = e
+            .duration
+            .map(fond_bib::item_kind::format_seconds)
+            .unwrap_or_default();
+        self.publisher = e.publisher.trim().to_string();
+        self.doi.clear();
+        self.isbn.clear();
+        self.pdf_url.clear();
+        let parent = match e.media {
+            Media::Audio => "audio",
+            Media::Video => "video",
+        };
+        let series = e.series.trim().to_string();
+        if series.is_empty() {
+            self.entry_type = parent.to_string();
+            self.container.clear();
+            self.parent_type.clear();
+        } else {
+            self.entry_type = "scene".to_string();
+            self.container = series.clone();
+            self.parent_type = parent.to_string();
+        }
+
+        // Who's talking: from structured data when there is any, else guessed from the text.
+        let (mut host, mut guests) = (e.hosts.first().cloned().unwrap_or_default(), e.guests);
+        if host.is_empty() && guests.is_empty() {
+            let guessed = people::guess(
+                &self.title,
+                &e.description,
+                &[series.as_str(), self.publisher.as_str()],
+            );
+            self.people_guessed = !guessed.host.is_empty() || !guessed.guests.is_empty();
+            host = guessed.host;
+            guests = guessed.guests;
+        }
+        let (authors, org_author) = (e.authors, e.org_author);
+        if !host.is_empty() && !guests.is_empty() {
+            self.genre = fond_bib::item_kind::genre_for_interviewer(&host);
+            self.authors = guests;
+            self.org_author.clear();
+        } else {
+            self.genre = match (e.media, series.is_empty()) {
+                (Media::Audio, false) => "Podcast episode".to_string(),
+                (Media::Video, true) => "Video".to_string(),
+                _ => String::new(),
+            };
+            self.authors = if !authors.is_empty() {
+                authors
+            } else if !host.is_empty() {
+                vec![host]
+            } else {
+                guests
+            };
+            self.org_author = if self.authors.is_empty() {
+                org_author
+            } else {
+                String::new()
+            };
+        }
+    }
+
     /// True when there is enough to make a meaningful entry.
     pub fn is_usable(&self) -> bool {
         !self.title.is_empty()
     }
+}
+
+/// One episode or recording, as read from whichever source described it.
+#[derive(Debug, Default)]
+struct Episode {
+    media: Media,
+    title: String,
+    /// The show / series / channel it belongs to (empty for a standalone recording).
+    series: String,
+    publisher: String,
+    date: String,
+    duration: Option<u64>,
+    description: String,
+    authors: Vec<String>,
+    org_author: String,
+    hosts: Vec<String>,
+    guests: Vec<String>,
 }
 
 /// Turn a citation-metadata date (`2021-03-01`, `2021/3/1`, `2021`, …) into whatever
@@ -175,16 +399,24 @@ fn four_digit_year(s: &str) -> String {
     String::new()
 }
 
-/// All `<meta>` tags as `(name-or-property lowercased, content)`.
+/// All `<meta>` tags as `(name-or-property lowercased, content)`. Schema.org microdata comes
+/// through too, keyed apart so it can't collide with the named tags: `<meta itemprop="x">` as
+/// `itemprop:x`, and `<link itemprop="x" content=…>` (YouTube's channel name) as
+/// `itemprop-link:x`.
 fn meta_tags(html: &str) -> Vec<(String, String)> {
     let bytes = html.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i + 5 <= bytes.len() {
-        if html.is_char_boundary(i)
-            && html[i..].len() >= 5
-            && html[i..i + 5].eq_ignore_ascii_case("<meta")
-        {
+        let opens = |tag: &str| {
+            html.is_char_boundary(i)
+                && html.is_char_boundary((i + tag.len()).min(html.len()))
+                && html[i..].len() >= tag.len()
+                && html[i..i + tag.len()].eq_ignore_ascii_case(tag)
+        };
+        let is_meta = opens("<meta");
+        let is_link = !is_meta && opens("<link");
+        if is_meta || is_link {
             let mut j = i + 5;
             while j < bytes.len() && bytes[j] != b'>' {
                 j += 1;
@@ -192,10 +424,18 @@ fn meta_tags(html: &str) -> Vec<(String, String)> {
             let end = j.min(bytes.len());
             if html.is_char_boundary(end) {
                 let tag = &html[i..end];
-                let name = meta_attr(tag, "name").or_else(|| meta_attr(tag, "property"));
                 let content = meta_attr(tag, "content");
+                let itemprop = meta_attr(tag, "itemprop").map(|p| p.to_lowercase());
+                let name = if is_link {
+                    itemprop.map(|p| format!("itemprop-link:{p}"))
+                } else {
+                    meta_attr(tag, "name")
+                        .or_else(|| meta_attr(tag, "property"))
+                        .map(|n| n.to_lowercase())
+                        .or_else(|| itemprop.map(|p| format!("itemprop:{p}")))
+                };
                 if let (Some(n), Some(c)) = (name, content) {
-                    out.push((n.to_lowercase(), c));
+                    out.push((n, c));
                 }
             }
             i = end.max(i + 1);
@@ -328,6 +568,65 @@ mod tests {
         // An out-of-range "month" (not actually a date) degrades to year-only rather than
         // producing an invalid Hayagriva date.
         assert_eq!(best_effort_date("1970/99/01"), "1970");
+    }
+
+    #[test]
+    fn youtube_video_from_jsonld_and_microdata() {
+        let html = r#"
+            <meta property="og:site_name" content="YouTube">
+            <meta property="og:type" content="video.other">
+            <meta itemprop="name" content="Me at the zoo">
+            <meta itemprop="duration" content="PT0M19S">
+            <span itemprop="author"><link itemprop="name" content="jawed"></span>
+            <meta itemprop="uploadDate" content="2005-04-23T20:31:52-07:00">
+            <script type="application/ld+json">{"@type":"VideoObject","name":"Me at the zoo",
+              "uploadDate":"2005-04-23T20:31:52-07:00"}</script>"#;
+        let m = WebMeta::from_page(html, "https://www.youtube.com/watch?v=jNQXAC9IVRw");
+        assert_eq!(m.entry_type, "video");
+        assert_eq!(m.title, "Me at the zoo");
+        assert_eq!(m.org_author, "jawed");
+        assert!(m.authors.is_empty());
+        assert_eq!(m.date, "2005-04-23");
+        assert_eq!(m.runtime, "00:19");
+        assert_eq!(m.publisher, "YouTube");
+        assert_eq!(m.genre, "Video");
+        assert!(m.container.is_empty());
+    }
+
+    #[test]
+    fn cbc_radio_story_is_the_interview_it_plays() {
+        // The shape of https://www.cbc.ca/radio/ideas/karen-hao-empire-of-ai-9.7142134,
+        // cut down: the page's own metadata describes a written story by "CBC"; the episode
+        // is only in the player state.
+        let html = r#"
+            <meta property="og:title" content="Why we should &#x27;fight like hell&#x27; against Big AI | CBC Radio"/>
+            <meta property="og:type" content="article"/>
+            <meta property="og:site_name" content="CBC"/>
+            <script type="application/ld+json">{"@type":"ReportageNewsArticle",
+              "headline":"Why we should &apos;fight like hell&apos; against Big AI",
+              "datePublished":"2026-07-31T16:00:00.000Z",
+              "author":[{"@type":"NewsMediaOrganization","name":"CBC"}],
+              "publisher":{"@type":"NewsMediaOrganization","name":"CBC"}}</script>
+            <script>window.__INITIAL_STATE__ = {"detail":{"content":{"body":[{"type":"html",
+              "content":[{"type":"polopoly_media","content":{"type":"audio",
+              "title":"Empire of AI: Tech journalist Karen Hao ","showName":"Ideas",
+              "publishedAt":1785502800000,"creator":undefined,
+              "description":"Tech journalist Karen Hao investigated OpenAI for her bestseller, Empire of AI. Hao clearly sets out the urgent stakes in this conversation with Nahlah Ayed, alongside a March 2026 talk.",
+              "media":{"duration":3240,"contentArea":"Radio"}}}]}]}}};</script>"#;
+        let m = WebMeta::from_page(
+            html,
+            "https://www.cbc.ca/radio/ideas/karen-hao-empire-of-ai-9.7142134",
+        );
+        assert_eq!(m.entry_type, "scene");
+        assert_eq!(m.parent_type, "audio");
+        assert_eq!(m.title, "Empire of AI: Tech journalist Karen Hao");
+        assert_eq!(m.container, "Ideas");
+        assert_eq!(m.publisher, "CBC Radio");
+        assert_eq!(m.authors, vec!["Karen Hao"]);
+        assert_eq!(m.genre, "Interview by Nahlah Ayed");
+        assert_eq!(m.date, "2026-07-31");
+        assert_eq!(m.runtime, "54:00");
+        assert!(m.people_guessed);
     }
 
     #[test]

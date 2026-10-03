@@ -291,6 +291,14 @@ pub struct EntryFields {
     /// Page range as free text (`6-13`, `xiv-xx`).
     pub pages: String,
     pub url: String,
+    /// Hayagriva type of the entry's first `parent:` (lowercased; empty when it has none).
+    /// Recorded media need a particular one to cite their show — see [`crate::item_kind`].
+    pub parent_type: String,
+    /// Hayagriva `genre`: the medium label styles print after the title ("Podcast episode",
+    /// "Video"), or for an interview "Interview by NAME" (see [`crate::item_kind`]).
+    pub genre: String,
+    /// Running time (`runtime`, CSL `dimensions`), as Hayagriva writes it (`54:00`, `01:02:03`).
+    pub runtime: String,
 }
 
 /// Read the editable fields out of an entry, for populating the structured editor.
@@ -344,6 +352,16 @@ pub fn read_fields(entry: &HEntry) -> EntryFields {
             .map(|r| r.to_string())
             .unwrap_or_default(),
         url: entry.url().map(|u| u.to_string()).unwrap_or_default(),
+        parent_type: entry
+            .parents()
+            .first()
+            .map(|p| format!("{:?}", p.entry_type()).to_lowercase())
+            .unwrap_or_default(),
+        genre: entry
+            .genre()
+            .map(|g| g.value.to_string())
+            .unwrap_or_default(),
+        runtime: entry.runtime().map(|r| r.to_string()).unwrap_or_default(),
     }
 }
 
@@ -486,17 +504,52 @@ pub fn apply_fields_to_yaml(
         }
     }
 
+    // genre / runtime — plain scalars on the entry. A runtime is normalized to the form
+    // Hayagriva parses (`54 min` → `54:00`); one that can't be read is an error rather than a
+    // silently dropped value.
+    if edited.genre != current.genre {
+        set_or_remove(inner, "genre", edited.genre.trim());
+    }
+    if edited.runtime != current.runtime {
+        let typed = edited.runtime.trim();
+        let runtime = if typed.is_empty() {
+            String::new()
+        } else {
+            crate::item_kind::normalize_runtime(typed).ok_or_else(|| BibError::Yaml {
+                path: Path::new("<entry>").to_path_buf(),
+                message: format!(
+                    "running time \"{typed}\" isn't one Kartoteka can read — try 54:00 or 1:02:03"
+                ),
+            })?
+        };
+        set_or_remove(inner, "runtime", &runtime);
+    }
+
+    // parent type — re-typing an existing parent (a podcast episode's show must be `audio`
+    // for its name to appear in citations; see `crate::item_kind`).
+    if edited.parent_type != current.parent_type && !edited.parent_type.trim().is_empty() {
+        if let Some(parent) = first_parent_mut(inner) {
+            parent.insert(key_of("type"), key_of(edited.parent_type.trim()));
+        }
+    }
+
     // container — the first parent's title. A parent is created when there is none, typed by
-    // what the entry is (a journal for an article, a book for a chapter, …).
+    // what the entry is (a journal for an article, a book for a chapter, a show for an
+    // episode, …).
     if edited.container != current.container {
         let container = edited.container.trim();
-        let parent_type = default_parent_type(
-            inner
-                .get(key_of("type"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(""),
-        );
-        set_container_title(inner, container, parent_type);
+        let parent_type = if edited.parent_type.trim().is_empty() {
+            default_parent_type(
+                inner
+                    .get(key_of("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+            )
+            .to_string()
+        } else {
+            edited.parent_type.trim().to_string()
+        };
+        set_container_title(inner, container, &parent_type);
     }
 
     serde_yaml_ng::to_string(&doc).map_err(|e| BibError::Yaml {
@@ -507,11 +560,12 @@ pub fn apply_fields_to_yaml(
 
 /// The Hayagriva type a freshly created `parent:` gets for an entry of `entry_type`.
 fn default_parent_type(entry_type: &str) -> &'static str {
-    match entry_type.to_lowercase().as_str() {
-        "chapter" | "anthology" => "anthology",
-        "conference" => "proceedings",
-        _ => "periodical",
-    }
+    let entry_type = entry_type.to_lowercase();
+    crate::item_kind::ITEM_KINDS
+        .iter()
+        .find(|k| k.entry_type == entry_type)
+        .map(|k| k.parent_type)
+        .unwrap_or("periodical")
 }
 
 /// The mapping of an entry's first `parent:`, whether written as a mapping or as a list of

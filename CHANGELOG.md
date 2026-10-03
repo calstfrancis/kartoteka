@@ -2,6 +2,27 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased] — Podcasts, interviews and videos from a link
+
+- **Paste a link to a podcast episode, interview or video, and it comes in as one.** Pasting
+  a link used to read only a page's basic tags, so a CBC Radio episode page came in as a web
+  article by "CBC". Kartoteka now reads the page's structured data too (schema.org JSON-LD and
+  microdata, which YouTube and most podcast platforms provide), and the player data on CBC
+  pages. Pasting `https://www.cbc.ca/radio/ideas/karen-hao-empire-of-ai-9.7142134` gives an
+  interview with Karen Hao by Nahlah Ayed, from *Ideas*, CBC Radio, 31 July 2026, running
+  54:00. A YouTube link gives the video, its channel, upload date and length. When the host and
+  guest had to be worked out from the episode's description, the new entry opens and a note
+  asks you to check them.
+- **New item types: Podcast episode, Interview, TV or video episode, Video, Audio
+  recording.** Each is stored so citation styles can print it properly: an episode keeps its
+  show (Hayagriva drops the show name of a plain audio/video entry, so episodes are saved as a
+  part of their show), and an interview names its interviewer ("Interview by Nahlah Ayed",
+  which Chicago, MLA and SBL print after the title and APA in brackets). New **Interviewer** and
+  **Running time** fields appear for these types, in the editor and in New item. A running time
+  can be typed as `54:00`, `1:02:03`, `54 min` or `1h 2m`. For these types "Published in" reads
+  "Show / series".
+- Pasted news articles that name their authors only in structured data now get those authors.
+
 ## [0.20.1] "Ready Shelf" — 2026-10-03 — Every title-search result can be added
 
 - **Fixed: some title-search results couldn't be added ("needs at least an author or a

@@ -2257,8 +2257,15 @@ fn unpaywall_download(doi: &str, email: &str) -> Result<(Vec<u8>, String), Strin
     Ok((bytes, filename))
 }
 
-/// Scrape result: the entry YAML plus an optional downloaded PDF `(bytes, filename)`.
-type ScrapeResult = Result<(String, Option<(Vec<u8>, String)>), String>;
+/// What a page scrape produced: the entry YAML, an optional downloaded PDF
+/// `(bytes, filename)`, and whether the people in it (host, guest) were guessed from the
+/// page's text and so want checking.
+struct Scraped {
+    yaml: String,
+    pdf: Option<(Vec<u8>, String)>,
+    people_guessed: bool,
+}
+type ScrapeResult = Result<Scraped, String>;
 
 /// Fetch `url`, scrape its citation metadata on a worker thread, then create the entry and
 /// attach any PDF the page advertised. All network I/O is off the main thread.
@@ -2275,7 +2282,11 @@ fn add_from_url(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, url: Strin
     let widgets = widgets.clone();
     receiver.attach(move |result| {
         match result {
-            Ok((yaml, pdf)) => {
+            Ok(Scraped {
+                yaml,
+                pdf,
+                people_guessed,
+            }) => {
                 let added = {
                     let s = state.borrow();
                     s.library
@@ -2305,10 +2316,20 @@ fn add_from_url(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, url: Strin
                                     toast(&widgets, &format!("Added {key}, attach failed: {e}"))
                                 }
                             }
+                        } else if people_guessed {
+                            // Opened (below) so the guess is right in front of them.
+                            toast(
+                                &widgets,
+                                &format!(
+                                    "Added {key} — check who's credited: the host and guest \
+                                     were read from the page's text"
+                                ),
+                            );
                         } else {
                             toast(&widgets, &format!("Added {key}"));
                         }
                         reload_current(&state, &widgets);
+                        select_key(&state, &widgets, &key);
                     }
                     Ok(_) => toast(&widgets, "The page produced no entry"),
                     Err(e) => toast(&widgets, &friendly::bib_error(&e)),
@@ -2339,15 +2360,23 @@ fn scrape_url(url: &str) -> ScrapeResult {
         .text()
         .map_err(|e| e.to_string())?;
 
-    let meta = crate::webmeta::WebMeta::from_html(&html);
+    let meta = crate::webmeta::WebMeta::from_page(&html, url);
     if !meta.is_usable() {
         return Err("no citation metadata found on that page".to_string());
     }
-    let creators: Vec<fond_bib::Creator> = meta
+    let mut creators: Vec<fond_bib::Creator> = meta
         .authors
         .iter()
         .map(|a| fond_bib::Creator::from_natural_text(fond_bib::CreatorRole::Author, a))
         .collect();
+    // A channel or organization credited as author stays one name ("Some Channel"), not a
+    // given/family pair.
+    if creators.is_empty() && !meta.org_author.is_empty() {
+        creators.push(fond_bib::Creator::new_single_field(
+            fond_bib::CreatorRole::Author,
+            &meta.org_author,
+        ));
+    }
     let yaml = build_entry_yaml(&NewItemFields {
         ty: &meta.entry_type,
         title: &meta.title,
@@ -2363,6 +2392,9 @@ fn scrape_url(url: &str) -> ScrapeResult {
         issue: &meta.issue,
         pages: &meta.pages,
         language: &meta.language,
+        parent_type: &meta.parent_type,
+        genre: &meta.genre,
+        runtime: &meta.runtime,
     });
 
     let pdf = if meta.pdf_url.is_empty() {
@@ -2386,28 +2418,12 @@ fn scrape_url(url: &str) -> ScrapeResult {
                 (bytes, name)
             })
     };
-    Ok((yaml, pdf))
+    Ok(Scraped {
+        yaml,
+        pdf,
+        people_guessed: meta.people_guessed,
+    })
 }
-
-/// The item types the manual "New item" form offers: (display label, Hayagriva `type`).
-const ITEM_TYPES: &[(&str, &str)] = &[
-    ("Book", "book"),
-    ("Journal article", "article"),
-    ("Book chapter", "chapter"),
-    ("Conference paper", "conference"),
-    ("Report", "report"),
-    ("Thesis", "thesis"),
-    ("Manuscript", "manuscript"),
-    // Hayagriva has no native sermon entry type — "manuscript" (an unpublished written text)
-    // is the closest fit and works whether or not the sermon was ever recorded or posted.
-    ("Sermon", "manuscript"),
-    ("Web page", "web"),
-    ("Blog post", "blog"),
-    ("Newspaper article", "newspaper"),
-    ("Anthology", "anthology"),
-    ("Periodical", "periodical"),
-    ("Miscellaneous", "misc"),
-];
 
 /// Quote and escape a scalar for a double-quoted YAML value.
 fn yaml_quote(s: &str) -> String {
@@ -2478,6 +2494,13 @@ struct NewItemFields<'a> {
     pages: &'a str,
     /// An ISO 639 language code (e.g. `en`).
     language: &'a str,
+    /// Type of the container's `parent:`; empty for the entry type's usual one (see
+    /// `fond_bib::item_kind`).
+    parent_type: &'a str,
+    /// Medium label or "Interview by NAME".
+    genre: &'a str,
+    /// Running time, already in the form Hayagriva parses (`54:00`).
+    runtime: &'a str,
 }
 
 /// Build a one-entry Hayagriva YAML snippet. The placeholder key is replaced with a
@@ -2524,11 +2547,21 @@ fn build_entry_yaml(f: &NewItemFields) -> String {
             out.push_str(&format!("    isbn: {}\n", yaml_quote(isbn)));
         }
     }
+    if !f.genre.trim().is_empty() {
+        out.push_str(&format!("  genre: {}\n", yaml_quote(f.genre.trim())));
+    }
+    if !f.runtime.trim().is_empty() {
+        out.push_str(&format!("  runtime: {}\n", yaml_quote(f.runtime.trim())));
+    }
     if !f.container.trim().is_empty() {
-        let parent_ty = match f.ty {
-            "chapter" | "anthology" => "anthology",
-            "conference" => "proceedings",
-            _ => "periodical",
+        let parent_ty = if f.parent_type.trim().is_empty() {
+            fond_bib::item_kind::ITEM_KINDS
+                .iter()
+                .find(|k| k.entry_type == f.ty)
+                .map(|k| k.parent_type)
+                .unwrap_or("periodical")
+        } else {
+            f.parent_type.trim()
         };
         out.push_str("  parent:\n");
         out.push_str(&format!("    type: {parent_ty}\n"));
@@ -2747,13 +2780,22 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     content.set_margin_start(16);
     content.set_margin_end(16);
 
-    let type_labels: Vec<&str> = ITEM_TYPES.iter().map(|(label, _)| *label).collect();
+    let kinds = fond_bib::item_kind::ITEM_KINDS;
+    let type_labels: Vec<&str> = kinds.iter().map(|k| k.label).collect();
     let type_drop = gtk4::DropDown::from_strings(&type_labels);
     let title = gtk4::Entry::new();
     let creator_editor = crate::ui::creator_editor::CreatorListEditor::new(&[]);
-    let year = gtk4::Entry::new();
+    let year = gtk4::Entry::builder()
+        .placeholder_text("e.g. 2026, or 2026-07-31")
+        .build();
     let container = gtk4::Entry::builder()
-        .placeholder_text("Journal / book title")
+        .placeholder_text("Journal, book, or the show / channel")
+        .build();
+    let interviewer = gtk4::Entry::builder()
+        .placeholder_text("Who asked the questions — the person interviewed is the creator")
+        .build();
+    let runtime = gtk4::Entry::builder()
+        .placeholder_text("e.g. 54:00 or 1:02:03")
         .build();
     let publisher = gtk4::Entry::new();
     let location = gtk4::Entry::builder()
@@ -2766,8 +2808,24 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     content.append(&labeled("Type", &type_drop));
     content.append(&labeled("Title", &title));
     content.append(&labeled("Creator(s)", &creator_editor.widget));
-    content.append(&labeled("Year", &year));
-    content.append(&labeled("Journal / book", &container));
+    content.append(&labeled("Date", &year));
+    content.append(&labeled("Published in", &container));
+    let interviewer_row = labeled("Interviewer", &interviewer);
+    content.append(&interviewer_row);
+    let runtime_row = labeled("Running time", &runtime);
+    content.append(&runtime_row);
+    // Interviewer for interviews, running time for recordings — hidden otherwise.
+    let show_kind_rows = {
+        let interviewer_row = interviewer_row.clone();
+        let runtime_row = runtime_row.clone();
+        move |i: u32| {
+            let kind = &kinds[i as usize];
+            interviewer_row.set_visible(kind.label == "Interview");
+            runtime_row.set_visible(kind.is_media);
+        }
+    };
+    show_kind_rows(type_drop.selected());
+    type_drop.connect_selected_notify(move |d| show_kind_rows(d.selected()));
     content.append(&labeled("Publisher", &publisher));
     content.append(&labeled("Location", &location));
     content.append(&labeled("DOI", &doi));
@@ -2796,9 +2854,29 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 toast(&widgets, "A title is required");
                 return;
             }
-            let ty = ITEM_TYPES[type_drop.selected() as usize].1;
+            let kind = &kinds[type_drop.selected() as usize];
+            let typed_runtime = runtime.text().trim().to_string();
+            let runtime_value = if kind.is_media && !typed_runtime.is_empty() {
+                match fond_bib::item_kind::normalize_runtime(&typed_runtime) {
+                    Some(r) => r,
+                    None => {
+                        toast(
+                            &widgets,
+                            "Couldn't read that running time — try 54:00 or 1:02:03",
+                        );
+                        return;
+                    }
+                }
+            } else {
+                String::new()
+            };
+            let genre = if kind.label == "Interview" {
+                fond_bib::item_kind::genre_for_interviewer(&interviewer.text())
+            } else {
+                kind.genre.unwrap_or_default().to_string()
+            };
             let yaml = build_entry_yaml(&NewItemFields {
-                ty,
+                ty: kind.entry_type,
                 title: &title.text(),
                 creators: creator_editor.creators(),
                 date: &year.text(),
@@ -2808,6 +2886,9 @@ fn show_new_item_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 doi: &doi.text(),
                 isbn: &isbn.text(),
                 url: &url.text(),
+                parent_type: kind.parent_type,
+                genre: &genre,
+                runtime: &runtime_value,
                 ..Default::default()
             });
             let added = {
@@ -8398,31 +8479,30 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     b.append(&title_entry);
     b.append(&citation_key_row(widgets, &key));
 
-    // Type choices: the shared ITEM_TYPES list, plus the entry's own type appended if it is
-    // something not in that list (so an exotic type round-trips instead of being silently
-    // changed) — same fallback `show_citation_editor` used.
-    let mut type_choices: Vec<(String, String)> = ITEM_TYPES
-        .iter()
-        .map(|(l, t)| (l.to_string(), t.to_string()))
-        .collect();
-    if !current_fields.entry_type.is_empty()
-        && !type_choices
+    // Type choices: the shared kinds list (`fond_bib::item_kind`), plus the entry's own type
+    // appended (with no kind) if no kind covers it, so an exotic type round-trips instead of
+    // being silently changed. The kind is read from more than the type — a podcast episode,
+    // an interview and a TV episode are all `scene`s, told apart by their parent and genre.
+    let mut type_choices: Vec<(String, Option<&'static fond_bib::item_kind::ItemKind>)> =
+        fond_bib::item_kind::ITEM_KINDS
             .iter()
-            .any(|(_, t)| t == &current_fields.entry_type)
-    {
-        type_choices.push((
-            current_fields.entry_type.clone(),
-            current_fields.entry_type.clone(),
-        ));
-    }
+            .map(|k| (k.label.to_string(), Some(k)))
+            .collect();
+    let current_choice = match fond_bib::item_kind::kind_of(&current_fields) {
+        Some(i) => i,
+        None if !current_fields.entry_type.is_empty() => {
+            type_choices.push((current_fields.entry_type.clone(), None));
+            type_choices.len() - 1
+        }
+        None => 0,
+    };
     let type_labels: Vec<&str> = type_choices.iter().map(|(l, _)| l.as_str()).collect();
     let type_drop = gtk4::DropDown::from_strings(&type_labels);
-    type_drop.set_selected(
-        type_choices
-            .iter()
-            .position(|(_, t)| t == &current_fields.entry_type)
-            .unwrap_or(0) as u32,
-    );
+    type_drop.set_selected(current_choice as u32);
+    let kind_at = {
+        let type_choices = type_choices.clone();
+        move |i: u32| type_choices.get(i as usize).and_then(|(_, k)| *k)
+    };
 
     let creator_editor =
         crate::ui::creator_editor::CreatorListEditor::new(&current_fields.creators);
@@ -8447,6 +8527,18 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         .placeholder_text("e.g. 6-13")
         .build();
     let url_entry = gtk4::Entry::builder().text(&current_fields.url).build();
+    // An interview's interviewer lives in its genre ("Interview by NAME" — see
+    // `fond_bib::item_kind`), edited here as just the name.
+    let interviewer_entry = gtk4::Entry::builder()
+        .text(
+            fond_bib::item_kind::interviewer_from_genre(&current_fields.genre).unwrap_or_default(),
+        )
+        .placeholder_text("Who asked the questions")
+        .build();
+    let runtime_entry = gtk4::Entry::builder()
+        .text(&current_fields.runtime)
+        .placeholder_text("e.g. 54:00 or 1:02:03")
+        .build();
 
     // One save path for the whole citation-fields form: rebuilds a full `EntryFields` from
     // every widget's *current* value (not just whichever one triggered the save) and hands
@@ -8470,7 +8562,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         let widgets = widgets.clone();
         let key = key.clone();
         let current_fields_cell = current_fields_cell.clone();
-        let type_choices = type_choices.clone();
+        let kind_at = kind_at.clone();
         let type_drop = type_drop.clone();
         let title_entry = title_entry.clone();
         let creator_editor = creator_editor.clone();
@@ -8484,13 +8576,33 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         let issue_entry = issue_entry.clone();
         let pages_entry = pages_entry.clone();
         let url_entry = url_entry.clone();
+        let interviewer_entry = interviewer_entry.clone();
+        let runtime_entry = runtime_entry.clone();
         Rc::new(move || {
-            let entry_type = type_choices
-                .get(type_drop.selected() as usize)
-                .map(|(_, t)| t.clone())
-                .unwrap_or_else(|| current_fields_cell.borrow().entry_type.clone());
-            let edited = fond_bib::entry::EntryFields {
-                entry_type,
+            let current = current_fields_cell.borrow().clone();
+            let typed_runtime = runtime_entry.text().trim().to_string();
+            let runtime = if typed_runtime.is_empty() || typed_runtime == current.runtime {
+                typed_runtime
+            } else {
+                match fond_bib::item_kind::normalize_runtime(&typed_runtime) {
+                    Some(r) => {
+                        runtime_entry.set_text(&r);
+                        r
+                    }
+                    None => {
+                        toast(
+                            &widgets,
+                            "Couldn't read that running time — try 54:00 or 1:02:03",
+                        );
+                        return;
+                    }
+                }
+            };
+            let mut edited = fond_bib::entry::EntryFields {
+                entry_type: current.entry_type.clone(),
+                parent_type: current.parent_type.clone(),
+                genre: current.genre.clone(),
+                runtime,
                 title: title_entry.text().trim().to_string(),
                 creators: creator_editor.creators(),
                 year: year_entry.text().trim().to_string(),
@@ -8504,7 +8616,24 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 pages: pages_entry.text().trim().to_string(),
                 url: url_entry.text().trim().to_string(),
             };
-            if edited == *current_fields_cell.borrow() {
+            // A change of kind re-types the entry, its parent (a show must be `audio` for its
+            // name to cite) and its default genre; an unchanged one leaves all three alone.
+            let kind = kind_at(type_drop.selected());
+            if let Some(kind) = kind {
+                // Kinds written the same way (Sermon / Manuscript) aren't a change.
+                let shape =
+                    |k: &fond_bib::item_kind::ItemKind| (k.entry_type, k.parent_type, k.genre);
+                let current_shape = fond_bib::item_kind::kind_of(&current)
+                    .map(|i| shape(&fond_bib::item_kind::ITEM_KINDS[i]));
+                if current_shape != Some(shape(kind)) {
+                    fond_bib::item_kind::retype(&mut edited, kind);
+                }
+                if kind.label == "Interview" {
+                    edited.genre =
+                        fond_bib::item_kind::genre_for_interviewer(&interviewer_entry.text());
+                }
+            }
+            if edited == current {
                 return;
             }
             let result = {
@@ -8534,6 +8663,8 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         &issue_entry,
         &pages_entry,
         &url_entry,
+        &interviewer_entry,
+        &runtime_entry,
     ] {
         let save = save_citation.clone();
         entry.connect_activate(move |_| save());
@@ -9049,10 +9180,16 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     fields.append(&labeled("Year", &year_entry));
 
     // "Published in" + volume/issue/pages: shown for the kinds of work that sit inside
-    // another (articles, chapters, papers, …) and whenever any of them already has a value,
-    // so a book's card stays short without ever hiding data.
+    // another (articles, chapters, papers, episodes, …) and whenever any of them already has
+    // a value, so a book's card stays short without ever hiding data. For an episode the
+    // container is its show, and the numbers give way to the running time.
     let part_rows = gtk4::Box::new(Orientation::Vertical, 4);
-    part_rows.append(&labeled("Published in", &container_entry));
+    let container_row = labeled("Published in", &container_entry);
+    let container_caption = container_row
+        .first_child()
+        .and_downcast::<gtk4::Label>()
+        .expect("labeled() starts with its caption");
+    part_rows.append(&container_row);
     let numbers = gtk4::Box::new(Orientation::Horizontal, 8);
     for (caption, entry) in [
         ("Volume", &volume_entry),
@@ -9064,37 +9201,47 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         numbers.append(&cell);
     }
     part_rows.append(&numbers);
-    let has_part_values = [
-        &current_fields.container,
-        &current_fields.volume,
-        &current_fields.issue,
-        &current_fields.pages,
-    ]
-    .iter()
-    .any(|v| !v.is_empty());
-    let part_rows_visible_for: Rc<dyn Fn(&str)> = {
+    let interviewer_row = labeled("Interviewer", &interviewer_entry);
+    part_rows.append(&interviewer_row);
+    let runtime_row = labeled("Running time", &runtime_entry);
+    part_rows.append(&runtime_row);
+    let show_rows_for: Rc<dyn Fn(u32)> = {
         let part_rows = part_rows.clone();
+        let numbers = numbers.clone();
         let container_entry = container_entry.clone();
         let volume_entry = volume_entry.clone();
         let issue_entry = issue_entry.clone();
         let pages_entry = pages_entry.clone();
-        Rc::new(move |entry_type: &str| {
-            let has_values = [&container_entry, &volume_entry, &issue_entry, &pages_entry]
+        let runtime_entry = runtime_entry.clone();
+        let kind_at = kind_at.clone();
+        Rc::new(move |selected: u32| {
+            let kind = kind_at(selected);
+            let is_media = kind.is_some_and(|k| k.is_media);
+            let has_numbers = [&volume_entry, &issue_entry, &pages_entry]
                 .iter()
                 .any(|e| !e.text().is_empty());
-            part_rows.set_visible(has_values || is_part_type(entry_type));
+            let has_values = has_numbers || !container_entry.text().is_empty();
+            part_rows.set_visible(
+                has_values
+                    || is_media
+                    || !runtime_entry.text().is_empty()
+                    || kind.is_some_and(|k| k.has_container),
+            );
+            numbers.set_visible(!is_media || has_numbers);
+            container_caption.set_text(if is_media {
+                "Show / series"
+            } else {
+                "Published in"
+            });
+            interviewer_row.set_visible(kind.is_some_and(|k| k.label == "Interview"));
+            runtime_row.set_visible(is_media || !runtime_entry.text().is_empty());
         })
     };
-    part_rows.set_visible(has_part_values || is_part_type(&current_fields.entry_type));
+    show_rows_for(type_drop.selected());
     fields.append(&part_rows);
     {
-        let part_rows_visible_for = part_rows_visible_for.clone();
-        let type_choices = type_choices.clone();
-        type_drop.connect_selected_notify(move |d| {
-            if let Some((_, t)) = type_choices.get(d.selected() as usize) {
-                part_rows_visible_for(t);
-            }
-        });
+        let show_rows_for = show_rows_for.clone();
+        type_drop.connect_selected_notify(move |d| show_rows_for(d.selected()));
     }
 
     fields.append(&labeled("Publisher", &publisher_entry));
@@ -11960,15 +12107,6 @@ fn clear_box(b: &gtk4::Box) {
     while let Some(child) = b.first_child() {
         b.remove(&child);
     }
-}
-
-/// Whether works of this Hayagriva type normally appear inside another work (a journal, a
-/// book, proceedings), so the detail pane should offer "Published in" and volume/issue/pages.
-fn is_part_type(entry_type: &str) -> bool {
-    matches!(
-        entry_type,
-        "article" | "chapter" | "conference" | "newspaper" | "blog" | "anthology" | "web"
-    )
 }
 
 /// The entry's citation key, always on show directly under its title — it is what gets typed

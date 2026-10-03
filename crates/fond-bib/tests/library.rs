@@ -1766,3 +1766,92 @@ fn an_unknown_relation_alongside_a_bare_number_in_custom_fields_still_loads() {
     );
     assert_eq!(note.frontmatter.unknown_relations.len(), 1);
 }
+
+/// A podcast interview (the shape "Add from URL" writes for a CBC Ideas episode) keeps its
+/// show, interviewer and running time through an edit, re-typing moves its show along with it,
+/// and it cites with the show's name and "Interview by …".
+#[test]
+fn media_entries_round_trip_and_cite() {
+    use fond_bib::entry::{self, EntryFields};
+    use fond_bib::item_kind::{self, ITEM_KINDS};
+
+    let (_dir, lib) = temp_library();
+    let keys = lib
+        .add_from_yaml(
+            "new-item:\n  type: scene\n  title: \"Empire of AI: Tech journalist Karen Hao\"\n  \
+             author:\n    - \"Hao, Karen\"\n  date: 2026-07-31\n  publisher: \"CBC Radio\"\n  \
+             genre: \"Interview by Nahlah Ayed\"\n  runtime: \"54:00\"\n  parent:\n    \
+             type: audio\n    title: \"Ideas\"\n",
+        )
+        .unwrap();
+    let key = &keys[0];
+    let read = |lib: &Library| entry::read_fields(&lib.load_entry(key).unwrap().entry);
+
+    let f = read(&lib);
+    assert_eq!(
+        ITEM_KINDS[item_kind::kind_of(&f).unwrap()].label,
+        "Interview"
+    );
+    assert_eq!(f.container, "Ideas");
+    assert_eq!(f.parent_type, "audio");
+    assert_eq!(f.runtime, "54:00");
+
+    let style = fond_bib::render::resolve_style("chicago-notes").unwrap();
+    let cited = lib
+        .bibliography_for_keys(
+            std::slice::from_ref(key),
+            &style,
+            hayagriva::BufWriteFormat::Plain,
+        )
+        .unwrap();
+    let text = &cited[0].text;
+    for part in [
+        "Hao, Karen",
+        "Interview by Nahlah Ayed",
+        "Ideas",
+        "CBC Radio",
+        "54:00",
+    ] {
+        assert!(text.contains(part), "{part:?} missing from {text:?}");
+    }
+
+    // A typed running time is normalized; an unreadable one is refused, not dropped.
+    lib.edit_fields(
+        key,
+        &EntryFields {
+            runtime: "1 hr 2 min".into(),
+            ..f.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(read(&lib).runtime, "01:02:00");
+    let current = read(&lib);
+    assert!(lib
+        .edit_fields(
+            key,
+            &EntryFields {
+                runtime: "a while".into(),
+                ..current.clone()
+            },
+        )
+        .is_err());
+
+    // Re-typed as a TV or video episode: the show's parent becomes `video`, the interview line
+    // goes, and the show's name is kept.
+    let mut edited = current.clone();
+    item_kind::retype(
+        &mut edited,
+        item_kind::by_label("TV or video episode").unwrap(),
+    );
+    lib.edit_fields(key, &edited).unwrap();
+    let f = read(&lib);
+    assert_eq!(
+        ITEM_KINDS[item_kind::kind_of(&f).unwrap()].label,
+        "TV or video episode"
+    );
+    assert_eq!(
+        (f.parent_type.as_str(), f.container.as_str()),
+        ("video", "Ideas")
+    );
+    assert_eq!(f.genre, "");
+}

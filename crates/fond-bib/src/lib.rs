@@ -20,6 +20,7 @@ pub mod error;
 pub mod extra_note;
 pub mod identify;
 pub mod import;
+pub mod item_kind;
 pub mod key;
 pub mod library;
 pub mod node;
