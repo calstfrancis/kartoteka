@@ -113,8 +113,7 @@ fn scan_cite_calls(src: &str) -> Vec<(usize, String)> {
             continue;
         }
         let mut depth = 1usize;
-        let mut chars = src[args..].char_indices().peekable();
-        while let Some((off, c)) = chars.next() {
+        for (off, c) in src[args..].char_indices() {
             match c {
                 '(' => depth += 1,
                 ')' => {

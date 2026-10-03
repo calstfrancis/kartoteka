@@ -8385,6 +8385,7 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
     title_entry.set_has_frame(false);
     title_entry.set_hexpand(true);
     b.append(&title_entry);
+    b.append(&citation_key_row(widgets, &key));
 
     // Type choices: the shared ITEM_TYPES list, plus the entry's own type appended if it is
     // something not in that list (so an exotic type round-trips instead of being silently
@@ -8424,6 +8425,17 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         .build();
     let doi_entry = gtk4::Entry::builder().text(&current_fields.doi).build();
     let isbn_entry = gtk4::Entry::builder().text(&current_fields.isbn).build();
+    let container_entry = gtk4::Entry::builder()
+        .text(&current_fields.container)
+        .placeholder_text("Journal, book or proceedings this appears in")
+        .build();
+    let volume_entry = gtk4::Entry::builder().text(&current_fields.volume).build();
+    let issue_entry = gtk4::Entry::builder().text(&current_fields.issue).build();
+    let pages_entry = gtk4::Entry::builder()
+        .text(&current_fields.pages)
+        .placeholder_text("e.g. 6-13")
+        .build();
+    let url_entry = gtk4::Entry::builder().text(&current_fields.url).build();
 
     // One save path for the whole citation-fields form: rebuilds a full `EntryFields` from
     // every widget's *current* value (not just whichever one triggered the save) and hands
@@ -8456,6 +8468,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         let location_entry = location_entry.clone();
         let doi_entry = doi_entry.clone();
         let isbn_entry = isbn_entry.clone();
+        let container_entry = container_entry.clone();
+        let volume_entry = volume_entry.clone();
+        let issue_entry = issue_entry.clone();
+        let pages_entry = pages_entry.clone();
+        let url_entry = url_entry.clone();
         Rc::new(move || {
             let entry_type = type_choices
                 .get(type_drop.selected() as usize)
@@ -8470,6 +8487,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
                 location: location_entry.text().trim().to_string(),
                 doi: doi_entry.text().trim().to_string(),
                 isbn: isbn_entry.text().trim().to_string(),
+                container: container_entry.text().trim().to_string(),
+                volume: volume_entry.text().trim().to_string(),
+                issue: issue_entry.text().trim().to_string(),
+                pages: pages_entry.text().trim().to_string(),
+                url: url_entry.text().trim().to_string(),
             };
             if edited == *current_fields_cell.borrow() {
                 return;
@@ -8496,6 +8518,11 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
         &location_entry,
         &doi_entry,
         &isbn_entry,
+        &container_entry,
+        &volume_entry,
+        &issue_entry,
+        &pages_entry,
+        &url_entry,
     ] {
         let save = save_citation.clone();
         entry.connect_activate(move |_| save());
@@ -8999,28 +9026,71 @@ fn show_detail(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, entry_idx: 
 
     let fields = gtk4::Box::new(Orientation::Vertical, 4);
     fields.set_margin_top(8);
-    // Rows that are internal/Typst-specific rather than something a reader of the entry
-    // would recognize (the citation key exists to be typed into a document, not to be
-    // read) — tucked behind a collapsed disclosure instead of the main field list, so a
-    // non-technical user sees a clean card by default. Nothing is removed, just one click
-    // further away; see the "Details" expander appended below.
+    // Rows that are bookkeeping rather than part of the citation itself ("Used in", …) —
+    // tucked behind a collapsed disclosure so the card stays clean. The citation key is NOT
+    // one of them: it is shown directly under the title (`citation_key_row`).
     let details_fields = gtk4::Box::new(Orientation::Vertical, 4);
 
-    // Structured fields from the entry — editable in place (see `save_citation` above);
-    // Citation key stays read-only (it's derived, not a field to edit) and tucked in
-    // "Details" since it's Typst-specific, not something a reader of the entry needs.
+    // Structured fields from the entry — editable in place (see `save_citation` above).
+    // The citation key is read-only (derived, not a field to edit) and shown under the title.
     fields.append(&labeled("Type", &type_drop));
     fields.append(&labeled("Creator(s)", &creator_editor.widget));
     fields.append(&labeled("Year", &year_entry));
+
+    // "Published in" + volume/issue/pages: shown for the kinds of work that sit inside
+    // another (articles, chapters, papers, …) and whenever any of them already has a value,
+    // so a book's card stays short without ever hiding data.
+    let part_rows = gtk4::Box::new(Orientation::Vertical, 4);
+    part_rows.append(&labeled("Published in", &container_entry));
+    let numbers = gtk4::Box::new(Orientation::Horizontal, 8);
+    for (caption, entry) in [
+        ("Volume", &volume_entry),
+        ("Issue", &issue_entry),
+        ("Pages", &pages_entry),
+    ] {
+        let cell = labeled(caption, entry);
+        cell.set_hexpand(true);
+        numbers.append(&cell);
+    }
+    part_rows.append(&numbers);
+    let has_part_values = [
+        &current_fields.container,
+        &current_fields.volume,
+        &current_fields.issue,
+        &current_fields.pages,
+    ]
+    .iter()
+    .any(|v| !v.is_empty());
+    let part_rows_visible_for: Rc<dyn Fn(&str)> = {
+        let part_rows = part_rows.clone();
+        let container_entry = container_entry.clone();
+        let volume_entry = volume_entry.clone();
+        let issue_entry = issue_entry.clone();
+        let pages_entry = pages_entry.clone();
+        Rc::new(move |entry_type: &str| {
+            let has_values = [&container_entry, &volume_entry, &issue_entry, &pages_entry]
+                .iter()
+                .any(|e| !e.text().is_empty());
+            part_rows.set_visible(has_values || is_part_type(entry_type));
+        })
+    };
+    part_rows.set_visible(has_part_values || is_part_type(&current_fields.entry_type));
+    fields.append(&part_rows);
+    {
+        let part_rows_visible_for = part_rows_visible_for.clone();
+        let type_choices = type_choices.clone();
+        type_drop.connect_selected_notify(move |d| {
+            if let Some((_, t)) = type_choices.get(d.selected() as usize) {
+                part_rows_visible_for(t);
+            }
+        });
+    }
+
     fields.append(&labeled("Publisher", &publisher_entry));
     fields.append(&labeled("Location", &location_entry));
     fields.append(&labeled("DOI", &doi_entry));
     fields.append(&labeled("ISBN", &isbn_entry));
-    let key_row = field_row("Citation key", &key);
-    key_row.set_tooltip_text(Some(
-        "Used to cite this work in a Typst document, e.g. @key",
-    ));
-    details_fields.append(&key_row);
+    fields.append(&labeled("URL", &url_entry));
 
     // Note-derived state: tags/status/rating (editable in place, below), attachments,
     // annotations, prose.
@@ -11845,6 +11915,41 @@ fn clear_box(b: &gtk4::Box) {
     while let Some(child) = b.first_child() {
         b.remove(&child);
     }
+}
+
+/// Whether works of this Hayagriva type normally appear inside another work (a journal, a
+/// book, proceedings), so the detail pane should offer "Published in" and volume/issue/pages.
+fn is_part_type(entry_type: &str) -> bool {
+    matches!(
+        entry_type,
+        "article" | "chapter" | "conference" | "newspaper" | "blog" | "anthology" | "web"
+    )
+}
+
+/// The entry's citation key, always on show directly under its title — it is what gets typed
+/// into a Typst document, so it is never tucked away. The key is selectable text, and one
+/// click on the button copies the ready-to-paste `@key`.
+fn citation_key_row(widgets: &Rc<Widgets>, key: &str) -> gtk4::Box {
+    let row = gtk4::Box::new(Orientation::Horizontal, 6);
+    let label = gtk4::Label::new(Some(key));
+    label.add_css_class("monospace");
+    label.add_css_class("dim-label");
+    label.set_selectable(true);
+    label.set_xalign(0.0);
+    label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    label.set_tooltip_text(Some("This work's citation key, for citing it in Typst"));
+    let copy = gtk4::Button::from_icon_name("edit-copy-symbolic");
+    copy.add_css_class("flat");
+    copy.set_tooltip_text(Some("Copy @key to cite this in a Typst document"));
+    copy.update_property(&[gtk4::accessible::Property::Label("Copy citation key")]);
+    {
+        let widgets = widgets.clone();
+        let key = key.to_string();
+        copy.connect_clicked(move |_| copy_citation(&widgets, &key));
+    }
+    row.append(&label);
+    row.append(&copy);
+    row
 }
 
 fn field_row(name: &str, value: &str) -> gtk4::Box {

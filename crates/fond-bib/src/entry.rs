@@ -265,6 +265,17 @@ pub struct EntryFields {
     pub location: String,
     pub doi: String,
     pub isbn: String,
+    /// Title of the work this one appears in — the journal for an article, the book for a
+    /// chapter, the proceedings for a conference paper. Lives on the entry's first `parent:`.
+    pub container: String,
+    /// Volume and issue are read from the entry itself, else its first parent that has one
+    /// (Hayagriva files them on either; an article's usually sit on its periodical parent).
+    /// A save writes back to wherever the value already lives, so nothing moves.
+    pub volume: String,
+    pub issue: String,
+    /// Page range as free text (`6-13`, `xiv-xx`).
+    pub pages: String,
+    pub url: String,
 }
 
 /// Read the editable fields out of an entry, for populating the structured editor.
@@ -298,6 +309,26 @@ pub fn read_fields(entry: &HEntry) -> EntryFields {
             .unwrap_or_default(),
         doi: entry.doi().unwrap_or_default().to_string(),
         isbn: entry.isbn().unwrap_or_default().to_string(),
+        container: entry
+            .parents()
+            .first()
+            .and_then(title_string)
+            .unwrap_or_default(),
+        volume: entry
+            .volume()
+            .or_else(|| entry.parents().iter().find_map(|p| p.volume()))
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        issue: entry
+            .issue()
+            .or_else(|| entry.parents().iter().find_map(|p| p.issue()))
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        pages: entry
+            .page_range()
+            .map(|r| r.to_string())
+            .unwrap_or_default(),
+        url: entry.url().map(|u| u.to_string()).unwrap_or_default(),
     }
 }
 
@@ -413,10 +444,116 @@ pub fn apply_fields_to_yaml(
         }
     }
 
+    // pages / url — plain scalars on the entry itself. A url that carries an access date
+    // (`{value, date}`) keeps the date; only its `value` changes.
+    if edited.pages != current.pages {
+        set_or_remove(inner, "page-range", edited.pages.trim());
+    }
+    if edited.url != current.url {
+        let url = edited.url.trim();
+        match inner.get_mut(key_of("url")) {
+            Some(Value::Mapping(m)) if !url.is_empty() => {
+                m.insert(key_of("value"), key_of(url));
+            }
+            _ => set_or_remove(inner, "url", url),
+        }
+    }
+
+    // volume / issue — written to wherever the value already lives (the entry, else the first
+    // parent that has one); a brand-new value goes on the entry itself, as the New-item form
+    // does. Hayagriva resolves either placement when rendering a citation.
+    for (field, was, now) in [
+        ("volume", &current.volume, &edited.volume),
+        ("issue", &current.issue, &edited.issue),
+    ] {
+        if was != now {
+            set_scalar_where_it_lives(inner, field, now.trim());
+        }
+    }
+
+    // container — the first parent's title. A parent is created when there is none, typed by
+    // what the entry is (a journal for an article, a book for a chapter, …).
+    if edited.container != current.container {
+        let container = edited.container.trim();
+        let parent_type = default_parent_type(
+            inner
+                .get(key_of("type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+        );
+        set_container_title(inner, container, parent_type);
+    }
+
     serde_yaml_ng::to_string(&doc).map_err(|e| BibError::Yaml {
         path: Path::new("<entry>").to_path_buf(),
         message: e.to_string(),
     })
+}
+
+/// The Hayagriva type a freshly created `parent:` gets for an entry of `entry_type`.
+fn default_parent_type(entry_type: &str) -> &'static str {
+    match entry_type.to_lowercase().as_str() {
+        "chapter" | "anthology" => "anthology",
+        "conference" => "proceedings",
+        _ => "periodical",
+    }
+}
+
+/// The mapping of an entry's first `parent:`, whether written as a mapping or as a list of
+/// mappings.
+fn first_parent_mut(entry: &mut serde_yaml_ng::Mapping) -> Option<&mut serde_yaml_ng::Mapping> {
+    match entry.get_mut(serde_yaml_ng::Value::String("parent".to_string()))? {
+        serde_yaml_ng::Value::Mapping(m) => Some(m),
+        serde_yaml_ng::Value::Sequence(seq) => seq.first_mut()?.as_mapping_mut(),
+        _ => None,
+    }
+}
+
+/// Set a scalar field where it already lives: on the entry if it has the key, else on the
+/// first parent that has it, else (new value) on the entry. An empty `value` removes it from
+/// both places, so a cleared field really is cleared.
+fn set_scalar_where_it_lives(entry: &mut serde_yaml_ng::Mapping, field: &str, value: &str) {
+    use serde_yaml_ng::Value;
+    let key = Value::String(field.to_string());
+    // YAML numbers stay numbers (`volume: 7`), matching hand-written Hayagriva.
+    let scalar = || match value.parse::<i64>() {
+        Ok(n) => Value::Number(n.into()),
+        Err(_) => Value::String(value.to_string()),
+    };
+    if value.is_empty() {
+        entry.remove(&key);
+        if let Some(parent) = first_parent_mut(entry) {
+            parent.remove(&key);
+        }
+    } else if entry.contains_key(&key) {
+        entry.insert(key, scalar());
+    } else if let Some(parent) = first_parent_mut(entry).filter(|p| p.contains_key(&key)) {
+        parent.insert(key, scalar());
+    } else {
+        entry.insert(key, scalar());
+    }
+}
+
+/// Set the first parent's `title`, creating the parent when the entry has none. An empty
+/// `title` removes it (and the parent too, when that leaves it with nothing but its type).
+fn set_container_title(entry: &mut serde_yaml_ng::Mapping, title: &str, parent_type: &str) {
+    use serde_yaml_ng::Value;
+    let key = |s: &str| Value::String(s.to_string());
+    if let Some(parent) = first_parent_mut(entry) {
+        if title.is_empty() {
+            parent.remove(key("title"));
+        } else {
+            parent.insert(key("title"), key(title));
+        }
+        return;
+    }
+    if title.is_empty() {
+        return;
+    }
+    let mut parent = serde_yaml_ng::Mapping::new();
+    parent.insert(key("type"), key(parent_type));
+    parent.insert(key("title"), key(title));
+    entry.insert(key("parent"), Value::Mapping(parent));
 }
 
 /// Set `map[key] = value` (as a string) when non-empty, else remove the key.
@@ -541,5 +678,97 @@ mod book_part_tests {
             title_string(parent).as_deref(),
             Some("Essays on Being, Revised")
         );
+    }
+}
+
+#[cfg(test)]
+mod field_tests {
+    use super::*;
+
+    const ARTICLE: &str = "doe2001top:\n  type: article\n  title: On Things\n  author: Doe, Jane\n  date: 2001\n  page-range: 5-9\n  parent:\n    type: periodical\n    title: Journal of Things\n    volume: 7\n    issue: 2\n";
+
+    fn parse(yaml: &str) -> HEntry {
+        parse_single(yaml, Path::new("x.yml")).unwrap().entry
+    }
+
+    fn edit(yaml: &str, f: impl FnOnce(&mut EntryFields)) -> (String, EntryFields) {
+        let current = read_fields(&parse(yaml));
+        let mut edited = current.clone();
+        f(&mut edited);
+        let out = apply_fields_to_yaml(yaml, &current, &edited).unwrap();
+        let after = read_fields(&parse(&out));
+        (out, after)
+    }
+
+    #[test]
+    fn reads_container_volume_issue_pages() {
+        let f = read_fields(&parse(ARTICLE));
+        assert_eq!(f.container, "Journal of Things");
+        assert_eq!(f.volume, "7");
+        assert_eq!(f.issue, "2");
+        assert_eq!(f.pages, "5-9");
+    }
+
+    #[test]
+    fn volume_edit_stays_on_the_parent_where_it_lives() {
+        let (out, after) = edit(ARTICLE, |f| f.volume = "8".into());
+        assert_eq!(after.volume, "8");
+        assert!(!out.contains("\n  volume:"), "moved to the entry: {out}");
+        assert!(out.contains("    volume: 8"), "{out}");
+    }
+
+    #[test]
+    fn untouched_fields_are_left_exactly_alone() {
+        let (_, after) = edit(ARTICLE, |f| f.pages = "5-10".into());
+        assert_eq!(after.pages, "5-10");
+        assert_eq!((after.volume.as_str(), after.issue.as_str()), ("7", "2"));
+        assert_eq!(after.container, "Journal of Things");
+    }
+
+    #[test]
+    fn clearing_a_field_removes_it() {
+        let (out, after) = edit(ARTICLE, |f| {
+            f.issue = String::new();
+            f.pages = String::new();
+        });
+        assert_eq!(after.issue, "");
+        assert_eq!(after.pages, "");
+        assert!(
+            !out.contains("issue:") && !out.contains("page-range"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_new_container_creates_a_typed_parent() {
+        let bare =
+            "doe2001on:\n  type: article\n  title: On Things\n  author: Doe, Jane\n  date: 2001\n";
+        let (out, after) = edit(bare, |f| {
+            f.container = "Journal of Things".into();
+            f.volume = "3".into();
+            f.url = "https://example.org/x".into();
+        });
+        assert_eq!(after.container, "Journal of Things");
+        assert_eq!(after.volume, "3");
+        assert_eq!(after.url, "https://example.org/x");
+        assert!(out.contains("type: periodical"), "{out}");
+        let chapter = "c:\n  type: chapter\n  title: A Chapter\n  author: Doe, Jane\n";
+        let (out, _) = edit(chapter, |f| f.container = "The Book".into());
+        assert!(out.contains("type: anthology"), "{out}");
+    }
+
+    #[test]
+    fn a_url_with_an_access_date_keeps_its_date() {
+        let yaml = "w:\n  type: web\n  title: A Page\n  url:\n    value: https://old.example/\n    date: 2024-05-01\n";
+        let (out, after) = edit(yaml, |f| f.url = "https://new.example/".into());
+        assert_eq!(after.url, "https://new.example/");
+        assert!(out.contains("2024-05-01"), "access date lost: {out}");
+    }
+
+    #[test]
+    fn a_parent_written_as_a_list_is_handled() {
+        let yaml = "a:\n  type: article\n  title: T\n  parent:\n  - type: periodical\n    title: Old Journal\n";
+        let (_, after) = edit(yaml, |f| f.container = "New Journal".into());
+        assert_eq!(after.container, "New Journal");
     }
 }
