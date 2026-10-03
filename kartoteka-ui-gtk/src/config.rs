@@ -58,6 +58,9 @@ pub struct Config {
     /// spreadsheet, restored on next launch.
     #[serde(default)]
     pub bookshelf_view: bool,
+    /// Whether the main menu's "More tools" section is expanded, restored on next launch.
+    #[serde(default)]
+    pub show_more_tools: bool,
     /// Recently opened library paths, most-recent-first, capped at `MAX_RECENT_LIBRARIES` —
     /// powers the hamburger menu's quick-switcher so reopening one doesn't need the folder
     /// picker every time (M4 Tier 4).

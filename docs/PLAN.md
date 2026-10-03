@@ -35,16 +35,13 @@ GitHub-backup disclosure · EPUB/folder drop · Cite with a page (`fond_bib::cit
 - [ ] First-run flow that ends with a first source: after "New library", land in the Add box.
 - [x] Copy `@key` from a spreadsheet row (right-click → "Copy citation (@key)"). Still
       possible: click-to-copy on the key cell itself.
-- [ ] Rename jargon in the UI: "Nodes…" → "People & ideas…", "Reindex search" → "Repair search",
-      "Back up (git commit)…" → hidden under Advanced.
+- [x] Jargon renamed in the menu ("People & ideas…", "Repair search", git options grouped).
+      Still to rename: the same terms inside their own dialogs and the CLI help.
 
 ## 2. Menu and backup consolidation (M)
 
-- [ ] Hamburger from ~35 rows to ~8: Add, Cite, Collections, Backup, Settings; Nodes, Relations
-      map, Custom fields, Tasks, Columns, Reindex, Rename attachments behind an **Advanced**
-      switch in Settings.
-- [ ] One **Backup** dialog replacing six entries (Save a copy, Set up backup, git commit, GitHub
-      sign-in, WebDAV, Automatic backups).
+- [x] Hamburger cut from ~35 rows to 10 + an expandable "More tools" (state remembered).
+- [x] One **Backup** window replacing six entries, each option saying what it holds.
 - [ ] Status-bar backup state: "Backed up 4 min ago · PDFs not included".
 - [ ] Real fix for PDFs not in GitHub backups: offer a second destination for `attachments/`
       (WebDAV already includes them) or Git LFS; at minimum a one-click "Back up files too".

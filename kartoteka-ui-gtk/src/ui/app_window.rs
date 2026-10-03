@@ -995,9 +995,6 @@ fn build_hamburger_popover(
 
     activate_row(&rows, &popover, "New library…", "win.new-library");
     activate_row(&rows, &popover, "Open library…", "win.open-library");
-    activate_row(&rows, &popover, "Move library…", "win.move-library").set_tooltip_text(Some(
-        "Relocate the current library's folder — e.g. onto a different drive",
-    ));
 
     // Quick-switcher: recently opened libraries, most-recent-first, excluding whichever is
     // open right now. Rebuilt every time the popover opens (via `connect_show` below) rather
@@ -1056,23 +1053,60 @@ fn build_hamburger_popover(
     popover.connect_show(move |_| refresh_recent());
 
     rows.append(&popover_separator());
-    activate_row(&rows, &popover, "New item…", "win.new-item");
     activate_row(&rows, &popover, "Add a reference…", "win.add");
-    activate_row(&rows, &popover, "Add PDF…", "win.add-pdf");
-    activate_row(&rows, &popover, "Add EPUB…", "win.add-epub");
-    activate_row(&rows, &popover, "Add folder of PDFs…", "win.add-folder");
-    activate_row(&rows, &popover, "Import…", "win.import");
+    activate_row(&rows, &popover, "Import…", "win.import").set_tooltip_text(Some(
+        "Bring in a BibTeX (.bib) file, optionally with your Zotero library's collections and notes",
+    ));
+    rows.append(&popover_separator());
+    activate_row(&rows, &popover, "Cite…", "win.cite");
+    activate_row(&rows, &popover, "Export bibliography…", "win.export-bib");
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Manage tags…", "win.tags");
-    activate_row(&rows, &popover, "Custom fields…", "win.custom-fields");
-    activate_row(&rows, &popover, "Columns…", "win.columns").set_tooltip_text(Some(
+    activate_row(&rows, &popover, "Find duplicates…", "win.duplicates");
+    rows.append(&popover_separator());
+    activate_row(&rows, &popover, "Backup…", "win.backup-hub").set_tooltip_text(Some(
+        "Keep your library safe: save a copy, or back it up to GitHub or a WebDAV server",
+    ));
+    rows.append(&popover_separator());
+
+    // Everything else, one click away and remembered: tools most people use rarely, or only
+    // once they have a big library.
+    let more_box = gtk4::Box::new(Orientation::Vertical, 2);
+    let more_toggle = popover_button("", false);
+    let more_label = |open: bool| {
+        if open {
+            "More tools  ▴"
+        } else {
+            "More tools  ▾"
+        }
+    };
+    more_toggle.set_label(more_label(config.borrow().show_more_tools));
+    more_box.set_visible(config.borrow().show_more_tools);
+    {
+        let more_box = more_box.clone();
+        let config = config.clone();
+        more_toggle.connect_clicked(move |b| {
+            let open = !more_box.is_visible();
+            more_box.set_visible(open);
+            b.set_label(more_label(open));
+            config.borrow_mut().show_more_tools = open;
+            config.borrow().save();
+        });
+    }
+    rows.append(&more_toggle);
+    activate_row(&more_box, &popover, "New item (by hand)…", "win.new-item");
+    activate_row(&more_box, &popover, "Add PDF…", "win.add-pdf");
+    activate_row(&more_box, &popover, "Add EPUB…", "win.add-epub");
+    activate_row(&more_box, &popover, "Add folder of PDFs…", "win.add-folder");
+    activate_row(&more_box, &popover, "Custom fields…", "win.custom-fields");
+    activate_row(&more_box, &popover, "Columns…", "win.columns").set_tooltip_text(Some(
         "Show or hide optional spreadsheet columns — Tags, Status, and any custom fields",
     ));
-    activate_row(&rows, &popover, "Nodes…", "win.nodes").set_tooltip_text(Some(
+    activate_row(&more_box, &popover, "People & ideas…", "win.nodes").set_tooltip_text(Some(
         "People, places, and other things you can connect your references to",
     ));
     activate_row(
-        &rows,
+        &more_box,
         &popover,
         "Relations map (whole library)…",
         "win.library-graph",
@@ -1081,35 +1115,28 @@ fn build_hamburger_popover(
         "A bird's-eye view of everything connected to everything, plus most-connected/\
              most-cited rankings",
     ));
-    activate_row(&rows, &popover, "Tasks…", "win.tasks");
-    activate_row(&rows, &popover, "Standalone notes…", "win.standalone-notes")
-        .set_tooltip_text(Some("Notes that aren't attached to any entry"));
-    activate_row(&rows, &popover, "Find duplicates…", "win.duplicates");
-    rows.append(&popover_separator());
-    activate_row(&rows, &popover, "Cite…", "win.cite");
-    activate_row(&rows, &popover, "Export bibliography…", "win.export-bib");
-    rows.append(&popover_separator());
-    activate_row(&rows, &popover, "Save current search…", "win.save-search");
-    activate_row(&rows, &popover, "Save a copy…", "win.save-copy").set_tooltip_text(Some(
-        "Copy your whole library to a folder you choose — no setup required",
-    ));
-    activate_row(&rows, &popover, "Set up backup…", "win.backup-wizard").set_tooltip_text(Some(
-        "Guided setup: sign in to GitHub, then commit and push in one step",
-    ));
-    activate_row(&rows, &popover, "Back up (git commit)…", "win.backup").set_tooltip_text(Some(
-        "Versioned backups with git — more powerful, but needs a one-time git setup",
-    ));
-    activate_row(&rows, &popover, "Sign in to GitHub…", "win.github-signin");
-    activate_row(&rows, &popover, "Back up to WebDAV…", "win.webdav-backup");
+    activate_row(&more_box, &popover, "Tasks…", "win.tasks");
     activate_row(
-        &rows,
+        &more_box,
         &popover,
-        "Automatic backups…",
-        "win.auto-backup-settings",
-    );
-    activate_row(&rows, &popover, "Reindex search", "win.reindex");
+        "Standalone notes…",
+        "win.standalone-notes",
+    )
+    .set_tooltip_text(Some("Notes that aren't attached to any entry"));
     activate_row(
-        &rows,
+        &more_box,
+        &popover,
+        "Save current search…",
+        "win.save-search",
+    );
+    activate_row(&more_box, &popover, "Move library…", "win.move-library").set_tooltip_text(Some(
+        "Relocate the current library's folder — e.g. onto a different drive",
+    ));
+    activate_row(&more_box, &popover, "Repair search", "win.reindex").set_tooltip_text(Some(
+        "Rebuild the search index from your files — use it if search seems to be missing things",
+    ));
+    activate_row(
+        &more_box,
         &popover,
         "Rename attachments to citations…",
         "win.rename-attachments",
@@ -1118,6 +1145,7 @@ fn build_hamburger_popover(
         "Rename every stored attachment to \"Author Year - Title.ext\" — useful for \
          attachments added before this naming existed, or before their entry was identified",
     ));
+    rows.append(&more_box);
     rows.append(&popover_separator());
 
     let current = config
@@ -1434,6 +1462,12 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("save-search", None);
         action.connect_activate(move |_, _| save_search_dialog(&state, &widgets));
+        window.add_action(&action);
+    }
+    {
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("backup-hub", None);
+        action.connect_activate(move |_, _| show_backup_hub(&widgets));
         window.add_action(&action);
     }
     {
@@ -3802,6 +3836,96 @@ fn show_backup_wizard(
             }
         },
     );
+}
+
+/// The one "Backup…" window: every way of keeping the library safe, each with a sentence on
+/// what it does and — importantly — what it leaves out. Replaces six separate menu entries.
+fn show_backup_hub(widgets: &Rc<Widgets>) {
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Backup"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(460, -1);
+    close_on_escape(&dialog);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 4);
+    content.set_margin_top(12);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+
+    let option = |title: &str, detail: &str, action: &'static str| {
+        let button = gtk4::Button::new();
+        button.add_css_class("flat");
+        let text = gtk4::Box::new(Orientation::Vertical, 2);
+        let title_label = gtk4::Label::new(Some(title));
+        title_label.set_xalign(0.0);
+        title_label.add_css_class("heading");
+        let detail_label = gtk4::Label::new(Some(detail));
+        detail_label.set_xalign(0.0);
+        detail_label.set_wrap(true);
+        detail_label.add_css_class("dim-label");
+        detail_label.add_css_class("caption");
+        text.append(&title_label);
+        text.append(&detail_label);
+        button.set_child(Some(&text));
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        button.connect_clicked(move |_| {
+            dialog.close();
+            let _ = WidgetExt::activate_action(&widgets.window, action, None);
+        });
+        button
+    };
+
+    content.append(&option(
+        "Save a copy…",
+        "Copy your whole library — PDFs and EPUBs included — to a folder you choose, such as \
+         an external drive. No setup.",
+        "win.save-copy",
+    ));
+    content.append(&option(
+        "Back up to GitHub…",
+        "Your references, notes and highlights, with a full history of changes. PDF and EPUB \
+         files are not included.",
+        "win.backup-wizard",
+    ));
+    content.append(&option(
+        "Back up to a WebDAV server…",
+        "Upload everything, PDFs and EPUBs included, to Nextcloud or another WebDAV server.",
+        "win.webdav-backup",
+    ));
+    content.append(&option(
+        "Automatic backups…",
+        "Back up on a schedule while Kartoteka is open.",
+        "win.auto-backup-settings",
+    ));
+    content.append(&popover_separator());
+    let advanced = gtk4::Label::new(Some("For people who use git"));
+    advanced.set_xalign(0.0);
+    advanced.add_css_class("dim-label");
+    advanced.add_css_class("caption-heading");
+    advanced.set_margin_top(6);
+    content.append(&advanced);
+    content.append(&option(
+        "Save a version…",
+        "Record the library's current state in git, with a message.",
+        "win.backup",
+    ));
+    content.append(&option(
+        "Sign in to GitHub…",
+        "Connect your GitHub account for pushing backups.",
+        "win.github-signin",
+    ));
+
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+    dialog.present();
 }
 
 /// What a git/GitHub backup does and does not hold. Attachments (PDFs, EPUBs) are kept out of

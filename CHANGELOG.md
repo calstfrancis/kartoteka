@@ -20,6 +20,14 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
   APA, MLA first, then the rest — instead of four. In the CLI, `kartoteka styles [filter]` lists
   them, `bib` and `annotated-bib` take `--all`, `turabian` is a recognised name, and a mistyped
   style now suggests close matches.
+- **A shorter main menu, and one Backup window.** The menu used to list about 35 actions. It now
+  shows the everyday ones — New/Open library, Add a reference, Import, Cite, Export, Tags, Find
+  duplicates, Backup — and a "More tools" row that expands the rest in place (and remembers
+  whether you left it open). The six separate backup entries became a single **Backup…** window
+  that says in a sentence what each option does and what it leaves out: *Save a copy* and
+  *WebDAV* include your PDFs and EPUBs, *GitHub* does not. The git-specific options sit under
+  "For people who use git". "Nodes…" is now "People & ideas…" and "Reindex search" is "Repair
+  search".
 - **Highlights as Typst.** `kartoteka annots <key> --typst` prints an entry's highlights ready to
   paste into a Zerkalo document: each passage is a block quote cited `@key[p. 12]` (the PDF's
   printed page number when it has one), with your own comments after it. Markup characters in
