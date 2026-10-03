@@ -1649,3 +1649,45 @@ fn add_entries_batch_is_all_or_nothing_on_a_key_failure() {
         "first entry written despite the batch failing"
     );
 }
+
+#[test]
+fn an_identifier_already_in_the_library_is_found_before_adding_it_again() {
+    let (_dir, lib) = temp_library();
+    fs::write(
+        lib.entry_path("cone1970black"),
+        "cone1970black:\n  type: article\n  title: Black Theology and Black Power\n  author: Cone, James H.\n  date: 1970\n  serial-number:\n    doi: 10.2307/ABC-1\n",
+    )
+    .unwrap();
+    fs::write(
+        lib.entry_path("homer1990odyssey"),
+        "homer1990odyssey:\n  type: book\n  title: The Odyssey\n  author: Homer\n  date: 1990\n  serial-number:\n    isbn: 0-14-044913-2\n",
+    )
+    .unwrap();
+    // A damaged file must not stop the lookup (or, in the app, an add).
+    fs::write(lib.entry_path("broken"), "this: [is not: valid").unwrap();
+
+    // DOI: case and prefix don't matter.
+    assert_eq!(
+        lib.find_entry_by_doi("10.2307/abc-1").unwrap().as_deref(),
+        Some("cone1970black")
+    );
+    assert_eq!(
+        lib.find_entry_by_doi("https://doi.org/10.2307/ABC-1")
+            .unwrap()
+            .as_deref(),
+        Some("cone1970black")
+    );
+    assert_eq!(lib.find_entry_by_doi("10.2307/other").unwrap(), None);
+    assert_eq!(lib.find_entry_by_doi("").unwrap(), None);
+
+    // ISBN: hyphens don't matter, and ISBN-10 matches the ISBN-13 of the same book.
+    for isbn in ["9780140449136", "978-0-14-044913-6", "0140449132"] {
+        assert_eq!(
+            lib.find_entry_by_isbn(isbn).unwrap().as_deref(),
+            Some("homer1990odyssey"),
+            "{isbn}"
+        );
+    }
+    assert_eq!(lib.find_entry_by_isbn("9780804429573").unwrap(), None);
+    assert_eq!(lib.find_entry_by_isbn("not an isbn").unwrap(), None);
+}

@@ -1465,6 +1465,36 @@ impl Library {
         Ok(changed)
     }
 
+    /// The key of an entry already in the library with this DOI (compared without regard to
+    /// case or a `doi:`/URL prefix), if any. An unreadable entry file is skipped, never fatal:
+    /// this runs before every add, and one bad file must not block adding.
+    pub fn find_entry_by_doi(&self, doi: &str) -> Result<Option<String>> {
+        let wanted = crate::zotero::normalize_doi(doi);
+        if wanted.is_empty() {
+            return Ok(None);
+        }
+        Ok(self.keys_sorted()?.into_iter().find(|key| {
+            self.load_entry(key)
+                .ok()
+                .and_then(|p| p.entry.doi().map(crate::zotero::normalize_doi))
+                .is_some_and(|d| d == wanted)
+        }))
+    }
+
+    /// The key of an entry already in the library with this ISBN, if any — an ISBN-10 matches
+    /// the ISBN-13 of the same book. Unreadable entry files are skipped.
+    pub fn find_entry_by_isbn(&self, isbn: &str) -> Result<Option<String>> {
+        let Some(wanted) = crate::identify::isbn13(isbn) else {
+            return Ok(None);
+        };
+        Ok(self.keys_sorted()?.into_iter().find(|key| {
+            self.load_entry(key)
+                .ok()
+                .and_then(|p| p.entry.isbn().and_then(crate::identify::isbn13))
+                .is_some_and(|i| i == wanted)
+        }))
+    }
+
     /// Find groups of entries that look like duplicates, matched by DOI, else ISBN, else
     /// folded title + year. Returns each group of 2+ keys (singletons excluded).
     pub fn find_duplicates(&self) -> Result<Vec<Vec<String>>> {

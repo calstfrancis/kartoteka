@@ -189,6 +189,254 @@ pub fn fetch_arxiv_bibtex(id: &str) -> Result<String> {
     fetch_doi_bibtex(&format!("10.48550/arXiv.{id}"))
 }
 
+// --- Title search: Crossref (articles, chapters) + OpenLibrary (books) ---
+
+/// How a search hit is fetched once chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateId {
+    /// Fetch by DOI (`fetch_doi_bibtex`).
+    Doi(String),
+    /// Fetch by ISBN (`fetch_isbn_yaml`).
+    Isbn(String),
+}
+
+/// One result of a title search, with just enough to recognise the right work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub id: CandidateId,
+    pub title: String,
+    /// `"Family, Given"` each, as the source gave them.
+    pub authors: Vec<String>,
+    pub year: String,
+    /// Journal or book the work appears in; empty for a book itself.
+    pub container: String,
+    /// `"Article"`, `"Book"`, `"Chapter"`, … — a plain-language kind.
+    pub kind: String,
+}
+
+impl Candidate {
+    /// `Cone, J. H.; Smith, A. · 1970 · Christianity and Crisis` — the second line of a result
+    /// row. Shows at most three authors, then "et al.".
+    pub fn byline(&self) -> String {
+        let mut authors = self
+            .authors
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        if self.authors.len() > 3 {
+            authors.push_str(" et al.");
+        }
+        [authors, self.year.clone(), self.container.clone()]
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+}
+
+/// Search for a work by title (or a pasted citation): up to `rows` articles/chapters from
+/// Crossref followed by up to `rows` books from OpenLibrary, best match first within each. A
+/// source that fails is skipped; the search only fails when *both* do (offline, say).
+pub fn search_works(query: &str, rows: usize) -> Result<Vec<Candidate>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = search_client()?;
+    let crossref = client
+        .get("https://api.crossref.org/works")
+        .query(&[
+            ("query.bibliographic", query),
+            ("rows", &rows.to_string()),
+            ("select", "DOI,title,author,issued,container-title,type"),
+        ])
+        .send()
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| net_err("Crossref search failed", e))
+        .and_then(|r| {
+            r.text()
+                .map_err(|e| net_err("could not read Crossref reply", e))
+        })
+        .and_then(|body| parse_crossref_items(&body));
+    let openlibrary = client
+        .get("https://openlibrary.org/search.json")
+        .query(&[
+            ("q", query),
+            ("limit", &rows.to_string()),
+            (
+                "fields",
+                "title,author_name,first_publish_year,isbn,publisher",
+            ),
+        ])
+        .send()
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| net_err("OpenLibrary search failed", e))
+        .and_then(|r| {
+            r.text()
+                .map_err(|e| net_err("could not read OpenLibrary reply", e))
+        })
+        .and_then(|body| parse_openlibrary_docs(&body));
+
+    match (crossref, openlibrary) {
+        (Err(e), Err(_)) => Err(e),
+        (a, b) => Ok(a
+            .unwrap_or_default()
+            .into_iter()
+            .chain(b.unwrap_or_default())
+            .collect()),
+    }
+}
+
+fn search_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| net_err("could not build HTTP client", e))
+}
+
+/// Parse Crossref's `/works` reply into candidates. Items without a DOI or title are dropped.
+pub fn parse_crossref_items(json: &str) -> Result<Vec<Candidate>> {
+    let root: serde_json::Value = serde_json::from_str(json).map_err(|e| BibError::Import {
+        message: format!("unreadable Crossref reply: {e}"),
+    })?;
+    let items = root["message"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    Ok(items
+        .iter()
+        .filter_map(|item| {
+            let doi = item["DOI"].as_str()?.trim().to_string();
+            let title = plain_text(item["title"].as_array()?.first()?.as_str()?);
+            if doi.is_empty() || title.is_empty() {
+                return None;
+            }
+            let authors = item["author"]
+                .as_array()
+                .map(|people| {
+                    people
+                        .iter()
+                        .filter_map(|p| {
+                            match (
+                                p["family"].as_str(),
+                                p["given"].as_str(),
+                                p["name"].as_str(),
+                            ) {
+                                (Some(f), Some(g), _) => Some(format!("{f}, {g}")),
+                                (Some(f), None, _) => Some(f.to_string()),
+                                (None, _, Some(n)) => Some(n.to_string()),
+                                _ => None,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let year = item["issued"]["date-parts"][0][0]
+                .as_i64()
+                .map(|y| y.to_string())
+                .unwrap_or_default();
+            let container = item["container-title"]
+                .as_array()
+                .and_then(|c| c.first())
+                .and_then(|c| c.as_str())
+                .map(plain_text)
+                .unwrap_or_default();
+            Some(Candidate {
+                id: CandidateId::Doi(doi),
+                title,
+                authors,
+                year,
+                container,
+                kind: crossref_kind(item["type"].as_str().unwrap_or("")).to_string(),
+            })
+        })
+        .collect())
+}
+
+fn crossref_kind(t: &str) -> &'static str {
+    match t {
+        "journal-article" => "Article",
+        "book-chapter" | "book-section" | "reference-entry" => "Chapter",
+        "book" | "monograph" | "edited-book" | "reference-book" => "Book",
+        "proceedings-article" => "Conference paper",
+        "posted-content" => "Preprint",
+        "dissertation" => "Thesis",
+        "report" => "Report",
+        _ => "Work",
+    }
+}
+
+/// Parse OpenLibrary's `search.json` reply into book candidates, each identified by an ISBN
+/// (ISBN-13 preferred). Works with no usable ISBN are dropped, since there'd be nothing to
+/// fetch the full record by.
+pub fn parse_openlibrary_docs(json: &str) -> Result<Vec<Candidate>> {
+    let root: serde_json::Value = serde_json::from_str(json).map_err(|e| BibError::Import {
+        message: format!("unreadable OpenLibrary reply: {e}"),
+    })?;
+    let docs = root["docs"].as_array().cloned().unwrap_or_default();
+    Ok(docs
+        .iter()
+        .filter_map(|doc| {
+            let title = plain_text(doc["title"].as_str()?);
+            let isbns: Vec<&str> = doc["isbn"]
+                .as_array()?
+                .iter()
+                .filter_map(|i| i.as_str())
+                .collect();
+            let isbn = isbns
+                .iter()
+                .find(|i| i.len() == 13)
+                .or_else(|| isbns.first())?
+                .to_string();
+            if title.is_empty() {
+                return None;
+            }
+            Some(Candidate {
+                id: CandidateId::Isbn(isbn),
+                title,
+                authors: doc["author_name"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|n| n.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                year: doc["first_publish_year"]
+                    .as_i64()
+                    .map(|y| y.to_string())
+                    .unwrap_or_default(),
+                container: String::new(),
+                kind: "Book".to_string(),
+            })
+        })
+        .collect())
+}
+
+/// Titles come back with inline markup (`<i>Kenosis</i>`, `&amp;`): reduce to plain text.
+fn plain_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    let out = out
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'");
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 // --- ISBN via OpenLibrary ---
 
 #[derive(Serialize)]
@@ -935,5 +1183,122 @@ mod tests {
             Some("2007".to_string())
         );
         assert_eq!(openlibrary_date_to_hayagriva("no date here"), None);
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    const CROSSREF: &str = r#"{
+      "status": "ok",
+      "message": { "items": [
+        { "DOI": "10.2307/1234", "type": "journal-article",
+          "title": ["Black Theology and <i>Black</i> Power &amp; the Church"],
+          "author": [ {"given": "James H.", "family": "Cone"}, {"family": "Smith"} ],
+          "issued": {"date-parts": [[1970, 3]]},
+          "container-title": ["Christianity and Crisis"] },
+        { "DOI": "10.1000/org", "type": "report",
+          "title": ["A Report"], "author": [ {"name": "World Council of Churches"} ],
+          "issued": {"date-parts": [[null]]} },
+        { "DOI": "10.1000/untitled", "type": "journal-article", "title": [] },
+        { "title": ["No DOI"] },
+        { "DOI": "10.1000/chapter", "type": "book-chapter", "title": ["On Kenosis"],
+          "author": [ {"given": "A", "family": "One"}, {"given": "B", "family": "Two"},
+                      {"given": "C", "family": "Three"}, {"given": "D", "family": "Four"} ],
+          "container-title": ["Process Theology Reader"] }
+      ] }
+    }"#;
+
+    const OPENLIBRARY: &str = r#"{ "numFound": 3, "docs": [
+        { "title": "A Black Theology of Liberation", "author_name": ["James H. Cone"],
+          "first_publish_year": 1970, "isbn": ["0883441039", "9780883441039", "9781570752526"] },
+        { "title": "Only Ten", "isbn": ["0140449132"] },
+        { "title": "No ISBN at all", "author_name": ["Nobody"] }
+    ] }"#;
+
+    #[test]
+    fn crossref_items_become_candidates() {
+        let found = parse_crossref_items(CROSSREF).unwrap();
+        let titles: Vec<_> = found.iter().map(|c| c.title.as_str()).collect();
+        // The untitled and DOI-less items are dropped.
+        assert_eq!(
+            titles,
+            [
+                "Black Theology and Black Power & the Church",
+                "A Report",
+                "On Kenosis"
+            ]
+        );
+        let first = &found[0];
+        assert_eq!(first.id, CandidateId::Doi("10.2307/1234".into()));
+        assert_eq!(first.authors, ["Cone, James H.", "Smith"]);
+        assert_eq!(first.year, "1970");
+        assert_eq!(first.container, "Christianity and Crisis");
+        assert_eq!(first.kind, "Article");
+        assert_eq!(
+            first.byline(),
+            "Cone, James H.; Smith · 1970 · Christianity and Crisis"
+        );
+    }
+
+    #[test]
+    fn sparse_and_unusual_items_do_not_break_parsing() {
+        let found = parse_crossref_items(CROSSREF).unwrap();
+        let report = &found[1];
+        assert_eq!(report.authors, ["World Council of Churches"]);
+        assert_eq!(report.year, "", "a null year is no year");
+        assert_eq!(report.byline(), "World Council of Churches");
+        assert_eq!(report.kind, "Report");
+        assert_eq!(found[2].kind, "Chapter");
+        assert_eq!(crossref_kind("dataset"), "Work");
+        assert_eq!(crossref_kind(""), "Work");
+    }
+
+    #[test]
+    fn a_long_author_list_is_abbreviated() {
+        let chapter = &parse_crossref_items(CROSSREF).unwrap()[2];
+        assert_eq!(chapter.authors.len(), 4);
+        assert_eq!(
+            chapter.byline(),
+            "One, A; Two, B; Three, C et al. · Process Theology Reader"
+        );
+    }
+
+    #[test]
+    fn openlibrary_docs_become_book_candidates_identified_by_isbn() {
+        let found = parse_openlibrary_docs(OPENLIBRARY).unwrap();
+        assert_eq!(found.len(), 2, "the work with no ISBN is dropped");
+        // ISBN-13 is preferred over the first-listed ISBN-10.
+        assert_eq!(found[0].id, CandidateId::Isbn("9780883441039".into()));
+        assert_eq!(found[0].kind, "Book");
+        assert_eq!(found[0].byline(), "James H. Cone · 1970");
+        // With only an ISBN-10 available, that is used.
+        assert_eq!(found[1].id, CandidateId::Isbn("0140449132".into()));
+    }
+
+    #[test]
+    fn replies_that_are_empty_or_not_json() {
+        assert!(parse_crossref_items(r#"{"message":{"items":[]}}"#)
+            .unwrap()
+            .is_empty());
+        assert!(parse_crossref_items("{}").unwrap().is_empty());
+        assert!(parse_crossref_items("<html>rate limited</html>").is_err());
+        assert!(parse_openlibrary_docs(r#"{"docs":[]}"#).unwrap().is_empty());
+        assert!(parse_openlibrary_docs("nope").is_err());
+    }
+
+    #[test]
+    fn titles_lose_markup_and_entities() {
+        assert_eq!(
+            plain_text("<i>Kenosis</i> &amp;  <b>Self</b>\n gift"),
+            "Kenosis & Self gift"
+        );
+        assert_eq!(plain_text("a &lt; b"), "a < b");
+    }
+
+    #[test]
+    fn an_empty_query_is_no_search_and_no_network() {
+        assert!(search_works("   ", 5).unwrap().is_empty());
     }
 }
