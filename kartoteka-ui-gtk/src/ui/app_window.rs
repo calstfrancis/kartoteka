@@ -9432,23 +9432,19 @@ fn show_export_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             toast(widgets, "Open a library first");
             return;
         };
-        let slugs = library.collection_slugs().unwrap_or_default();
-        if slugs.is_empty() {
-            toast(
-                widgets,
-                "No collections to export (import from Zotero creates them)",
-            );
-            return;
-        }
-        let names: Vec<String> = slugs
-            .iter()
-            .map(|sl| {
+        // "All entries" always comes first (an empty slug), so a library with no collections
+        // yet — every new user's — can still export; each collection follows.
+        let mut slugs = vec![String::new()];
+        let mut names = vec!["All entries".to_string()];
+        for slug in library.collection_slugs().unwrap_or_default() {
+            names.push(
                 library
-                    .load_collection(sl)
+                    .load_collection(&slug)
                     .map(|c| c.name)
-                    .unwrap_or_else(|_| sl.clone())
-            })
-            .collect();
+                    .unwrap_or_else(|_| slug.clone()),
+            );
+            slugs.push(slug);
+        }
         (slugs, names)
     };
 
@@ -9478,8 +9474,17 @@ fn show_export_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
     let collection = gtk4::DropDown::from_strings(&name_refs);
-    let style =
-        gtk4::DropDown::from_strings(&["sbl", "chicago-notes", "chicago-author-date", "apa"]);
+    // Every style Kartoteka can render, the humanities ones first; type in the open list to
+    // jump to one.
+    let style_choices = Rc::new(fond_bib::style_choices());
+    let style_labels: Vec<&str> = style_choices.iter().map(|c| c.label.as_str()).collect();
+    let style = gtk4::DropDown::from_strings(&style_labels);
+    style.set_enable_search(true);
+    style.set_expression(Some(gtk4::PropertyExpression::new(
+        gtk4::StringObject::static_type(),
+        None::<&gtk4::Expression>,
+        "string",
+    )));
     let format = gtk4::DropDown::from_strings(&["Reference list (text)", "Annotated (.typ)"]);
     content.append(&labeled("Collection", &collection));
     content.append(&labeled("Style", &style));
@@ -9497,12 +9502,14 @@ fn show_export_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         let dialog = dialog.clone();
         export.connect_clicked(move |_| {
             let slug = slugs[collection.selected() as usize].clone();
-            let style_name = match style.selected() {
-                0 => "sbl",
-                1 => "chicago-notes",
-                2 => "chicago-author-date",
-                _ => "apa",
+            let whole_library = slug.is_empty();
+            let Some(style_name) = style_choices
+                .get(style.selected() as usize)
+                .map(|c| c.name.clone())
+            else {
+                return;
             };
+            let style_name = style_name.as_str();
             let annotated = format.selected() == 1;
 
             // Render synchronously (fast for a collection).
@@ -9519,18 +9526,24 @@ fn show_export_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                         return;
                     }
                 };
-                if annotated {
+                let plain = fond_bib::BufWriteFormat::Plain;
+                if annotated && whole_library {
+                    library.annotated_bibliography_typ_for_all(&csl)
+                } else if annotated {
                     library.annotated_bibliography_typ(&slug, &csl)
                 } else {
-                    library
-                        .bibliography_for_collection(&slug, &csl, fond_bib::BufWriteFormat::Plain)
-                        .map(|entries| {
-                            entries
-                                .iter()
-                                .map(|r| r.text.clone())
-                                .collect::<Vec<_>>()
-                                .join("\n\n")
-                        })
+                    let list = if whole_library {
+                        library.bibliography_for_all(&csl, plain)
+                    } else {
+                        library.bibliography_for_collection(&slug, &csl, plain)
+                    };
+                    list.map(|entries| {
+                        entries
+                            .iter()
+                            .map(|r| r.text.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n\n")
+                    })
                 }
             };
             let content = match rendered {
@@ -9541,7 +9554,15 @@ fn show_export_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                 }
             };
 
-            let default_name = format!("{slug}.{}", if annotated { "typ" } else { "txt" });
+            let default_name = format!(
+                "{}.{}",
+                if whole_library {
+                    "library"
+                } else {
+                    slug.as_str()
+                },
+                if annotated { "typ" } else { "txt" }
+            );
             let save = gtk4::FileDialog::builder()
                 .title("Save bibliography")
                 .initial_name(&default_name)

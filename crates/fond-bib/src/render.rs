@@ -16,16 +16,79 @@ const SBL_CSL: &str = include_str!("../assets/styles/sbl-fullnote-bibliography.c
 
 /// Resolve a style name to a CSL style.
 ///
-/// Recognised friendly names: `sbl`, `chicago-notes`, `chicago-author-date`. Any other
-/// name is looked up in Hayagriva's style archive by Hayagriva name or CSL id, so the full
-/// bundled catalogue is reachable (e.g. `apa`, `mla`, `ieee`).
+/// Recognised friendly names: `sbl`, `chicago-notes`, `chicago-author-date`, `turabian`
+/// (the 8th-edition full-note style; `turabian-author-date` is the author-date one). Any
+/// other name is looked up in Hayagriva's style archive by Hayagriva name or CSL id, so the
+/// full bundled catalogue is reachable (e.g. `apa`, `mla`, `ieee`) — see [`style_choices`].
 pub fn resolve_style(name: &str) -> Result<IndependentStyle> {
     match name.to_ascii_lowercase().as_str() {
         "sbl" | "society-of-biblical-literature" => style_from_csl(SBL_CSL),
         "chicago-notes" | "chicago" => archived("chicago-notes"),
         "chicago-author-date" => archived("chicago-author-date"),
+        "turabian" | "turabian-notes" | "turabian-fullnote" => archived("turabian-fullnote-8"),
         other => archived(other),
     }
+}
+
+/// A citation style a user can pick: the short `name` [`resolve_style`] accepts and a
+/// human-readable `label`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleChoice {
+    pub name: String,
+    pub label: String,
+}
+
+/// Styles worth offering first, in this order — the ones a humanities writer reaches for.
+/// `(name, label)`; every name must resolve (checked by a test).
+const FEATURED_STYLES: &[(&str, &str)] = &[
+    ("sbl", "SBL Handbook of Style (notes)"),
+    ("chicago-notes", "Chicago (notes)"),
+    ("chicago-author-date", "Chicago (author-date)"),
+    ("turabian-fullnote-8", "Turabian (notes), 8th ed."),
+    ("turabian-author-date", "Turabian (author-date)"),
+    ("apa", "APA"),
+    ("mla", "MLA"),
+];
+
+/// Every style Kartoteka can render with: the featured humanities styles first, then the
+/// whole bundled catalogue alphabetically by label. Names are what [`resolve_style`] and the
+/// CLI's `--style` accept.
+pub fn style_choices() -> Vec<StyleChoice> {
+    let featured: Vec<StyleChoice> = FEATURED_STYLES
+        .iter()
+        .map(|(name, label)| StyleChoice {
+            name: (*name).to_string(),
+            label: (*label).to_string(),
+        })
+        .collect();
+    let featured_ids: Vec<&str> = featured.iter().map(|c| c.name.as_str()).collect();
+
+    let mut rest: Vec<StyleChoice> = ArchivedStyle::all()
+        .iter()
+        .filter_map(|style| {
+            let name = *style.names().first()?;
+            (!featured_ids.contains(&name)).then(|| StyleChoice {
+                name: name.to_string(),
+                label: style.display_name().to_string(),
+            })
+        })
+        .collect();
+    rest.sort_by_key(|c| c.label.to_lowercase());
+    rest.dedup_by(|a, b| a.name == b.name);
+
+    featured.into_iter().chain(rest).collect()
+}
+
+/// Styles whose name or label contains `needle` (case-insensitive), for "did you mean…".
+pub fn suggest_styles(needle: &str) -> Vec<StyleChoice> {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    style_choices()
+        .into_iter()
+        .filter(|c| c.name.contains(&needle) || c.label.to_lowercase().contains(&needle))
+        .collect()
 }
 
 /// Parse a CSL style from XML, requiring an independent style.
@@ -46,11 +109,20 @@ fn archived(id_or_name: &str) -> Result<IndependentStyle> {
     let archived = ArchivedStyle::by_name(id_or_name)
         .or_else(|| ArchivedStyle::by_id(id_or_name))
         .or_else(|| ArchivedStyle::by_id(&format!("http://www.zotero.org/styles/{id_or_name}")))
-        .ok_or_else(|| BibError::Import {
-            message: format!(
-                "unknown style '{id_or_name}' (try 'sbl', 'chicago-notes', or a CSL id / \
-                 --style-file)"
-            ),
+        .ok_or_else(|| {
+            let close: Vec<String> = suggest_styles(id_or_name)
+                .into_iter()
+                .take(5)
+                .map(|c| c.name)
+                .collect();
+            let hint = if close.is_empty() {
+                "run `kartoteka styles` for the full list, or pass --style-file".to_string()
+            } else {
+                format!("did you mean: {}?", close.join(", "))
+            };
+            BibError::Import {
+                message: format!("unknown style '{id_or_name}' ({hint})"),
+            }
         })?;
     match archived.get() {
         Style::Independent(style) => Ok(style),
@@ -137,20 +209,32 @@ fn typst_escape(s: &str) -> String {
 }
 
 impl crate::library::Library {
-    /// Load a collection's entries (in collection order), skipping any whose entry file is
+    /// Load the entries for `keys` (in the order given), skipping any whose entry file is
     /// missing. Returns the loaded entries plus the list of missing keys.
-    fn collection_entries(&self, slug: &str) -> Result<(String, Vec<Entry>, Vec<String>)> {
-        let collection = self.load_collection(slug)?;
+    fn entries_for_keys(&self, keys: &[String]) -> Result<(Vec<Entry>, Vec<String>)> {
         let mut entries = Vec::new();
         let mut missing = Vec::new();
-        for key in &collection.keys {
+        for key in keys {
             if self.entry_path(key).exists() {
                 entries.push(self.load_entry(key)?.entry);
             } else {
                 missing.push(key.clone());
             }
         }
-        Ok((collection.name, entries, missing))
+        Ok((entries, missing))
+    }
+
+    /// Render a reference list for the given citation keys (CSL sort order). Keys with no
+    /// entry file are skipped.
+    pub fn bibliography_for_keys(
+        &self,
+        keys: &[String],
+        style: &IndependentStyle,
+        format: BufWriteFormat,
+    ) -> Result<Vec<RenderedEntry>> {
+        let (entries, _missing) = self.entries_for_keys(keys)?;
+        let refs: Vec<&Entry> = entries.iter().collect();
+        render_bibliography(&refs, style, format)
     }
 
     /// Render a collection as a formatted reference list (CSL sort order).
@@ -160,9 +244,17 @@ impl crate::library::Library {
         style: &IndependentStyle,
         format: BufWriteFormat,
     ) -> Result<Vec<RenderedEntry>> {
-        let (_name, entries, _missing) = self.collection_entries(slug)?;
-        let refs: Vec<&Entry> = entries.iter().collect();
-        render_bibliography(&refs, style, format)
+        let collection = self.load_collection(slug)?;
+        self.bibliography_for_keys(&collection.keys, style, format)
+    }
+
+    /// Render the whole library as a formatted reference list (CSL sort order).
+    pub fn bibliography_for_all(
+        &self,
+        style: &IndependentStyle,
+        format: BufWriteFormat,
+    ) -> Result<Vec<RenderedEntry>> {
+        self.bibliography_for_keys(&self.keys_sorted()?, style, format)
     }
 
     /// Build an annotated bibliography as a Typst document: each rendered reference paired
@@ -172,21 +264,35 @@ impl crate::library::Library {
         slug: &str,
         style: &IndependentStyle,
     ) -> Result<String> {
-        let (name, entries, _missing) = self.collection_entries(slug)?;
-        let refs: Vec<&Entry> = entries.iter().collect();
-        let rendered = render_bibliography(&refs, style, BufWriteFormat::Plain)?;
+        let collection = self.load_collection(slug)?;
+        self.annotated_bibliography_typ_for_keys(&collection.name, &collection.keys, style)
+    }
 
-        // Map key -> rendered text so we can emit in the collection's (not CSL's) order.
+    /// Build an annotated bibliography as a Typst document for the whole library, in citation-key
+    /// order.
+    pub fn annotated_bibliography_typ_for_all(&self, style: &IndependentStyle) -> Result<String> {
+        self.annotated_bibliography_typ_for_keys("All entries", &self.keys_sorted()?, style)
+    }
+
+    /// Annotated bibliography for `keys`, in the order given, headed by `title`.
+    pub fn annotated_bibliography_typ_for_keys(
+        &self,
+        title: &str,
+        keys: &[String],
+        style: &IndependentStyle,
+    ) -> Result<String> {
+        let rendered = self.bibliography_for_keys(keys, style, BufWriteFormat::Plain)?;
+
+        // Map key -> rendered text so we can emit in the caller's (not CSL's) order.
         let by_key: std::collections::HashMap<&str, &str> = rendered
             .iter()
             .map(|r| (r.key.as_str(), r.text.as_str()))
             .collect();
 
-        let collection = self.load_collection(slug)?;
         let mut out = String::new();
-        out.push_str(&format!("= Annotated Bibliography — {}\n\n", name));
+        out.push_str(&format!("= Annotated Bibliography — {title}\n\n"));
 
-        for key in &collection.keys {
+        for key in keys {
             let Some(text) = by_key.get(key.as_str()) else {
                 continue; // missing entry; skipped (fsck reports dangling refs)
             };

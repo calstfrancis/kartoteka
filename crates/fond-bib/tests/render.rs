@@ -96,3 +96,94 @@ fn annotated_typ_pairs_entries_with_notes_in_collection_order() {
     let cone = typ.find("Cone").unwrap();
     assert!(berd < cone, "annotated output not in collection order");
 }
+
+#[test]
+fn every_featured_style_resolves_and_renders() {
+    let (_dir, lib) = seed();
+    let choices = fond_bib::style_choices();
+    for name in [
+        "sbl",
+        "chicago-notes",
+        "chicago-author-date",
+        "turabian-fullnote-8",
+        "turabian-author-date",
+        "apa",
+        "mla",
+    ] {
+        assert!(
+            choices.iter().any(|c| c.name == name),
+            "{name} missing from the picker"
+        );
+        let style = resolve_style(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let out = lib
+            .bibliography_for_all(&style, BufWriteFormat::Plain)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(out.len(), 2, "{name}");
+    }
+}
+
+#[test]
+fn style_choices_lead_with_the_featured_humanities_styles() {
+    let choices = fond_bib::style_choices();
+    assert_eq!(choices[0].name, "sbl");
+    assert_eq!(choices[3].name, "turabian-fullnote-8");
+    // The whole bundled catalogue follows, each name unique and resolvable.
+    assert!(choices.len() > 50, "only {} styles", choices.len());
+    let mut names: Vec<_> = choices.iter().map(|c| c.name.as_str()).collect();
+    names.sort_unstable();
+    let before = names.len();
+    names.dedup();
+    assert_eq!(before, names.len(), "duplicate style names");
+    for c in choices.iter().take(40) {
+        assert!(
+            resolve_style(&c.name).is_ok(),
+            "{} does not resolve",
+            c.name
+        );
+    }
+}
+
+#[test]
+fn turabian_is_a_known_alias_and_unknown_names_get_suggestions() {
+    assert!(resolve_style("turabian").is_ok());
+    let err = resolve_style("turabin").unwrap_err().to_string();
+    assert!(err.contains("styles"), "{err}");
+    let err = resolve_style("harvard").unwrap_err().to_string();
+    assert!(err.contains("did you mean"), "{err}");
+    assert!(err.contains("harvard"), "{err}");
+    assert!(!fond_bib::suggest_styles("turabian").is_empty());
+    assert!(fond_bib::suggest_styles("").is_empty());
+}
+
+#[test]
+fn the_whole_library_renders_without_any_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(dir.path()).unwrap();
+    fs::write(lib.entry_path("berdyaev1937destiny"), BERDYAEV).unwrap();
+    fs::write(lib.entry_path("cone1970black"), CONE).unwrap();
+    assert!(lib.collection_slugs().unwrap().is_empty());
+
+    let style = resolve_style("sbl").unwrap();
+    let rendered = lib
+        .bibliography_for_all(&style, BufWriteFormat::Plain)
+        .unwrap();
+    assert_eq!(rendered.len(), 2);
+
+    let typ = lib.annotated_bibliography_typ_for_all(&style).unwrap();
+    assert!(typ.starts_with("= Annotated Bibliography — All entries"));
+    assert!(typ.contains("Berdyaev") && typ.contains("Cone"));
+}
+
+#[test]
+fn an_empty_library_renders_an_empty_list_not_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(dir.path()).unwrap();
+    let style = resolve_style("apa").unwrap();
+    let rendered = lib.bibliography_for_all(&style, BufWriteFormat::Plain);
+    // Either shape is acceptable to callers as long as it does not panic; pin what happens so a
+    // change is noticed.
+    match rendered {
+        Ok(items) => assert!(items.is_empty()),
+        Err(e) => panic!("empty library should render an empty list: {e}"),
+    }
+}

@@ -44,7 +44,9 @@ pub use note::{
 };
 pub use project::Project;
 pub use relation::{Predicate, Relation, TargetKind};
-pub use render::{resolve_style, style_from_csl, RenderedEntry};
+pub use render::{
+    resolve_style, style_choices, style_from_csl, suggest_styles, RenderedEntry, StyleChoice,
+};
 
 // Re-export the CSL output format and style type so the CLI need not depend on
 // `hayagriva` directly.

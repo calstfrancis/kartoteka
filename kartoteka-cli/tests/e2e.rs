@@ -262,3 +262,49 @@ fn commit_records_deletions() {
         "deleted entry still in the commit"
     );
 }
+
+#[test]
+fn bib_all_works_in_a_library_with_no_collections() {
+    let dir = seeded();
+    let lib = dir.path();
+
+    let out = kartoteka(lib, &["bib", "--all", "--style", "turabian"]);
+    assert!(out.status.success(), "bib --all failed: {out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("The Destiny of Man"), "{text}");
+
+    let out = kartoteka(lib, &["annotated-bib", "--all"]);
+    assert!(out.status.success(), "annotated-bib --all failed: {out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("All entries"));
+
+    // A collection and --all together, or neither, is a usage error (exit 2), not a guess.
+    assert_eq!(
+        kartoteka(lib, &["bib", "x", "--all"]).status.code(),
+        Some(2)
+    );
+    assert_eq!(kartoteka(lib, &["bib"]).status.code(), Some(2));
+}
+
+#[test]
+fn styles_lists_and_filters_the_catalogue() {
+    let dir = seeded();
+    let lib = dir.path();
+
+    let all = kartoteka(lib, &["styles"]);
+    assert!(all.status.success());
+    let text = String::from_utf8_lossy(&all.stdout);
+    assert!(text.lines().next().unwrap().starts_with("sbl"), "{text}");
+    assert!(text.contains("turabian-fullnote-8"), "{text}");
+
+    let turabian = kartoteka(lib, &["styles", "turabian"]);
+    assert!(turabian.status.success());
+    assert_eq!(String::from_utf8_lossy(&turabian.stdout).lines().count(), 2);
+
+    // Nothing matching is a failure exit, like `search`, so a script can branch on it.
+    assert_eq!(
+        kartoteka(lib, &["styles", "no-such-style-xyz"])
+            .status
+            .code(),
+        Some(1)
+    );
+}

@@ -131,8 +131,13 @@ enum Command {
     /// Render a collection as a formatted reference list.
     Bib {
         /// Collection slug (the collections/<slug>.yml basename).
-        collection: String,
-        /// Style name: sbl, chicago-notes, chicago-author-date, or a CSL id (e.g. apa).
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        collection: Option<String>,
+        /// Render every entry in the library instead of one collection.
+        #[arg(long)]
+        all: bool,
+        /// Style name (see `kartoteka styles`): sbl, chicago-notes, turabian, apa, … or a CSL
+        /// id.
         #[arg(long, default_value = "sbl")]
         style: String,
         /// Use a CSL style file instead of a built-in / archived style.
@@ -142,11 +147,20 @@ enum Command {
         #[arg(long)]
         html: bool,
     },
+    /// List the citation styles `--style` accepts, optionally only those matching FILTER.
+    Styles {
+        /// Only show styles whose name or title contains this text (e.g. `turabian`).
+        filter: Option<String>,
+    },
     /// Emit a Typst annotated bibliography: each rendered reference paired with its note.
     AnnotatedBib {
         /// Collection slug.
-        collection: String,
-        /// Style name or CSL id (see `bib`).
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        collection: Option<String>,
+        /// Use every entry in the library instead of one collection.
+        #[arg(long)]
+        all: bool,
+        /// Style name or CSL id (see `kartoteka styles`).
         #[arg(long, default_value = "sbl")]
         style: String,
         /// Use a CSL style file instead of a built-in / archived style.
@@ -506,6 +520,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
 
         Command::Bib {
             collection,
+            all,
             style,
             style_file,
             html,
@@ -517,15 +532,34 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             } else {
                 fond_bib::BufWriteFormat::Plain
             };
-            let rendered = library.bibliography_for_collection(&collection, &csl, format)?;
+            let rendered = match (&collection, all) {
+                (Some(slug), false) => library.bibliography_for_collection(slug, &csl, format)?,
+                _ => library.bibliography_for_all(&csl, format)?,
+            };
             for item in &rendered {
                 println!("{}\n", item.text);
             }
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Styles { filter } => {
+            let choices = match filter.as_deref() {
+                Some(f) => fond_bib::suggest_styles(f),
+                None => fond_bib::style_choices(),
+            };
+            if choices.is_empty() {
+                eprintln!("no style matches that");
+                return Ok(ExitCode::from(1));
+            }
+            for c in &choices {
+                println!("{:<42} {}", c.name, c.label);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::AnnotatedBib {
             collection,
+            all,
             style,
             style_file,
             output,
@@ -533,7 +567,10 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
         } => {
             let library = Library::open(&cli.library)?;
             let csl = load_style(&style, style_file.as_deref())?;
-            let typ = library.annotated_bibliography_typ(&collection, &csl)?;
+            let typ = match (&collection, all) {
+                (Some(slug), false) => library.annotated_bibliography_typ(slug, &csl)?,
+                _ => library.annotated_bibliography_typ_for_all(&csl)?,
+            };
             match output {
                 Some(path) => {
                     check_output(&path, force)?;
