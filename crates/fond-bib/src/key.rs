@@ -150,6 +150,58 @@ pub fn ascii_fold(s: &str) -> String {
     out
 }
 
+/// Fold text for *matching what someone types against what is stored*: lowercase, accents
+/// removed (`Žižek` → `zizek`), Cyrillic/Greek/Hebrew transliterated like citation keys are,
+/// and every run of punctuation or whitespace collapsed to one space so word boundaries survive
+/// (unlike [`ascii_fold`], which drops them). Characters with no Latin fold (CJK, …) are kept
+/// as themselves, lowercased, so they stay searchable.
+pub fn search_fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut pending_space = false;
+    let push = |out: &mut String, text: &str, pending_space: &mut bool| {
+        if *pending_space && !out.is_empty() {
+            out.push(' ');
+        }
+        *pending_space = false;
+        out.push_str(text);
+    };
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            push(
+                &mut out,
+                &ch.to_ascii_lowercase().to_string(),
+                &mut pending_space,
+            );
+        } else if ch.is_ascii() || ch.is_whitespace() {
+            pending_space = true;
+        } else {
+            let folded = ascii_fold(&ch.to_string());
+            if folded.is_empty() {
+                let lower: String = ch.to_lowercase().collect();
+                if ch.is_alphanumeric() {
+                    push(&mut out, &lower, &mut pending_space);
+                } else {
+                    pending_space = true;
+                }
+            } else {
+                push(&mut out, &folded, &mut pending_space);
+            }
+        }
+    }
+    out
+}
+
+/// Whether every word the user typed (`query`) appears somewhere in `haystack`, ignoring case
+/// and accents and word order — so `zizek` finds `Žižek, Slavoj`, `black power` finds
+/// `Black Theology and Black Power`, and a half-typed `dosto` finds `Dostoevsky`. An empty
+/// query matches everything. `haystack` should already be [`search_fold`]ed (fold once per
+/// entry, not once per keystroke).
+pub fn matches_all_words(haystack_folded: &str, query: &str) -> bool {
+    search_fold(query)
+        .split_whitespace()
+        .all(|word| haystack_folded.contains(word))
+}
+
 /// The first significant word of a title, already ASCII-folded. Skips a leading article.
 fn first_significant_word(title: &str) -> Option<String> {
     let words: Vec<&str> = title.split_whitespace().collect();
@@ -379,5 +431,41 @@ mod tests {
         assert_eq!(nth_suffix(1), "b");
         assert_eq!(nth_suffix(25), "z");
         assert_eq!(nth_suffix(26), "bb");
+    }
+
+    #[test]
+    fn search_fold_ignores_case_accents_and_punctuation_but_keeps_word_breaks() {
+        assert_eq!(search_fold("Žižek, Slavoj"), "zizek slavoj");
+        assert_eq!(search_fold("  The  Destiny-of Man! "), "the destiny of man");
+        assert_eq!(search_fold("Gutiérrez"), "gutierrez");
+        assert_eq!(search_fold(""), "");
+        // Non-Latin scripts without a fold stay searchable as themselves.
+        assert_eq!(search_fold("道德經 Daodejing"), "道德經 daodejing");
+        // Cyrillic is transliterated the same way citation keys are.
+        assert_eq!(search_fold("Бердяев"), ascii_fold("Бердяев"));
+    }
+
+    #[test]
+    fn typed_words_match_in_any_order_and_by_prefix() {
+        let hay = search_fold("Black Theology and Black Power Cone, James H. 1970 liberation");
+        for q in [
+            "black power",
+            "power black",
+            "cone 1970",
+            "libera",
+            "THEOLOGY",
+            "",
+            "  ",
+        ] {
+            assert!(matches_all_words(&hay, q), "{q:?} should match");
+        }
+        for q in ["black destiny", "cone 1971", "zizek"] {
+            assert!(!matches_all_words(&hay, q), "{q:?} should not match");
+        }
+        assert!(matches_all_words(&search_fold("Žižek, Slavoj"), "zizek"));
+        assert!(matches_all_words(
+            &search_fold("Dostoevsky, Fyodor"),
+            "dosto"
+        ));
     }
 }

@@ -2,6 +2,12 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased]
+
+- **Search as you type ignores accents and word order.** `zizek` finds Žižek, and `power black`
+  finds "Black Theology and Black Power"; each word you type just has to appear somewhere in the
+  title, author, key, tags or year. (Quoted-field searches like `author:cone` are unchanged.)
+
 ## [0.19.0] "Front Desk" — 2026-10-03 — One Add box, a shorter menu, citing with pages
 
 - **Fixed: "Used in" missed citations written as `#cite(<key>)`.** Only `@key` was counted, so

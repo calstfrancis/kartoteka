@@ -48,8 +48,9 @@ GitHub-backup disclosure · EPUB/folder drop · Cite with a page (`fond_bib::cit
 
 ## 3. Search (M)
 
-- [ ] Half-typed words and accent-insensitive across *all* fields, not just the title/author
-      fallback (Zerkalo already does this).
+- [x] Typed-so-far filter: accent-insensitive, any word order, prefix matches, across title,
+      author, key, tags and year (`fond_bib::key::search_fold`). Still to do: the same for text
+      inside notes and PDFs (that comes from the full-text index, which matches whole words only).
 - [ ] Show where a hit was found: "PDF p. 14: …context…", note, annotation.
 - [ ] Debounce the live filter and stop rebuilding the detail pane on every keystroke.
 

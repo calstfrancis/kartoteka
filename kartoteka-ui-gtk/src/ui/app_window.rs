@@ -366,8 +366,9 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     search.add_css_class("fond-search");
     search.set_placeholder_text(Some("Search your library"));
     search.set_tooltip_text(Some(
-        "Searches titles, authors, and keys by default. Narrow it down with author:, title:, \
-         tag:, type:, or year: — e.g. author:berdyaev year:1937",
+        "Type any words from a title, author, key, tag or year — accents and word order don't \
+         matter. Narrow it down with author:, title:, tag:, type:, or year: — e.g. \
+         author:berdyaev year:1937",
     ));
     search.set_margin_top(6);
     search.set_margin_bottom(6);
@@ -7692,15 +7693,19 @@ fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             base
         } else {
             let base_set: std::collections::HashSet<usize> = base.iter().copied().collect();
+            // Typed-so-far matching: every word typed must appear somewhere in the entry's
+            // title, author, key, tags or year, ignoring case and accents and in any order —
+            // `zizek` finds Žižek, `black power` finds "Black Theology and Black Power".
             let substring_matches = |q: &str| -> Vec<usize> {
-                let q = q.to_lowercase();
                 s.entries
                     .iter()
                     .enumerate()
                     .filter(|(_, e)| {
-                        e.title.to_lowercase().contains(&q)
-                            || e.author.to_lowercase().contains(&q)
-                            || e.key.to_lowercase().contains(&q)
+                        let haystack = fond_bib::key::search_fold(&format!(
+                            "{} {} {} {} {}",
+                            e.title, e.author, e.key, e.tags, e.year
+                        ));
+                        fond_bib::key::matches_all_words(&haystack, q)
                     })
                     .map(|(i, _)| i)
                     .collect()
