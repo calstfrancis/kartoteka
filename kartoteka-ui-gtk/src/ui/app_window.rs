@@ -2570,7 +2570,13 @@ fn build_entry_yaml(f: &NewItemFields) -> String {
 
 /// Copy a Typst citation (`@key`) for `key` to the clipboard.
 fn copy_citation(widgets: &Rc<Widgets>, key: &str) {
-    let citation = format!("@{key}");
+    copy_citation_at(widgets, key, None);
+}
+
+/// Copy a Typst citation for `key` to the clipboard, with `locator` (a page, range or other
+/// pinpoint) as its supplement when given: `@key[p. 12]`.
+fn copy_citation_at(widgets: &Rc<Widgets>, key: &str, locator: Option<&str>) {
+    let citation = fond_bib::cite::typst_citation(key, locator);
     widgets.window.clipboard().set_text(&citation);
     toast(widgets, &format!("Copied {citation}"));
 }
@@ -2617,6 +2623,13 @@ fn show_cite_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     search.set_placeholder_text(Some("Search to cite (@key → clipboard)"));
     search.set_width_chars(32);
     header.set_title_widget(Some(&search));
+    // Optional pinpoint: "12" → @key[p. 12], "12-14" → @key[pp. 12–14], "ch. 3" as typed.
+    let page = gtk4::Entry::builder()
+        .placeholder_text("Page (optional)")
+        .width_chars(13)
+        .tooltip_text("A page, page range or other pinpoint, e.g. 12, 12-14 or ch. 3")
+        .build();
+    header.pack_end(&page);
     view.add_top_bar(&header);
 
     let listbox = gtk4::ListBox::new();
@@ -2693,14 +2706,24 @@ fn show_cite_picker(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         });
     }
 
-    // Row-activate copies the citation.
+    // Row-activate copies the citation, with the page if one was typed.
     {
         let widgets = widgets.clone();
+        let page = page.clone();
         listbox.connect_row_activated(move |_, row| {
             let key = unsafe { row.data::<String>("cite-key") };
             if let Some(key) = key {
                 let key = unsafe { key.as_ref() };
-                copy_citation(&widgets, key);
+                copy_citation_at(&widgets, key, Some(page.text().as_str()));
+            }
+        });
+    }
+    // Enter in the page box copies too, so "search, Tab, 12, Enter" never needs the mouse.
+    {
+        let listbox = listbox.clone();
+        page.connect_activate(move |_| {
+            if let Some(row) = listbox.selected_row() {
+                row.activate();
             }
         });
     }

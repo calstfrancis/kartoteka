@@ -64,9 +64,10 @@ fix the first-run view. Not yet addressed.
 
 ## 3. Zerkalo and Pereplyot integration
 
-- **Locators.** The Cite picker copies only `@key`, and Zerkalo's citation panel inserts only
-  `@key`. Academics cite pages. Add an optional page field producing `@key[p. 12]`
-  (Typst `#cite(<key>, supplement: [p. 12])` for the long form).
+- **Locators.** The Cite picker copied only `@key`, and Zerkalo's citation panel inserts only
+  `@key`. Academics cite pages. **Kartoteka's Cite picker now has an optional Page box**
+  producing `@key[p. 12]` (logic in `fond_bib::cite::typst_citation`, so Zerkalo and Pereplyot can
+  reuse it). Still open: Zerkalo's own `@` popup and Pereplyot's "copy as quote".
 - **Quotes with citations.** Pereplyot is launched with `--key=` so it already knows the
   entry. Add "Copy as Typst quote" → `#quote(block: true)[…] @key[p. 12]` using the printed
   page label. `AnnotationSidecar::to_markdown` should gain a Typst sibling so highlights drop
@@ -110,7 +111,7 @@ fix the first-run view. Not yet addressed.
 1. **Days:** ✔ scanner fix, ✔ missing detail fields, ✔ export without collections and a full
    style list, ✔ backup disclosure, ✔ wider drop support, ✔ README refresh. Still open from this
    tier: the detail-pane width at the default window size.
-2. **Weeks:** unified Add box, menu consolidation, Backup status, locators in Cite,
-   Typst annotation export, vault discovery.
+2. **Weeks:** unified Add box, menu consolidation, Backup status, ✔ locators in Kartoteka's
+   Cite (Zerkalo and Pereplyot still to adopt), Typst annotation export, vault discovery.
 3. **Larger:** Zotero auto-import, "cited but unread" views, search snippets, forward-compatible
    parsing, the Windows question.
