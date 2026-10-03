@@ -107,9 +107,70 @@ impl Target {
     }
 }
 
-/// The result of a lookup that fetched a record: its text, and whether that is BibTeX (else
-/// Hayagriva YAML).
-type Fetched = (bool, String);
+/// What a lookup came back with, worked out off the main thread.
+enum Lookup {
+    /// Entries ready to add. `partial` when the full record couldn't be fetched and only the
+    /// search result's own details are being added.
+    Found {
+        entries: Vec<fond_bib::Entry>,
+        partial: bool,
+    },
+    /// Nothing could be fetched (offline, not found) — with the technical detail.
+    NotFound(String),
+    /// A record came back but couldn't be read.
+    Unreadable(fond_bib::BibError),
+}
+
+impl Lookup {
+    /// Fetch `target` and read it into entries. With the search result it was chosen from,
+    /// fill in whatever the fetched record left out, and add the result's own details if
+    /// fetching fails or reads nothing — the person already saw what they picked, so it is
+    /// never refused for missing a field the result showed.
+    fn run(target: &Target, candidate: Option<&Candidate>) -> Lookup {
+        use fond_bib::acquire;
+        let fetched = match target {
+            Target::Doi(doi) => acquire::fetch_doi_bibtex(doi).map(|s| (true, s)),
+            Target::Arxiv(id) => acquire::fetch_arxiv_bibtex(id).map(|s| (true, s)),
+            Target::Isbn(isbn) => acquire::fetch_isbn_yaml(isbn).map(|s| (false, s)),
+        };
+        let read = fetched.map(|(is_bibtex, text)| {
+            if is_bibtex {
+                fond_bib::entry::parse_bibtex(&text)
+            } else {
+                fond_bib::entry::parse_all(&text, std::path::Path::new("<lookup>"))
+            }
+        });
+        let Some(candidate) = candidate else {
+            return match read {
+                Ok(Ok(entries)) => Lookup::Found {
+                    entries,
+                    partial: false,
+                },
+                Ok(Err(e)) => Lookup::Unreadable(e),
+                Err(e) => Lookup::NotFound(e.to_string()),
+            };
+        };
+        if let Ok(Ok(mut entries)) = read {
+            if !entries.is_empty()
+                && entries
+                    .iter_mut()
+                    .all(|e| acquire::fill_from_candidate(e, candidate).is_ok())
+            {
+                return Lookup::Found {
+                    entries,
+                    partial: false,
+                };
+            }
+        }
+        match acquire::candidate_entry(candidate) {
+            Ok(entry) => Lookup::Found {
+                entries: vec![entry],
+                partial: true,
+            },
+            Err(e) => Lookup::Unreadable(e),
+        }
+    }
+}
 
 struct Ui {
     state: Rc<RefCell<AppState>>,
@@ -330,13 +391,9 @@ fn go(ui: &Rc<Ui>) {
     // With search results showing, Enter takes the highlighted one.
     if ui.results_scroll.is_visible() {
         if let Some(row) = ui.results.selected_row() {
-            let target = ui
-                .candidates
-                .borrow()
-                .get(row.index() as usize)
-                .map(Target::from_candidate);
-            if let Some(target) = target {
-                add_target(ui, target);
+            let candidate = ui.candidates.borrow().get(row.index() as usize).cloned();
+            if let Some(candidate) = candidate {
+                add_target(ui, Target::from_candidate(&candidate), Some(candidate));
                 return;
             }
         }
@@ -344,11 +401,13 @@ fn go(ui: &Rc<Ui>) {
     match fond_bib::identify(&ui.entry.text()) {
         Identified::Empty => {}
         Identified::Text(query) => search(ui, query),
-        Identified::Doi(doi) => add_target(ui, Target::Doi(doi)),
-        Identified::Arxiv(id) => {
-            add_target(ui, Target::Arxiv(fond_bib::arxiv_base(&id).to_string()))
-        }
-        Identified::Isbn(isbn) => add_target(ui, Target::Isbn(isbn)),
+        Identified::Doi(doi) => add_target(ui, Target::Doi(doi), None),
+        Identified::Arxiv(id) => add_target(
+            ui,
+            Target::Arxiv(fond_bib::arxiv_base(&id).to_string()),
+            None,
+        ),
+        Identified::Isbn(isbn) => add_target(ui, Target::Isbn(isbn), None),
         Identified::Url(url) => {
             ui.close();
             add_from_url(&ui.state, &ui.widgets, url);
@@ -368,8 +427,9 @@ fn go(ui: &Rc<Ui>) {
     }
 }
 
-/// Add the reference `target` names — unless the library already has it.
-fn add_target(ui: &Rc<Ui>, target: Target) {
+/// Add the reference `target` names — unless the library already has it. `candidate` is the
+/// search result it was picked from, if any.
+fn add_target(ui: &Rc<Ui>, target: Target, candidate: Option<Candidate>) {
     let existing = {
         let s = ui.state.borrow();
         s.library.as_ref().and_then(|lib| {
@@ -391,42 +451,41 @@ fn add_target(ui: &Rc<Ui>, target: Target) {
 
     set_busy(ui, true);
     ui.hint.set_text("Looking it up…");
-    let (sender, receiver) = worker::channel::<Result<Fetched, String>>();
+    let (sender, receiver) = worker::channel::<Lookup>();
     let for_worker = target.clone();
     std::thread::spawn(move || {
-        let fetched = match &for_worker {
-            Target::Doi(doi) => fond_bib::acquire::fetch_doi_bibtex(doi).map(|s| (true, s)),
-            Target::Arxiv(id) => fond_bib::acquire::fetch_arxiv_bibtex(id).map(|s| (true, s)),
-            Target::Isbn(isbn) => fond_bib::acquire::fetch_isbn_yaml(isbn).map(|s| (false, s)),
-        };
-        let _ = sender.send(fetched.map_err(|e| e.to_string()));
+        let _ = sender.send(Lookup::run(&for_worker, candidate.as_ref()));
     });
 
     let weak = Rc::downgrade(ui);
-    receiver.attach(move |result| {
+    receiver.attach(move |lookup| {
         let Some(ui) = weak.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        match result {
-            Ok((is_bibtex, payload)) => {
+        match lookup {
+            Lookup::Found { entries, partial } => {
                 let added = {
                     let s = ui.state.borrow();
-                    s.library.as_ref().map(|lib| {
-                        if is_bibtex {
-                            lib.add_bibtex(&payload)
-                        } else {
-                            lib.add_from_yaml(&payload)
-                        }
-                    })
+                    s.library.as_ref().map(|lib| lib.add_entries(&entries))
                 };
                 match added {
-                    Some(Ok(keys)) if !keys.is_empty() => finish_added(&ui, &keys),
+                    Some(Ok(keys)) if !keys.is_empty() => {
+                        finish_added(&ui, &keys);
+                        if partial {
+                            toast(
+                                &ui.widgets,
+                                "Couldn't fetch the full record, so it was added with the \
+                                 details from the search — check them over",
+                            );
+                        }
+                    }
                     Some(Ok(_)) => show_error(&ui, target.failure_message(), None),
                     Some(Err(e)) => show_error(&ui, &friendly::bib_error(&e), None),
                     None => {}
                 }
             }
-            Err(detail) => show_error(&ui, target.failure_message(), Some(&detail)),
+            Lookup::Unreadable(e) => show_error(&ui, &friendly::bib_error(&e), None),
+            Lookup::NotFound(detail) => show_error(&ui, target.failure_message(), Some(&detail)),
         }
         glib::ControlFlow::Break
     });

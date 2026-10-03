@@ -236,6 +236,75 @@ impl Candidate {
     }
 }
 
+/// The search result on its own, as an entry: the title, authors, year and container the
+/// result row showed, plus its DOI or ISBN. What gets added when the full record can't be
+/// fetched, and the source [`fill_from_candidate`] draws on.
+pub fn candidate_entry(candidate: &Candidate) -> Result<hayagriva::Entry> {
+    use crate::records::{Kind, Work};
+    use crate::{Creator, CreatorRole};
+
+    let kind = match candidate.kind.as_str() {
+        "Article" | "Preprint" => Kind::Article,
+        "Book" => Kind::Book,
+        "Chapter" => Kind::Chapter,
+        "Conference paper" => Kind::Conference,
+        "Thesis" => Kind::Thesis,
+        "Report" => Kind::Report,
+        _ => Kind::Misc,
+    };
+    let (doi, isbn) = match &candidate.id {
+        CandidateId::Doi(doi) => (doi.clone(), String::new()),
+        CandidateId::Isbn(isbn) => (String::new(), isbn.clone()),
+    };
+    let work = Work {
+        kind: Some(kind),
+        title: candidate.title.clone(),
+        creators: candidate
+            .authors
+            .iter()
+            .map(|a| Creator::from_natural_text(CreatorRole::Author, a))
+            .collect(),
+        date: candidate.year.clone(),
+        container: candidate.container.clone(),
+        doi,
+        isbn,
+        ..Work::default()
+    };
+    crate::entry::parse_all(&work.to_yaml("_")?, std::path::Path::new("<search result>"))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| BibError::Import {
+            message: "could not build an entry from the search result".to_string(),
+        })
+}
+
+/// Fill in what a fetched record left out — its title, its authors (when it names no authors
+/// or editors), its date — from the search result it was chosen from. Crossref's BibTeX for
+/// some books and chapters carries no `title` at all (only `journal`/`booktitle`) and no
+/// author, even when the search result showed both; added as fetched, such a record had
+/// neither and was refused as unkeyable.
+pub fn fill_from_candidate(entry: &mut hayagriva::Entry, candidate: &Candidate) -> Result<()> {
+    let found = candidate_entry(candidate)?;
+    if !crate::entry::title_string(entry).is_some_and(|t| !t.trim().is_empty()) {
+        if let Some(title) = found.title() {
+            entry.set_title(title.clone());
+        }
+    }
+    let has_people = entry.authors().is_some_and(|a| !a.is_empty())
+        || entry.editors().is_some_and(|e| !e.is_empty());
+    if !has_people {
+        if let Some(authors) = found.authors() {
+            entry.set_authors(authors.to_vec());
+        }
+    }
+    if entry.date_any().is_none() {
+        if let Some(date) = found.date() {
+            entry.set_date(*date);
+        }
+    }
+    Ok(())
+}
+
 /// Search for a work by title (or a pasted citation): up to `rows` articles/chapters from
 /// Crossref followed by up to `rows` books from OpenLibrary, best match first within each. A
 /// source that fails is skipped; the search only fails when *both* do (offline, say).
@@ -1300,5 +1369,95 @@ mod search_tests {
     #[test]
     fn an_empty_query_is_no_search_and_no_network() {
         assert!(search_works("   ", 5).unwrap().is_empty());
+    }
+
+    fn picked(id: CandidateId, kind: &str) -> Candidate {
+        Candidate {
+            id,
+            title: "2. The Importance of The Brothers Karamazov".into(),
+            authors: vec!["Jackson, Robert Louis".into()],
+            year: "2017".into(),
+            container: "The Brothers Karamazov".into(),
+            kind: kind.into(),
+        }
+    }
+
+    #[test]
+    fn a_fetched_record_with_no_title_or_author_is_filled_from_the_search_result() {
+        // Crossref's real BibTeX for this chapter: the title only as `booktitle`, no author —
+        // unkeyable as fetched, though the search result showed both.
+        let bibtex = brace_bare_values(
+            "@inbook{2017, ISBN={9780300151725}, DOI={10.12987/9780300151725-005}, \
+             booktitle={The Brothers Karamazov}, publisher={Yale University Press}, \
+             year={2017}, month=Dec, pages={4–6} }",
+        );
+        let mut entries = crate::entry::parse_bibtex(&bibtex).unwrap();
+        assert!(crate::entry::title_string(&entries[0]).is_none());
+        let candidate = picked(
+            CandidateId::Doi("10.12987/9780300151725-005".into()),
+            "Chapter",
+        );
+        fill_from_candidate(&mut entries[0], &candidate).unwrap();
+
+        let e = &entries[0];
+        assert_eq!(
+            crate::entry::title_string(e).as_deref(),
+            Some("2. The Importance of The Brothers Karamazov")
+        );
+        assert_eq!(crate::entry::family_name(e).as_deref(), Some("Jackson"));
+        // What the record did have is kept.
+        assert!(e.page_range().is_some());
+    }
+
+    #[test]
+    fn filling_never_overrides_what_the_record_has() {
+        let mut entries = crate::entry::parse_bibtex(
+            "@book{x, title={The Real Title}, editor={Smith, Ann}, year={1999}}",
+        )
+        .unwrap();
+        fill_from_candidate(
+            &mut entries[0],
+            &picked(CandidateId::Doi("10.1/x".into()), "Book"),
+        )
+        .unwrap();
+        let e = &entries[0];
+        assert_eq!(
+            crate::entry::title_string(e).as_deref(),
+            Some("The Real Title")
+        );
+        // An editor-only book stays editor-only, not credited to the search's author.
+        assert!(!e.authors().is_some_and(|a| !a.is_empty()));
+        assert_eq!(crate::entry::year(e), Some(1999));
+    }
+
+    #[test]
+    fn a_search_result_alone_makes_a_complete_entry() {
+        let e = candidate_entry(&picked(
+            CandidateId::Isbn("9780300151725".into()),
+            "Chapter",
+        ))
+        .unwrap();
+        assert_eq!(
+            crate::entry::title_string(&e).as_deref(),
+            Some("2. The Importance of The Brothers Karamazov")
+        );
+        assert_eq!(crate::entry::family_name(&e).as_deref(), Some("Jackson"));
+        assert_eq!(crate::entry::year(&e), Some(2017));
+        assert_eq!(
+            e.parents()[0]
+                .title()
+                .map(|t| t.value.to_string())
+                .as_deref(),
+            Some("The Brothers Karamazov")
+        );
+        // Natural-order OpenLibrary names split on the last word.
+        let mut book = picked(CandidateId::Isbn("9780451523884".into()), "Book");
+        book.authors = vec!["Fyodor Dostoyevsky".into()];
+        book.container.clear();
+        let e = candidate_entry(&book).unwrap();
+        assert_eq!(
+            crate::entry::family_name(&e).as_deref(),
+            Some("Dostoyevsky")
+        );
     }
 }

@@ -42,6 +42,21 @@ pub fn parse_all(text: &str, path: &Path) -> Result<Vec<HEntry>> {
     Ok(lib.iter().cloned().collect())
 }
 
+/// Parse a BibLaTeX/BibTeX snippet into entries (keys as written), without adding them.
+pub fn parse_bibtex(source: &str) -> Result<Vec<HEntry>> {
+    let library = hayagriva::io::from_biblatex_str(source).map_err(|errors| {
+        let joined = errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        BibError::Import {
+            message: format!("could not parse BibLaTeX: {joined}"),
+        }
+    })?;
+    Ok(library.iter().cloned().collect())
+}
+
 fn parse_library(text: &str, path: &Path) -> Result<HLibrary> {
     hayagriva::io::from_yaml_str(text).map_err(|e| BibError::Yaml {
         path: path.to_path_buf(),

@@ -1411,18 +1411,7 @@ impl Library {
     /// Add entries parsed from a BibLaTeX/BibTeX snippet, generating fresh citation keys
     /// (unlike `import_bibtex`, which preserves the source keys). Used by acquisition.
     pub fn add_bibtex(&self, source: &str) -> Result<Vec<String>> {
-        let library = hayagriva::io::from_biblatex_str(source).map_err(|errors| {
-            let joined = errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; ");
-            BibError::Import {
-                message: format!("could not parse BibLaTeX: {joined}"),
-            }
-        })?;
-        let entries: Vec<_> = library.iter().cloned().collect();
-        self.add_entries(&entries)
+        self.add_entries(&entry::parse_bibtex(source)?)
     }
 
     /// Every tag used across the library, with how many entries carry it, sorted by name.

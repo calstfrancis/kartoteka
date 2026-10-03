@@ -2,6 +2,16 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## Unreleased
+
+- **Fixed: some title-search results couldn't be added ("needs at least an author or a
+  title").** Picking a result fetched its full record afresh. For some books and chapters,
+  Crossref's record has no title of its own and often no author either, so it was refused even
+  though the result you picked showed both. Anything the fetched record leaves out (title,
+  authors, year) is now filled in from the result you picked. If the full record can't be
+  fetched at all, the result is still added with the details the search showed, and a note
+  asks you to check them over. Picking a result is never refused for a missing field.
+
 ## [0.20.0] "Open Stacks" — 2026-10-03 — Import from Zotero, Mendeley and EndNote exports (RIS, CSL JSON)
 
 - **Import from RIS and CSL-JSON, not just BibTeX.** Zotero, Mendeley, EndNote and every

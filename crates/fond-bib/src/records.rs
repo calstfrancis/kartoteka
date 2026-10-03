@@ -146,7 +146,7 @@ impl Work {
     }
 
     /// The entry as one-key Hayagriva YAML under `key`.
-    fn to_yaml(&self, key: &str) -> Result<String> {
+    pub(crate) fn to_yaml(&self, key: &str) -> Result<String> {
         let mut outer = Mapping::new();
         outer.insert(
             Value::String(key.to_string()),
