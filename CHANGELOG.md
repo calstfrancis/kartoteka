@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased] — Podcasts, interviews and videos from a link
+## [0.21.0] "Spoken Index" — 2026-10-03 — Podcasts, interviews and videos from a link
 
 - **Paste a link to a podcast episode, interview or video, and it comes in as one.** Pasting
   a link used to read only a page's basic tags, so a CBC Radio episode page came in as a web

@@ -45,6 +45,19 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.21.0" date="2026-10-03">
+      <description>
+        <p>0.21.0 "Spoken Index" — paste a link to a podcast episode, interview or video and it
+        comes in as one, ready to cite: the show or channel, the host or interviewer, the person
+        interviewed, the date and the running time. Kartoteka now reads a page's structured data
+        (which YouTube and most podcast platforms provide) and CBC's player data. When the host
+        and guest were worked out from the episode's description, the new entry opens so you can
+        check them.</p>
+        <p>New item types — Podcast episode, Interview, TV or video episode, Video and Audio
+        recording — with Interviewer and Running time fields, so they cite correctly in Chicago,
+        APA, MLA and SBL.</p>
+      </description>
+    </release>
     <release version="0.20.1" date="2026-10-03">
       <description>
         <p>0.20.1 "Ready Shelf" — fixed: some results from searching by title couldn't be added
