@@ -20,6 +20,11 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
   APA, MLA first, then the rest — instead of four. In the CLI, `kartoteka styles [filter]` lists
   them, `bib` and `annotated-bib` take `--all`, `turabian` is a recognised name, and a mistyped
   style now suggests close matches.
+- **Highlights as Typst.** `kartoteka annots <key> --typst` prints an entry's highlights ready to
+  paste into a Zerkalo document: each passage is a block quote cited `@key[p. 12]` (the PDF's
+  printed page number when it has one), with your own comments after it. Markup characters in
+  the text are escaped so a stray `#` or `]` can't break the document. (Not yet compiled with the
+  Typst compiler — worth a quick paste into a real document.)
 - **A note with a relation Kartoteka doesn't recognise no longer breaks.** A newer version (or a
   hand edit) may record a relationship type this version has never heard of; such a note used to
   fail to load, which also stopped "Repair" and kept attachments from being cleaned up safely.

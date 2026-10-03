@@ -93,7 +93,7 @@ fn to_roman(mut n: u32) -> String {
 }
 
 /// Escape what Typst markup would otherwise act on inside `[...]`.
-fn escape_content(s: &str) -> String {
+pub(crate) fn escape_content(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if matches!(

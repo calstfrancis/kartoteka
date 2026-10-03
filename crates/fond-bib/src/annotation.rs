@@ -306,6 +306,71 @@ impl AnnotationSidecar {
         out.pop();
         out
     }
+
+    /// Render the annotations as Typst, ready to paste into a Zerkalo document: each highlighted
+    /// passage becomes a block quote attributed to this entry with its page
+    /// (`@key[p. 12]`, using the printed page label when `page_labels` has one), and the
+    /// reader's own comment follows as a paragraph. PDF annotations come in page order, then EPUB
+    /// ones (cited without a page, since an EPUB has none). A bare comment with no highlighted
+    /// text is just the paragraph, with the citation after it. Empty annotations are skipped; an
+    /// entry with none gives an empty string.
+    pub fn to_typst(&self, page_labels: Option<&[Option<String>]>) -> String {
+        let mut pdf: Vec<&Annotation> = self
+            .annotations
+            .iter()
+            .filter(|a| a.page.is_some())
+            .collect();
+        pdf.sort_by_key(|a| a.page);
+        let mut epub: Vec<&Annotation> = self
+            .annotations
+            .iter()
+            .filter(|a| a.page.is_none())
+            .collect();
+        epub.sort_by(|a, b| a.chapter.cmp(&b.chapter).then(a.created.cmp(&b.created)));
+
+        let mut blocks: Vec<String> = Vec::new();
+        for annotation in pdf.into_iter().chain(epub) {
+            let locator = annotation.page.map(|p| {
+                page_labels
+                    .and_then(|labels| labels.get((p as usize).saturating_sub(1)))
+                    .and_then(|l| l.clone())
+                    .unwrap_or_else(|| p.to_string())
+            });
+            let citation = crate::cite::typst_citation(&self.key, locator.as_deref());
+            let snippet = annotation
+                .snippet
+                .as_deref()
+                .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|s| !s.is_empty());
+            let note = annotation
+                .note
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty());
+
+            match (snippet, note) {
+                (Some(quote), note) => {
+                    let mut block = format!(
+                        "#quote(block: true, attribution: [{citation}])[{}]",
+                        crate::cite::escape_content(&quote)
+                    );
+                    if let Some(note) = note {
+                        block.push_str("\n\n");
+                        block.push_str(&crate::cite::escape_content(note));
+                    }
+                    blocks.push(block);
+                }
+                (None, Some(note)) => {
+                    blocks.push(format!("{} {citation}", crate::cite::escape_content(note)))
+                }
+                (None, None) => {}
+            }
+        }
+        if blocks.is_empty() {
+            return String::new();
+        }
+        blocks.join("\n\n") + "\n"
+    }
 }
 
 #[cfg(test)]
@@ -501,5 +566,105 @@ mod tests {
             "PDF pages should render before EPUB chapters"
         );
         assert!(md.contains("## chap1.xhtml — Highlight"));
+    }
+
+    fn typst_sidecar() -> AnnotationSidecar {
+        let a = Annotation::drawn(
+            AnnotationKind::Highlight,
+            12,
+            vec![],
+            Some("the  epistemology\nhardens".to_string()),
+            Some("Compare with *God of the Oppressed*".to_string()),
+            None,
+        );
+        let b = Annotation::drawn(
+            AnnotationKind::Note,
+            3,
+            vec![],
+            None,
+            Some("Check this page".to_string()),
+            None,
+        );
+        AnnotationSidecar {
+            schema: SCHEMA_VERSION,
+            key: "cone1970black".to_string(),
+            pdf_hash: None,
+            annotations: vec![a, b],
+        }
+    }
+
+    #[test]
+    fn typst_export_quotes_each_highlight_with_its_page_in_page_order() {
+        let typ = typst_sidecar().to_typst(None);
+        let expected = concat!(
+            "Check this page @cone1970black[p. 3]\n\n",
+            "#quote(block: true, attribution: [@cone1970black[p. 12]])[the epistemology hardens]\n\n",
+            "Compare with \\*God of the Oppressed\\*\n",
+        );
+        assert_eq!(typ, expected);
+    }
+
+    #[test]
+    fn typst_export_cites_the_printed_page_when_there_is_one() {
+        let mut labels = vec![None; 12];
+        labels[11] = Some("xiv".to_string());
+        let typ = typst_sidecar().to_typst(Some(&labels));
+        assert!(typ.contains("@cone1970black[p. xiv]"), "{typ}");
+        assert!(typ.contains("@cone1970black[p. 3]"), "{typ}");
+    }
+
+    #[test]
+    fn typst_export_of_nothing_is_empty_and_epub_notes_have_no_page() {
+        let empty = AnnotationSidecar {
+            schema: SCHEMA_VERSION,
+            key: "k".to_string(),
+            pdf_hash: None,
+            annotations: vec![],
+        };
+        assert_eq!(empty.to_typst(None), "");
+
+        let mut e = Annotation::drawn(
+            AnnotationKind::Highlight,
+            1,
+            vec![],
+            Some("A line".into()),
+            None,
+            None,
+        );
+        e.page = None;
+        e.chapter = Some("OEBPS/ch1.xhtml".into());
+        let sidecar = AnnotationSidecar {
+            schema: SCHEMA_VERSION,
+            key: "k".to_string(),
+            pdf_hash: None,
+            annotations: vec![e],
+        };
+        assert_eq!(
+            sidecar.to_typst(None),
+            "#quote(block: true, attribution: [@k])[A line]\n"
+        );
+    }
+
+    #[test]
+    fn typst_markup_inside_a_highlight_cannot_break_the_document() {
+        let a = Annotation::drawn(
+            AnnotationKind::Highlight,
+            1,
+            vec![],
+            Some("costs #5 [see $x$] _now_".to_string()),
+            None,
+            None,
+        );
+        let sidecar = AnnotationSidecar {
+            schema: SCHEMA_VERSION,
+            key: "k".to_string(),
+            pdf_hash: None,
+            annotations: vec![a],
+        };
+        let typ = sidecar.to_typst(None);
+        assert!(
+            typ.contains("[costs \\#5 \\[see \\$x\\$\\] \\_now\\_]"),
+            "{typ}"
+        );
     }
 }

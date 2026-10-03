@@ -308,3 +308,33 @@ fn styles_lists_and_filters_the_catalogue() {
         Some(1)
     );
 }
+
+#[test]
+fn annots_typst_prints_citable_quotes() {
+    let dir = seeded();
+    let lib = dir.path();
+    let key = only_key(lib);
+    let sidecar = format!(
+        r#"{{"schema":1,"key":"{key}","annotations":[{{"id":"a1","kind":"highlight","page":7,"snippet":"the destiny of man","note":"Return to this"}}]}}"#
+    );
+    std::fs::create_dir_all(lib.join("annots")).unwrap();
+    std::fs::write(lib.join("annots").join(format!("{key}.json")), sidecar).unwrap();
+
+    let out = kartoteka(lib, &["annots", &key, "--typst"]);
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        text,
+        format!(
+            "#quote(block: true, attribution: [@{key}[p. 7]])[the destiny of man]\n\nReturn to this\n"
+        )
+    );
+
+    // --json and --typst are different outputs; asking for both is a usage error.
+    assert_eq!(
+        kartoteka(lib, &["annots", &key, "--json", "--typst"])
+            .status
+            .code(),
+        Some(2)
+    );
+}

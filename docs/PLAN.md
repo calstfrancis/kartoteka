@@ -78,8 +78,9 @@ GitHub-backup disclosure · EPUB/folder drop · Cite with a page (`fond_bib::cit
 
 - [ ] **Copy as Typst quote:** `#quote(block: true)[…] @key[p. 12]` using the printed page label.
       Pereplyot is launched with `--key=`, so it already knows the entry.
-- [ ] **`AnnotationSidecar::to_typst`** next to `to_markdown`, so highlights drop into a Zerkalo
-      file with `@key[p. N]` supplements. (`fond-bib`, UI-agnostic.)
+- [x] **`AnnotationSidecar::to_typst`** + `kartoteka annots --typst` (block quotes cited
+      `@key[p. N]`). Still to do: compile-check the output in Zerkalo/Typst, and a button for it in
+      Pereplyot's Annotations dialog.
 - [ ] When Pereplyot isn't installed, say so once with an install link instead of silently opening
       a generic viewer and losing annotation capture.
 - [ ] "Open in Kartoteka" from Pereplyot.

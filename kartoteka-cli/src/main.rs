@@ -190,8 +190,12 @@ enum Command {
     /// Show the annotations recorded for an entry.
     Annots {
         key: String,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "typst")]
         json: bool,
+        /// Print them as Typst to paste into a document: each highlight a block quote cited
+        /// `@key[p. N]` (the printed page number when the PDF has one), your comments after.
+        #[arg(long)]
+        typst: bool,
     },
     /// Extract the text layer from an entry's PDF attachment (needs PDFium; set
     /// PDFIUM_LIB_PATH if it is not on the system library path).
@@ -635,7 +639,7 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
             })
         }
 
-        Command::Annots { key, json } => {
+        Command::Annots { key, json, typst } => {
             check_key(&key)?;
             let library = Library::open(&cli.library)?;
             match library.load_annotations(&key)? {
@@ -675,6 +679,11 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
                                 Some(override_value.map(|ov| ov.apply(count)).unwrap_or(native))
                             })
                             .unwrap_or_default();
+
+                        if typst {
+                            print!("{}", sidecar.to_typst(Some(&page_labels)));
+                            return Ok(ExitCode::SUCCESS);
+                        }
 
                         println!(
                             "{} annotation(s) for {key}{}",
