@@ -170,6 +170,17 @@ fn trim_trailing_punctuation(s: &str) -> &str {
 
 // --- arXiv --------------------------------------------------------------------------------
 
+/// An arXiv id without its `vN` version suffix (`1706.03762v5` → `1706.03762`) — the form its
+/// DOI, and so a duplicate check, uses.
+pub fn arxiv_base(id: &str) -> &str {
+    match id.rfind('v') {
+        Some(i) if i > 0 && i + 1 < id.len() && id[i + 1..].bytes().all(|b| b.is_ascii_digit()) => {
+            &id[..i]
+        }
+        _ => id,
+    }
+}
+
 fn strip_pdf_ext(s: &str) -> &str {
     s.strip_suffix(".pdf").unwrap_or(s)
 }
@@ -510,6 +521,16 @@ mod tests {
         assert_eq!(isbn13("080442957X").as_deref(), Some("9780804429573"));
         assert_eq!(isbn13("0140449133"), None);
         assert_eq!(isbn13("hello"), None);
+    }
+
+    #[test]
+    fn arxiv_versions_are_stripped_for_lookup() {
+        assert_eq!(arxiv_base("1706.03762v5"), "1706.03762");
+        assert_eq!(arxiv_base("1706.03762"), "1706.03762");
+        assert_eq!(arxiv_base("math/0211159v2"), "math/0211159");
+        // The `v` inside an archive name is not a version.
+        assert_eq!(arxiv_base("solv-int/9901001"), "solv-int/9901001");
+        assert_eq!(arxiv_base("hep-th/9901001v1"), "hep-th/9901001");
     }
 
     #[test]

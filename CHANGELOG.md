@@ -20,6 +20,13 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
   APA, MLA first, then the rest — instead of four. In the CLI, `kartoteka styles [filter]` lists
   them, `bib` and `annotated-bib` take `--all`, `turabian` is a recognised name, and a mistyped
   style now suggests close matches.
+- **One Add box for everything.** The "+" button now takes whatever you have: paste a DOI, a
+  link (a `doi.org` or publisher link, an arXiv link, any web page), an ISBN, or a BibTeX record
+  — or type a title and choose from matches (articles from Crossref, books from OpenLibrary).
+  It says what it recognised ("DOI 10.…", "ISBN 978…") and never adds on a guess: plain words
+  only search. A reference already in your library isn't added twice — you're taken to it
+  instead — and a newly added one is selected, with its citation key showing. Replaces "Acquire…"
+  and "Add from URL…".
 - **Cite a page, not just a source.** The Cite picker (Ctrl+K) has an optional Page box:
   type `12` and it copies `@key[p. 12]`; `12-14` gives `@key[pp. 12–14]`; roman numerals
   (`xiv`) work; anything else (`ch. 3`) is used as typed. Enter in either box copies.

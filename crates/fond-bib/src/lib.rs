@@ -37,7 +37,7 @@ pub use creator::{Creator, CreatorRole};
 pub use custom_field::{CustomFieldDef, CustomFieldDefs, CustomFieldType};
 pub use error::{BibError, Result};
 pub use extra_note::{generate_note_id, is_valid_note_id, ExtraNote, ExtraNoteFrontmatter};
-pub use identify::{identify, Identified};
+pub use identify::{arxiv_base, identify, isbn13, Identified};
 pub use import::{ImportOptions, ImportReport};
 pub use library::{DeleteReport, FsckReport, Library, RelationReconcile, Target, UsageMap};
 pub use node::{Node, NodeFrontmatter, NodeType};

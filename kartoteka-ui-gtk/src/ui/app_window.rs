@@ -21,13 +21,7 @@ use crate::config::Config;
 use crate::ui::{bookshelf, friendly, worker};
 use crate::{github, secret_store, webdav};
 
-/// Which kind of identifier the acquire dialog is looking up.
-#[derive(Clone, Copy)]
-enum AcquireKind {
-    Doi,
-    Arxiv,
-    Isbn,
-}
+mod add_box;
 
 /// A compact, display-ready summary of one entry.
 struct EntrySummary {
@@ -297,7 +291,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     header.pack_start(&open_button);
 
     let add_button = gtk4::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Acquire a reference…"));
+    add_button.set_tooltip_text(Some("Add a reference — paste a DOI, link, ISBN or title"));
     header.pack_start(&add_button);
 
     let menu_button = gtk4::MenuButton::builder()
@@ -810,11 +804,11 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         });
     }
 
-    // Acquire button opens the dialog.
+    // The + button opens the Add box.
     {
         let state = state.clone();
         let widgets = widgets.clone();
-        add_button.connect_clicked(move |_| show_acquire_dialog(&state, &widgets));
+        add_button.connect_clicked(move |_| add_box::show(&state, &widgets));
     }
 
     // Drag a PDF onto the window to add it.
@@ -882,7 +876,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         window.add_controller(drop);
     }
 
-    // Hamburger actions (win.acquire / win.reindex / win.theme / win.about).
+    // Hamburger actions (win.add / win.reindex / win.theme / win.about).
     let auto_backup_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     add_window_actions(&window, &state, &widgets, &config, &auto_backup_timer);
 
@@ -1063,11 +1057,10 @@ fn build_hamburger_popover(
 
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "New item…", "win.new-item");
-    activate_row(&rows, &popover, "Acquire…", "win.acquire");
+    activate_row(&rows, &popover, "Add a reference…", "win.add");
     activate_row(&rows, &popover, "Add PDF…", "win.add-pdf");
     activate_row(&rows, &popover, "Add EPUB…", "win.add-epub");
     activate_row(&rows, &popover, "Add folder of PDFs…", "win.add-folder");
-    activate_row(&rows, &popover, "Add from URL…", "win.add-url");
     activate_row(&rows, &popover, "Import…", "win.import");
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Manage tags…", "win.tags");
@@ -1278,8 +1271,8 @@ fn add_window_actions(
     {
         let state = state.clone();
         let widgets = widgets.clone();
-        let action = gio::SimpleAction::new("acquire", None);
-        action.connect_activate(move |_, _| show_acquire_dialog(&state, &widgets));
+        let action = gio::SimpleAction::new("add", None);
+        action.connect_activate(move |_, _| add_box::show(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -1364,13 +1357,6 @@ fn add_window_actions(
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("add-folder", None);
         action.connect_activate(move |_, _| show_add_folder(&state, &widgets));
-        window.add_action(&action);
-    }
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let action = gio::SimpleAction::new("add-url", None);
-        action.connect_activate(move |_, _| show_add_url_dialog(&state, &widgets));
         window.add_action(&action);
     }
     {
@@ -2204,76 +2190,6 @@ fn unpaywall_download(doi: &str, email: &str) -> Result<(Vec<u8>, String), Strin
     }
     let filename = format!("{}.pdf", doi.replace('/', "_"));
     Ok((bytes, filename))
-}
-
-/// "Add from URL": paste a web page URL, scrape its citation `<meta>` tags into an entry,
-/// and grab a linked PDF if the page advertises one.
-fn show_add_url_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
-    if state.borrow().library.is_none() {
-        toast(widgets, "Open a library first");
-        return;
-    }
-
-    let dialog = adw::Window::new();
-    dialog.set_title(Some("Add from URL"));
-    dialog.set_modal(true);
-    dialog.set_transient_for(Some(&widgets.window));
-    dialog.set_default_size(460, -1);
-
-    let view = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    header.add_css_class("fond-chrome");
-    header.set_show_start_title_buttons(false);
-    header.set_show_end_title_buttons(false);
-    let cancel = gtk4::Button::with_label("Cancel");
-    let add = gtk4::Button::with_label("Add");
-    add.add_css_class("suggested-action");
-    header.pack_start(&cancel);
-    header.pack_end(&add);
-    view.add_top_bar(&header);
-
-    let content = gtk4::Box::new(Orientation::Vertical, 8);
-    content.set_margin_top(16);
-    content.set_margin_bottom(16);
-    content.set_margin_start(16);
-    content.set_margin_end(16);
-    let url = gtk4::Entry::builder()
-        .placeholder_text("https://…")
-        .activates_default(true)
-        .build();
-    content.append(&labeled("Page URL", &url));
-    let hint = gtk4::Label::new(Some(
-        "Reads citation metadata (Highwire / Dublin Core / Open Graph) and attaches a linked PDF when one is offered.",
-    ));
-    hint.add_css_class("dim-label");
-    hint.add_css_class("caption");
-    hint.set_wrap(true);
-    hint.set_xalign(0.0);
-    content.append(&hint);
-    view.set_content(Some(&content));
-    dialog.set_content(Some(&view));
-
-    {
-        let dialog = dialog.clone();
-        cancel.connect_clicked(move |_| dialog.close());
-    }
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let dialog = dialog.clone();
-        let url = url.clone();
-        add.connect_clicked(move |_| {
-            let u = url.text().trim().to_string();
-            if !(u.starts_with("http://") || u.starts_with("https://")) {
-                toast(&widgets, "Enter a full http(s) URL");
-                return;
-            }
-            add_from_url(&state, &widgets, u);
-            dialog.close();
-        });
-    }
-    dialog.present();
-    url.grab_focus();
 }
 
 /// Scrape result: the entry YAML plus an optional downloaded PDF `(bytes, filename)`.
@@ -4695,196 +4611,6 @@ fn select_key(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, key: &str) {
     widgets.search.set_text("");
     refresh_list(state, widgets);
     select_visible_key(state, widgets, key);
-}
-
-/// Modal dialog to acquire a reference by DOI / arXiv / ISBN. The network lookup runs on a
-/// worker thread; the result is applied on the main thread so the UI never blocks.
-// The glib main-context channel is deprecated in favour of async-channel; it remains the
-// simplest thread→main-loop bridge here and is still supported. Migrate when the UI adopts
-// async futures.
-#[allow(deprecated)]
-fn show_acquire_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
-    if state.borrow().library.is_none() {
-        toast(widgets, "Open a library first");
-        return;
-    }
-
-    let dialog = adw::Window::new();
-    dialog.set_title(Some("Acquire reference"));
-    dialog.set_modal(true);
-    dialog.set_transient_for(Some(&widgets.window));
-    dialog.set_default_size(460, -1);
-
-    let view = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    header.add_css_class("fond-chrome");
-    header.set_show_start_title_buttons(false);
-    header.set_show_end_title_buttons(false);
-    let cancel = gtk4::Button::with_label("Cancel");
-    let add = gtk4::Button::with_label("Add");
-    add.add_css_class("suggested-action");
-    header.pack_start(&cancel);
-    header.pack_end(&add);
-    view.add_top_bar(&header);
-
-    let content = gtk4::Box::new(Orientation::Vertical, 12);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
-
-    let kinds = gtk4::StringList::new(&["DOI", "arXiv", "ISBN"]);
-    let dropdown = gtk4::DropDown::builder().model(&kinds).build();
-    let entry = gtk4::Entry::builder()
-        .placeholder_text("e.g. 10.1000/xyz")
-        .activates_default(true)
-        .hexpand(true)
-        .build();
-    // Plain-language hint for whichever identifier kind is selected — "DOI"/"arXiv"/"ISBN"
-    // mean nothing to most people on sight, and the dropdown alone doesn't explain them.
-    let hint = gtk4::Label::new(None);
-    hint.set_wrap(true);
-    hint.set_xalign(0.0);
-    hint.add_css_class("dim-label");
-    hint.add_css_class("caption");
-    let update_hint: Rc<dyn Fn(AcquireKind)> = Rc::new({
-        let hint = hint.clone();
-        let entry = entry.clone();
-        move |kind: AcquireKind| {
-            let (text, placeholder) = match kind {
-                AcquireKind::Doi => (
-                    "A DOI is a permanent ID most journal articles have — often printed near \
-                     the abstract or in the URL, like 10.1000/xyz.",
-                    "e.g. 10.1000/xyz",
-                ),
-                AcquireKind::Arxiv => (
-                    "For preprints from arxiv.org — the ID in the paper's URL, like 2101.00001.",
-                    "e.g. 2101.00001",
-                ),
-                AcquireKind::Isbn => (
-                    "The number under the barcode on the back of a book (10 or 13 digits).",
-                    "e.g. 9780140449136",
-                ),
-            };
-            hint.set_text(text);
-            entry.set_placeholder_text(Some(placeholder));
-        }
-    });
-    update_hint(AcquireKind::Doi);
-    {
-        let update_hint = update_hint.clone();
-        dropdown.connect_selected_notify(move |d| {
-            update_hint(match d.selected() {
-                0 => AcquireKind::Doi,
-                1 => AcquireKind::Arxiv,
-                _ => AcquireKind::Isbn,
-            });
-        });
-    }
-
-    let spinner = gtk4::Spinner::new();
-    spinner.set_halign(gtk4::Align::End);
-
-    content.append(&dropdown);
-    content.append(&entry);
-    content.append(&hint);
-    content.append(&spinner);
-    view.set_content(Some(&content));
-    dialog.set_content(Some(&view));
-
-    {
-        let dialog = dialog.clone();
-        cancel.connect_clicked(move |_| dialog.close());
-    }
-
-    {
-        let state = state.clone();
-        let widgets = widgets.clone();
-        let dialog = dialog.clone();
-        let entry = entry.clone();
-        let dropdown = dropdown.clone();
-        let spinner = spinner.clone();
-        let add = add.clone();
-        add.connect_clicked(move |add| {
-            let identifier = entry.text().trim().to_string();
-            if identifier.is_empty() {
-                return;
-            }
-            let kind = match dropdown.selected() {
-                0 => AcquireKind::Doi,
-                1 => AcquireKind::Arxiv,
-                _ => AcquireKind::Isbn,
-            };
-
-            add.set_sensitive(false);
-            entry.set_sensitive(false);
-            spinner.start();
-
-            // (is_bibtex, payload) on success; error string otherwise.
-            let (sender, receiver) = worker::channel::<Result<(bool, String), String>>();
-            std::thread::spawn(move || {
-                let result = match kind {
-                    AcquireKind::Doi => {
-                        fond_bib::acquire::fetch_doi_bibtex(&identifier).map(|s| (true, s))
-                    }
-                    AcquireKind::Arxiv => {
-                        fond_bib::acquire::fetch_arxiv_bibtex(&identifier).map(|s| (true, s))
-                    }
-                    AcquireKind::Isbn => {
-                        fond_bib::acquire::fetch_isbn_yaml(&identifier).map(|s| (false, s))
-                    }
-                }
-                .map_err(|e| e.to_string());
-                let _ = sender.send(result);
-            });
-
-            let state = state.clone();
-            let widgets = widgets.clone();
-            let dialog = dialog.clone();
-            let entry = entry.clone();
-            let spinner = spinner.clone();
-            let add = add.clone();
-            receiver.attach(move |result| {
-                spinner.stop();
-                match result {
-                    Ok((is_bibtex, payload)) => {
-                        let added = {
-                            let s = state.borrow();
-                            let library = s.library.as_ref().expect("library open");
-                            if is_bibtex {
-                                library.add_bibtex(&payload)
-                            } else {
-                                library.add_from_yaml(&payload)
-                            }
-                        };
-                        match added {
-                            Ok(keys) => {
-                                toast(&widgets, &format!("Added {}", keys.join(", ")));
-                                dialog.close();
-                                reload_current(&state, &widgets);
-                            }
-                            Err(e) => {
-                                toast(&widgets, &friendly::bib_error(&e));
-                                add.set_sensitive(true);
-                                entry.set_sensitive(true);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        toast(
-                            &widgets,
-                            &format!("Couldn't find that reference online — double-check the identifier and try again ({e})."),
-                        );
-                        add.set_sensitive(true);
-                        entry.set_sensitive(true);
-                    }
-                }
-                glib::ControlFlow::Break
-            });
-        });
-    }
-
-    dialog.present();
 }
 
 fn open_library(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBuf) {
@@ -7948,12 +7674,12 @@ fn show_empty_list_hint(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         page.set_icon_name(Some("list-add-symbolic"));
         page.set_title("This library is empty");
         page.set_description(Some(
-            "Add a reference by DOI/ISBN, drop a PDF onto the window, or fill in the details \
-             yourself.",
+            "Paste a DOI, link, ISBN or title, drop a PDF onto the window, or fill in the \
+             details yourself.",
         ));
         let buttons = gtk4::Box::new(Orientation::Horizontal, 8);
         buttons.set_halign(gtk4::Align::Center);
-        let acquire = gtk4::Button::with_label("Acquire…");
+        let acquire = gtk4::Button::with_label("Add a reference…");
         acquire.add_css_class("suggested-action");
         acquire.add_css_class("pill");
         let new_item = gtk4::Button::with_label("New item…");
@@ -7964,7 +7690,7 @@ fn show_empty_list_hint(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
         {
             let state = state.clone();
             let widgets = widgets.clone();
-            acquire.connect_clicked(move |_| show_acquire_dialog(&state, &widgets));
+            acquire.connect_clicked(move |_| add_box::show(&state, &widgets));
         }
         {
             let state = state.clone();
