@@ -174,6 +174,11 @@ pub struct NoteFrontmatter {
     /// every key it didn't know the first time it did.
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, serde_yaml_ng::Value>,
+    /// `relations:` entries whose predicate this version doesn't know, kept verbatim and
+    /// written back (see [`crate::relation::parse_frontmatter`]) so an older app never destroys
+    /// a newer one's relations. Not part of the YAML struct itself.
+    #[serde(skip)]
+    pub unknown_relations: Vec<serde_yaml_ng::Value>,
 }
 
 /// Serialize a `HashMap` with its keys sorted. `HashMap` iteration order is random per
@@ -217,10 +222,13 @@ impl Note {
         let frontmatter: NoteFrontmatter = if yaml.trim().is_empty() {
             NoteFrontmatter::default()
         } else {
-            serde_yaml_ng::from_str(yaml).map_err(|e| BibError::Frontmatter {
-                path: path.to_path_buf(),
-                message: e.to_string(),
-            })?
+            let (mut fm, unknown): (NoteFrontmatter, _) = crate::relation::parse_frontmatter(yaml)
+                .map_err(|e| BibError::Frontmatter {
+                    path: path.to_path_buf(),
+                    message: e.to_string(),
+                })?;
+            fm.unknown_relations = unknown;
+            fm
         };
 
         Ok(Note {
@@ -235,11 +243,14 @@ impl Note {
         if self.frontmatter == NoteFrontmatter::default() {
             return Ok(self.body.clone());
         }
-        let yaml =
-            serde_yaml_ng::to_string(&self.frontmatter).map_err(|e| BibError::Frontmatter {
-                path: Path::new("<note>").to_path_buf(),
-                message: e.to_string(),
-            })?;
+        let yaml = crate::relation::emit_frontmatter(
+            &self.frontmatter,
+            &self.frontmatter.unknown_relations,
+        )
+        .map_err(|e| BibError::Frontmatter {
+            path: Path::new("<note>").to_path_buf(),
+            message: e.to_string(),
+        })?;
         Ok(format!("---\n{yaml}---\n{}", self.body))
     }
 }

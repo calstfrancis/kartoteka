@@ -266,6 +266,76 @@ impl Relation {
     }
 }
 
+// --- Reading and writing frontmatter that may hold relations this version doesn't know ------
+
+/// Parse note/node frontmatter YAML, setting aside any `relations:` entry whose predicate this
+/// version doesn't recognise (a newer Kartoteka's, or a hand edit) instead of failing the whole
+/// file. The set-aside entries are returned verbatim, to be handed back to
+/// [`emit_frontmatter`] on the next write — so an older app can open, edit and save a note
+/// without ever losing a relation it doesn't understand. (A malformed *known* entry, such as a
+/// relation with no `target`, is still an error: that's a typo to surface, not a newer feature.)
+pub(crate) fn parse_frontmatter<T: serde::de::DeserializeOwned>(
+    yaml: &str,
+) -> std::result::Result<(T, Vec<serde_yaml_ng::Value>), serde_yaml_ng::Error> {
+    use serde_yaml_ng::Value;
+    let mut doc: Value = serde_yaml_ng::from_str(yaml)?;
+    let mut unknown = Vec::new();
+    if let Some(Value::Sequence(items)) = doc
+        .as_mapping_mut()
+        .and_then(|m| m.get_mut(Value::String("relations".into())))
+    {
+        let (known, rest): (Vec<Value>, Vec<Value>) = std::mem::take(items)
+            .into_iter()
+            .partition(|item| !has_unknown_predicate(item));
+        *items = known;
+        unknown = rest;
+    }
+    // The common case — nothing to set aside — reads the original text exactly as before. Going
+    // through an intermediate `Value` is stricter than reading text (a plain `1` is refused
+    // where a string is expected), which would reject notes that have always loaded.
+    if unknown.is_empty() {
+        return Ok((serde_yaml_ng::from_str(yaml)?, unknown));
+    }
+    let cleaned = serde_yaml_ng::to_string(&doc)?;
+    Ok((serde_yaml_ng::from_str(&cleaned)?, unknown))
+}
+
+/// Serialize frontmatter back to YAML text, re-attaching the `unknown` relations set aside by
+/// [`parse_frontmatter`] to the `relations:` list (created if need be).
+pub(crate) fn emit_frontmatter<T: Serialize>(
+    frontmatter: &T,
+    unknown: &[serde_yaml_ng::Value],
+) -> std::result::Result<String, serde_yaml_ng::Error> {
+    use serde_yaml_ng::Value;
+    if unknown.is_empty() {
+        return serde_yaml_ng::to_string(frontmatter);
+    }
+    let mut doc = serde_yaml_ng::to_value(frontmatter)?;
+    {
+        if let Some(map) = doc.as_mapping_mut() {
+            let key = Value::String("relations".into());
+            match map.get_mut(&key) {
+                Some(Value::Sequence(items)) => items.extend(unknown.iter().cloned()),
+                _ => {
+                    map.insert(key, Value::Sequence(unknown.to_vec()));
+                }
+            }
+        }
+    }
+    serde_yaml_ng::to_string(&doc)
+}
+
+/// A relation entry whose `predicate` is a string this version's vocabulary doesn't contain.
+fn has_unknown_predicate(item: &serde_yaml_ng::Value) -> bool {
+    use serde_yaml_ng::Value;
+    match item.get("predicate") {
+        Some(Value::String(p)) => {
+            serde_yaml_ng::from_value::<Predicate>(Value::String(p.clone())).is_err()
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

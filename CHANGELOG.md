@@ -20,6 +20,17 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
   APA, MLA first, then the rest — instead of four. In the CLI, `kartoteka styles [filter]` lists
   them, `bib` and `annotated-bib` take `--all`, `turabian` is a recognised name, and a mistyped
   style now suggests close matches.
+- **A note with a relation Kartoteka doesn't recognise no longer breaks.** A newer version (or a
+  hand edit) may record a relationship type this version has never heard of; such a note used to
+  fail to load, which also stopped "Repair" and kept attachments from being cleaned up safely.
+  It now opens normally, and the unrecognised relation is written back untouched whenever you
+  save, so an older install can never erase a newer one's data. A *known* relation with a real
+  mistake (no target) is still reported.
+- **The detail card fits at the default window size.** The creator row's occasional controls
+  (single name field, swap names, move up/down) moved behind a "⋮" button, leaving the name
+  fields and delete; the default list/detail split gives the card more room. Previously the right
+  edge was clipped.
+- **Right-click a reference → "Copy citation (@key)".**
 - **One Add box for everything.** The "+" button now takes whatever you have: paste a DOI, a
   link (a `doi.org` or publisher link, an arXiv link, any web page), an ISBN, or a BibTeX record
   — or type a title and choose from matches (articles from Crossref, books from OpenLibrary).

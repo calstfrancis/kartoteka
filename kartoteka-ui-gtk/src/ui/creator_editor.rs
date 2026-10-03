@@ -171,12 +171,26 @@ fn build_row(
     remove.add_css_class("flat");
     remove.set_tooltip_text(Some("Remove this creator"));
 
+    // The occasional controls live behind a "⋯" button; only delete stays on the row. Five
+    // always-visible buttons made the row ~700px wide — wider than the detail pane at the
+    // default window size, so its right edge was clipped.
+    let more_actions = gtk4::Box::new(Orientation::Horizontal, 2);
+    more_actions.append(&single_toggle);
+    more_actions.append(&swap);
+    more_actions.append(&up);
+    more_actions.append(&down);
+    let more = gtk4::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("More: single name field, swap names, move up or down")
+        .build();
+    more.add_css_class("flat");
+    let more_popover = gtk4::Popover::new();
+    more_popover.set_child(Some(&more_actions));
+    more.set_popover(Some(&more_popover));
+
     hbox.append(&role_dropdown);
     hbox.append(&name_area);
-    hbox.append(&single_toggle);
-    hbox.append(&swap);
-    hbox.append(&up);
-    hbox.append(&down);
+    hbox.append(&more);
     hbox.append(&remove);
 
     let row = gtk4::ListBoxRow::new();

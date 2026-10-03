@@ -481,10 +481,10 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     inner_paned.set_resize_start_child(true);
     inner_paned.set_resize_end_child(false);
     // Wide enough on open that the spreadsheet's Key/Title/Author/Year/Files columns are all
-    // comfortably visible without immediately having to drag the divider — the detail card
-    // only needs to show one entry's fields, not compete with the list for space. Restored
+    // visible, while leaving the detail card enough room (~470px at the default 1300px window)
+    // for the creator row and citation fields not to clip. Restored
     // from last session if this isn't a first run.
-    inner_paned.set_position(config.borrow().detail_pane_position.unwrap_or(780));
+    inner_paned.set_position(config.borrow().detail_pane_position.unwrap_or(640));
 
     let paned = gtk4::Paned::new(Orientation::Horizontal);
     paned.set_start_child(Some(&collections_box));
@@ -10633,6 +10633,19 @@ fn show_entry_context_menu(
         1,
     )));
     popover.set_has_arrow(true);
+
+    // First, because citing is what most right-clicks on a reference are for.
+    let copy_row = popover_button("Copy citation (@key)", false);
+    {
+        let widgets = widgets.clone();
+        let popover = popover.clone();
+        let key = key.to_string();
+        copy_row.connect_clicked(move |_| {
+            popover.popdown();
+            copy_citation(&widgets, &key);
+        });
+    }
+    rows.append(&copy_row);
 
     let collections_row = popover_button("Collections…", false);
     {

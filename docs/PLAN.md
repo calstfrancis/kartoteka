@@ -30,10 +30,11 @@ GitHub-backup disclosure · EPUB/folder drop · Cite with a page (`fond_bib::cit
 
 ## 1. First-run and layout (S–M)
 
-- [ ] **Detail pane too narrow at the default window.** Default split leaves ~320px; the creator
-      row needs ~700px so its buttons clip. Wider default split or a creator row that wraps.
+- [x] **Detail pane too narrow at the default window** — creator row slimmed (extras behind a
+      "⋮" menu) and the default split widened; verified at 1300px.
 - [ ] First-run flow that ends with a first source: after "New library", land in the Add box.
-- [ ] Copy `@key` from a spreadsheet row (right-click and/or key-cell click). Keys stay visible.
+- [x] Copy `@key` from a spreadsheet row (right-click → "Copy citation (@key)"). Still
+      possible: click-to-copy on the key cell itself.
 - [ ] Rename jargon in the UI: "Nodes…" → "People & ideas…", "Reindex search" → "Repair search",
       "Back up (git commit)…" → hidden under Advanced.
 
@@ -85,9 +86,9 @@ GitHub-backup disclosure · EPUB/folder drop · Cite with a page (`fond_bib::cit
 
 ## 7. Data safety across the suite (S–M)
 
-- [ ] **Unknown relation predicates and note fields must be preserved, not fatal.** Three apps at
-      different `fond-bib` versions write one vault; today an unknown predicate makes a note fail
-      to parse (listed as "deliberately not changed" in 0.17.2).
+- [x] **Unknown relation predicates are preserved, not fatal** (notes and nodes) — set aside on
+      read, written back verbatim. Still to consider: unknown *fields* inside a known relation, and
+      having `fsck` mention how many unrecognised relations a library holds.
 - [ ] Align pinned `fond-bib` tags across Zerkalo, Pereplyot and Kartoteka; add a CI check.
 
 ## 8. Engineering (L, incremental)

@@ -309,8 +309,10 @@ fn merge_group_keeps_everything_the_duplicate_carried() {
         .any(|r| r.target == "keep"));
 }
 
-const CORRUPT_NOTE: &str =
-    "---\nrelations:\n  - predicate: not-a-real-predicate\n    target: b\n---\nbody\n";
+/// Genuinely corrupt: a known relation with no `target`. (An *unknown* predicate is no longer
+/// corruption — a newer version may have written it — see
+/// `a_relation_this_version_does_not_know_survives_opening_and_saving`.)
+const CORRUPT_NOTE: &str = "---\nrelations:\n  - predicate: cites\n---\nbody\n";
 
 /// One corrupt note used to abort `fsck` at the `?` — no report at all, on exactly the
 /// libraries that need one.
@@ -1690,4 +1692,77 @@ fn an_identifier_already_in_the_library_is_found_before_adding_it_again() {
     }
     assert_eq!(lib.find_entry_by_isbn("9780804429573").unwrap(), None);
     assert_eq!(lib.find_entry_by_isbn("not an isbn").unwrap(), None);
+}
+
+#[test]
+fn a_relation_this_version_does_not_know_survives_opening_and_saving() {
+    use fond_bib::Predicate;
+    let (_dir, lib) = temp_library();
+    for k in ["a", "b"] {
+        fs::write(
+            lib.entry_path(k),
+            format!("{k}:\n  type: book\n  title: Title {k}\n"),
+        )
+        .unwrap();
+    }
+    // A newer Kartoteka wrote a predicate this version has never heard of, next to a known one.
+    fs::write(
+        lib.note_path("a"),
+        "---\nrelations:\n- predicate: refutes-in-footnote\n  target: b\n- predicate: cites\n  target: b\ntags:\n- keep\n---\nProse.\n",
+    )
+    .unwrap();
+
+    // The note still opens, and the relation it understands is usable.
+    let note = lib.load_note("a").unwrap().expect("note parses");
+    assert_eq!(note.frontmatter.relations.len(), 1);
+    assert_eq!(note.frontmatter.relations[0].predicate, Predicate::Cites);
+    assert_eq!(note.frontmatter.unknown_relations.len(), 1);
+
+    // Editing the note through this version writes the unknown relation back, untouched.
+    lib.add_relation("a", Predicate::Related, "b").unwrap();
+    let raw = fs::read_to_string(lib.note_path("a")).unwrap();
+    assert!(
+        raw.contains("refutes-in-footnote"),
+        "newer relation lost: {raw}"
+    );
+    assert!(raw.contains("predicate: related"), "{raw}");
+    assert!(raw.contains("- keep") && raw.contains("Prose."), "{raw}");
+
+    // fsck does not choke on it either.
+    assert!(lib.fsck().is_ok());
+}
+
+#[test]
+fn a_malformed_known_relation_is_still_an_error_not_silently_set_aside() {
+    let (_dir, lib) = temp_library();
+    fs::write(lib.entry_path("a"), "a:\n  type: book\n  title: A\n").unwrap();
+    // `cites` is known but has no target: that's a typo to surface, not a newer feature.
+    fs::write(
+        lib.note_path("a"),
+        "---\nrelations:\n- predicate: cites\n---\n",
+    )
+    .unwrap();
+    assert!(lib.load_note("a").is_err());
+}
+
+#[test]
+fn an_unknown_relation_alongside_a_bare_number_in_custom_fields_still_loads() {
+    let (_dir, lib) = temp_library();
+    fs::write(lib.entry_path("a"), "a:\n  type: book\n  title: A\n").unwrap();
+    // `pages: 1` is a plain YAML number where the field type is a string — accepted when reading
+    // text, and it must stay accepted on the path that sets an unknown relation aside.
+    fs::write(
+        lib.note_path("a"),
+        "---\ncustom-fields:\n  pages: 1\nrelations:\n- predicate: from-the-future\n  target: z\n---\n",
+    )
+    .unwrap();
+    let note = lib.load_note("a").unwrap().expect("loads");
+    assert_eq!(
+        note.frontmatter
+            .custom_fields
+            .get("pages")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(note.frontmatter.unknown_relations.len(), 1);
 }

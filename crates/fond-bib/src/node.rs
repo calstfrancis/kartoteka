@@ -62,6 +62,10 @@ pub struct NodeFrontmatter {
     /// verbatim instead of being dropped the first time the node is rewritten.
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, serde_yaml_ng::Value>,
+    /// Relations whose predicate this version doesn't know, kept verbatim (see
+    /// [`crate::relation::parse_frontmatter`]).
+    #[serde(skip)]
+    pub unknown_relations: Vec<serde_yaml_ng::Value>,
 }
 
 /// A parsed node: frontmatter plus the Markdown body prose.
@@ -85,11 +89,12 @@ impl Node {
             });
         };
 
-        let frontmatter: NodeFrontmatter =
-            serde_yaml_ng::from_str(yaml).map_err(|e| BibError::Frontmatter {
+        let (mut frontmatter, unknown): (NodeFrontmatter, _) =
+            crate::relation::parse_frontmatter(yaml).map_err(|e| BibError::Frontmatter {
                 path: path.to_path_buf(),
                 message: e.to_string(),
             })?;
+        frontmatter.unknown_relations = unknown;
 
         if frontmatter.label.trim().is_empty() {
             return Err(BibError::Frontmatter {
@@ -107,11 +112,14 @@ impl Node {
     /// Serialize back to file text: `---`-fenced frontmatter followed by the body. Round-
     /// trips with [`Node::parse`].
     pub fn to_text(&self) -> Result<String> {
-        let yaml =
-            serde_yaml_ng::to_string(&self.frontmatter).map_err(|e| BibError::Frontmatter {
-                path: Path::new("<node>").to_path_buf(),
-                message: e.to_string(),
-            })?;
+        let yaml = crate::relation::emit_frontmatter(
+            &self.frontmatter,
+            &self.frontmatter.unknown_relations,
+        )
+        .map_err(|e| BibError::Frontmatter {
+            path: Path::new("<node>").to_path_buf(),
+            message: e.to_string(),
+        })?;
         Ok(format!("---\n{yaml}---\n{}", self.body))
     }
 }
@@ -207,5 +215,21 @@ mod tests {
         let text = node.to_text().unwrap();
         assert!(text.contains("node-type: work-uncataloged"), "{text}");
         assert!(text.contains("label: Enneads"), "{text}");
+    }
+
+    #[test]
+    fn a_relation_with_an_unknown_predicate_is_kept_through_a_round_trip() {
+        let text = "---\nnode-type: person\nlabel: Augustine\nrelations:\n- predicate: related\n  target: aquinas\n- predicate: from-the-future\n  target: x\n---\nBody.\n";
+        let node = Node::parse(text, &p()).unwrap();
+        assert_eq!(node.frontmatter.relations.len(), 1);
+        assert_eq!(node.frontmatter.unknown_relations.len(), 1);
+        let again = node.to_text().unwrap();
+        assert!(again.contains("from-the-future"), "{again}");
+        assert!(
+            again.contains("aquinas") && again.contains("Body."),
+            "{again}"
+        );
+        // And it is stable: parsing the output gives the same thing.
+        assert_eq!(Node::parse(&again, &p()).unwrap(), node);
     }
 }
