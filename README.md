@@ -11,7 +11,7 @@ opaque database. The search index and metadata cache are disposable and rebuild 
 files with one command. `library.yml` is regenerated on every write, so
 `#bibliography("library.yml")` in Typst is always current.
 
-> Status: **0.18.2 "Lending Desk"**. A full GTK4/libadwaita desktop app (`kartoteka-gtk`)
+> Status: **0.19.0 "Front Desk"**. A full GTK4/libadwaita desktop app (`kartoteka-gtk`)
 > ships alongside the headless CLI (`kartoteka`), distributed as a flatpak — see **Install**
 > below. `CHANGELOG.md` is the record of what has shipped; `docs/UX-REVIEW.md` is the current
 > list of what to improve next.

@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased]
+## [0.19.0] "Front Desk" — 2026-10-03 — One Add box, a shorter menu, citing with pages
 
 - **Fixed: "Used in" missed citations written as `#cite(<key>)`.** Only `@key` was counted, so
   any source cited with the function form — including `#cite(<key>, supplement: [p. 3])` and

@@ -45,6 +45,19 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.19.0" date="2026-10-03">
+      <description>
+        <p>0.19.0 "Front Desk" — one Add box for everything: paste a DOI, link, ISBN or BibTeX
+        record, or type a title and choose a match, and a reference already in your library is
+        found instead of added twice. A shorter main menu with a single Backup window that says
+        what each option holds (GitHub backups do not include PDFs). Cite with a page
+        (@key[p. 12]); highlights as Typst (kartoteka annots --typst); edit a reference's
+        journal, volume, issue, pages and URL; export without needing a collection, in any
+        citation style including Turabian; the citation key is always on the card. Fixed
+        "Used in" missing #cite(&lt;key&gt;) citations, and notes with a relation type from a
+        newer version no longer fail to load.</p>
+      </description>
+    </release>
     <release version="0.18.2" date="2026-09-29">
       <description>
         <p>0.18.2 "Lending Desk" — "Annotations…" now opens in Pereplyot, like "Read" already
