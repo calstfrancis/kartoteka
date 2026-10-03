@@ -56,9 +56,11 @@ GitHub-backup disclosure · EPUB/folder drop · Cite with a page (`fond_bib::cit
 
 ## 4. Switching from Zotero / Mendeley (M–L)
 
-- [ ] **One-click Zotero import**: detect `~/Zotero`, import items, collections, notes and files
-      with progress. Today needs a BetterBibTeX export first.
-- [ ] RIS and CSL-JSON import (a `.ris` drop currently says it can't be read).
+- [ ] **True one-click Zotero import**: read items, collections, notes and files straight from
+      `zotero.sqlite` with progress. Today: the dialog detects `~/Zotero` and explains the export
+      (BibTeX/RIS/CSL JSON); collections/notes come across with a `.bib` import only.
+- [x] RIS and CSL-JSON import (`fond_bib::records`; CLI `import --from`; Import dialog; drop opens
+      Import). Better BibTeX keys kept from CSL-JSON.
 - [ ] Mendeley export path documented.
 
 ## 5. Zerkalo integration (M) — mostly in the Zerkalo repo

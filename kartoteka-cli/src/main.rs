@@ -63,11 +63,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Import entries from a BetterBibTeX / BibLaTeX .bib file. Citation keys are
-    /// preserved. Prints a report of anything that did not map cleanly.
+    /// Import entries from a reference-manager export: BetterBibTeX/BibLaTeX `.bib`, RIS
+    /// (`.ris`, from Zotero, Mendeley, EndNote or a publisher), or CSL-JSON (`.json`). The kind is
+    /// chosen by file extension. Citation keys are preserved where the file has them (`.bib`,
+    /// and CSL-JSON with Better BibTeX keys); RIS entries get new keys. Anything already in the
+    /// library (same key, DOI or ISBN) is skipped. Prints a report of what did not map cleanly.
     Import {
-        /// Path to the .bib file.
-        #[arg(long = "from-bibtex")]
+        /// Path to the file to import.
+        #[arg(long = "from-bibtex", visible_alias = "from")]
         from_bibtex: PathBuf,
         /// Overwrite entries whose key already exists (default: skip and report).
         #[arg(long)]
@@ -413,6 +416,31 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
         } => {
             let source = std::fs::read_to_string(&from_bibtex)?;
             let library = Library::open(&cli.library)?;
+            let extension = from_bibtex
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase);
+            if matches!(extension.as_deref(), Some("ris" | "json")) {
+                if zotero_db.is_some() {
+                    return Err(
+                        "--zotero-db goes with a .bib import; RIS and CSL-JSON files \
+                                carry no Zotero item ids to match collections against"
+                            .into(),
+                    );
+                }
+                let opts = fond_bib::ImportOptions {
+                    overwrite,
+                    ..Default::default()
+                };
+                let report = if extension.as_deref() == Some("ris") {
+                    library.import_ris(&source, &opts)?
+                } else {
+                    library.import_csl_json(&source, &opts)?
+                };
+                print_import(&report);
+                reindex_after_change(&cli.library, &library);
+                return Ok(ExitCode::SUCCESS);
+            }
             let opts = fond_bib::ImportOptions {
                 overwrite,
                 copy_attachments: !no_attachments,
@@ -1062,6 +1090,13 @@ fn load_style(
 
 fn print_import(report: &ImportReport) {
     println!("Imported {} entries.", report.imported.len());
+    // A short import is worth listing: the keys are what you cite, and for formats that carry
+    // none (RIS) they were just made up. A long one would only bury the report.
+    if report.imported.len() <= 20 {
+        for key in &report.imported {
+            println!("  {key}");
+        }
+    }
 
     let total_copied = report.attachments_copied.len();
     if total_copied > 0 {

@@ -2,6 +2,18 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased]
+
+- **Import from RIS and CSL-JSON, not just BibTeX.** Zotero, Mendeley, EndNote and every
+  publisher's "Export citation" button can produce RIS; Zotero and Better BibTeX can export CSL
+  JSON. Import now reads both, chosen by file type (also `kartoteka import --from FILE`), and a
+  `.bib`, `.ris` or `.json` file dropped onto the window opens Import with it already chosen.
+  CSL JSON from Better BibTeX keeps your existing citation keys, so documents that cite them
+  keep working; RIS entries get new keys (listed when the import is short). Anything already in
+  the library — same key, DOI or ISBN — is skipped, so importing the same export twice adds
+  nothing. Keywords become tags. The Import window now explains how to export from Zotero and
+  finds your Zotero data folder (`~/Zotero`) on its own.
+
 ## [0.19.0] "Front Desk" — 2026-10-03 — One Add box, a shorter menu, citing with pages
 
 - **Search as you type ignores accents and word order.** `zizek` finds Žižek, and `power black`

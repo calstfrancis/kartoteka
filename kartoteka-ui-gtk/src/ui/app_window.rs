@@ -856,10 +856,10 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
                         import_pdf_folder(&state, &widgets, path);
                         handled = true;
                     }
-                    DropKind::Bibliography => toast(
-                        &widgets,
-                        "That's a bibliography file — use Import… in the menu to bring it in",
-                    ),
+                    DropKind::Bibliography => {
+                        show_import_dialog(&state, &widgets, Some(path));
+                        handled = true;
+                    }
                     DropKind::Unsupported => toast(
                         &widgets,
                         "Drop a PDF, an EPUB, or a folder of PDFs to add it",
@@ -1455,7 +1455,7 @@ fn add_window_actions(
         let state = state.clone();
         let widgets = widgets.clone();
         let action = gio::SimpleAction::new("import", None);
-        action.connect_activate(move |_, _| show_import_dialog(&state, &widgets));
+        action.connect_activate(move |_, _| show_import_dialog(&state, &widgets, None));
         window.add_action(&action);
     }
     {
@@ -1762,6 +1762,35 @@ fn show_about(window: &adw::ApplicationWindow) {
 
 /// Pick a PDF, identify it (DOI sniff or embedded metadata), create the entry, and attach
 /// the PDF. Identification and any network lookup run on a worker thread.
+/// The reader an Import file needs, chosen by its extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportFormat {
+    BibTeX,
+    Ris,
+    CslJson,
+}
+
+impl ImportFormat {
+    fn of(path: &std::path::Path) -> ImportFormat {
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("ris") => ImportFormat::Ris,
+            Some("json") => ImportFormat::CslJson,
+            _ => ImportFormat::BibTeX,
+        }
+    }
+}
+
+/// Zotero's database in its default place (`~/Zotero/zotero.sqlite`), if it exists.
+fn detect_zotero_db(home: &std::path::Path) -> Option<PathBuf> {
+    let db = home.join("Zotero").join("zotero.sqlite");
+    db.is_file().then_some(db)
+}
+
 /// What a file or folder dropped onto the window is, and so what to do with it.
 #[derive(Debug, PartialEq, Eq)]
 enum DropKind {
@@ -1769,8 +1798,9 @@ enum DropKind {
     Epub,
     /// A folder — its PDFs are added in one go (the same as "Add folder of PDFs…").
     Folder,
-    /// A BibTeX/BibLaTeX list: imported through the Import dialog, which also handles
-    /// attachments and Zotero data, not silently by a drop.
+    /// A reference list (BibTeX, RIS or CSL-JSON): opens the Import dialog with the file already
+    /// chosen — the dialog also handles attachments and Zotero data, so a drop never imports
+    /// silently.
     Bibliography,
     Unsupported,
 }
@@ -1787,7 +1817,7 @@ impl DropKind {
         match ext.as_deref() {
             Some("pdf") => DropKind::Pdf,
             Some("epub") => DropKind::Epub,
-            Some("bib" | "bibtex") => DropKind::Bibliography,
+            Some("bib" | "bibtex" | "ris" | "json") => DropKind::Bibliography,
             _ => DropKind::Unsupported,
         }
     }
@@ -3020,6 +3050,7 @@ fn file_pick_row(
     button_label: &str,
     slot: Rc<RefCell<Option<PathBuf>>>,
     on_change: Rc<dyn Fn()>,
+    initial: Option<PathBuf>,
 ) -> gtk4::Box {
     let row = gtk4::Box::new(Orientation::Horizontal, 8);
     let name = gtk4::Label::new(Some(caption));
@@ -3032,6 +3063,15 @@ fn file_pick_row(
     value.set_hexpand(true);
     value.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
     let button = gtk4::Button::with_label(button_label);
+    if let Some(path) = initial {
+        value.set_text(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("selected"),
+        );
+        *slot.borrow_mut() = Some(path);
+        on_change();
+    }
 
     {
         let window = window.clone();
@@ -3066,7 +3106,11 @@ fn file_pick_row(
 /// Import from a BetterBibTeX `.bib` (required) and optionally a Zotero `zotero.sqlite`.
 /// The import runs on a worker thread (a `Library` is just a path, so it is `Send`).
 #[allow(deprecated)]
-fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+fn show_import_dialog(
+    state: &Rc<RefCell<AppState>>,
+    widgets: &Rc<Widgets>,
+    initial: Option<PathBuf>,
+) {
     if state.borrow().library.is_none() {
         toast(widgets, "Open a library first");
         return;
@@ -3097,6 +3141,17 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     content.set_margin_start(18);
     content.set_margin_end(18);
 
+    let how_to = gtk4::Label::new(Some(
+        "Coming from Zotero, Mendeley or EndNote? Export your library (in Zotero: File → Export \
+         Library…) as BibTeX, RIS or CSL JSON, then choose that file. Better BibTeX and CSL JSON \
+         keep your existing citation keys, so documents that cite them keep working.",
+    ));
+    how_to.set_wrap(true);
+    how_to.set_xalign(0.0);
+    how_to.add_css_class("dim-label");
+    how_to.add_css_class("caption");
+    content.append(&how_to);
+
     let bib_path: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
     let zotero_path: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
 
@@ -3109,18 +3164,30 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
     content.append(&file_pick_row(
         &widgets.window,
-        "BibTeX (.bib)",
+        "Reference file",
         "Choose…",
         bib_path.clone(),
         enable_import.clone(),
+        initial,
     ));
+    // Zotero keeps its database in ~/Zotero by default; offer it when it's there, so the
+    // collections and notes come across too (BibTeX imports only).
     content.append(&file_pick_row(
         &widgets.window,
-        "Zotero (optional)",
+        "Zotero data",
         "Choose…",
         zotero_path.clone(),
         noop,
+        detect_zotero_db(&glib::home_dir()),
     ));
+    let zotero_note = gtk4::Label::new(Some(
+        "Zotero collections and notes are added when you import a BibTeX (.bib) file.",
+    ));
+    zotero_note.set_xalign(0.0);
+    zotero_note.set_wrap(true);
+    zotero_note.add_css_class("dim-label");
+    zotero_note.add_css_class("caption");
+    content.append(&zotero_note);
 
     let overwrite_row = gtk4::Box::new(Orientation::Horizontal, 8);
     let overwrite_label = gtk4::Label::new(Some("Overwrite existing keys"));
@@ -3157,15 +3224,19 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
             let source = match std::fs::read_to_string(&bib) {
                 Ok(s) => s,
                 Err(e) => {
-                    toast(&widgets, &format!("Could not read .bib: {e}"));
+                    toast(&widgets, &format!("Could not read that file: {e}"));
                     return;
                 }
             };
+            let format = ImportFormat::of(&bib);
             let opts = fond_bib::ImportOptions {
                 overwrite: overwrite.is_active(),
                 copy_attachments: true,
                 attachment_base: bib.parent().map(|p| p.to_path_buf()),
-                zotero_db: zotero_path.borrow().clone(),
+                // Only a BibTeX import can be matched against Zotero's own database.
+                zotero_db: (format == ImportFormat::BibTeX)
+                    .then(|| zotero_path.borrow().clone())
+                    .flatten(),
             };
             let library = state.borrow().library.clone().expect("library open");
 
@@ -3174,11 +3245,12 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
 
             let (sender, receiver) = worker::channel::<Result<fond_bib::ImportReport, String>>();
             std::thread::spawn(move || {
-                let _ = sender.send(
-                    library
-                        .import_bibtex(&source, &opts)
-                        .map_err(|e| e.to_string()),
-                );
+                let imported = match format {
+                    ImportFormat::BibTeX => library.import_bibtex(&source, &opts),
+                    ImportFormat::Ris => library.import_ris(&source, &opts),
+                    ImportFormat::CslJson => library.import_csl_json(&source, &opts),
+                };
+                let _ = sender.send(imported.map_err(|e| e.to_string()));
             });
 
             let state = state.clone();
@@ -3199,7 +3271,7 @@ fn show_import_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
                         }
                         if !report.skipped_key_collisions.is_empty() {
                             msg.push_str(&format!(
-                                ", {} skipped",
+                                ", {} already in your library",
                                 report.skipped_key_collisions.len()
                             ));
                         }
@@ -11981,7 +12053,11 @@ mod tests {
         );
         assert_eq!(
             DropKind::of(Path::new("/x/refs.ris")),
-            DropKind::Unsupported
+            DropKind::Bibliography
+        );
+        assert_eq!(
+            DropKind::of(Path::new("/x/refs.JSON")),
+            DropKind::Bibliography
         );
         assert_eq!(
             DropKind::of(Path::new("/x/notes.txt")),
@@ -11992,5 +12068,24 @@ mod tests {
             DropKind::Unsupported
         );
         assert_eq!(DropKind::of(&std::env::temp_dir()), DropKind::Folder);
+    }
+
+    #[test]
+    fn import_reader_is_chosen_by_extension_and_zotero_is_found_in_its_default_place() {
+        assert_eq!(ImportFormat::of(Path::new("a.RIS")), ImportFormat::Ris);
+        assert_eq!(ImportFormat::of(Path::new("a.json")), ImportFormat::CslJson);
+        assert_eq!(ImportFormat::of(Path::new("a.bib")), ImportFormat::BibTeX);
+        assert_eq!(ImportFormat::of(Path::new("a")), ImportFormat::BibTeX);
+
+        let home =
+            std::env::temp_dir().join(format!("kartoteka-zotero-test-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("Zotero")).unwrap();
+        assert_eq!(detect_zotero_db(&home), None);
+        std::fs::write(home.join("Zotero").join("zotero.sqlite"), b"").unwrap();
+        assert_eq!(
+            detect_zotero_db(&home),
+            Some(home.join("Zotero").join("zotero.sqlite"))
+        );
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

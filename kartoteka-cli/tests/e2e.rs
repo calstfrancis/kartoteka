@@ -338,3 +338,44 @@ fn annots_typst_prints_citable_quotes() {
         Some(2)
     );
 }
+
+#[test]
+fn import_chooses_the_reader_by_file_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib");
+    assert!(kartoteka(&lib, &["init"]).status.success());
+
+    let ris = dir.path().join("refs.ris");
+    std::fs::write(
+        &ris,
+        "TY  - BOOK\nAU  - Berdyaev, Nikolai\nTI  - The Destiny of Man\nPY  - 1937\nER  -\n",
+    )
+    .unwrap();
+    let out = kartoteka(&lib, &["import", "--from", ris.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("berdyaev1937destiny"));
+
+    let json = dir.path().join("refs.json");
+    std::fs::write(
+        &json,
+        r#"[{"id":"cone1970black","type":"book","title":"A Black Theology of Liberation","author":[{"family":"Cone","given":"James H."}],"issued":{"date-parts":[[1970]]}}]"#,
+    )
+    .unwrap();
+    let out = kartoteka(&lib, &["import", "--from", json.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    let listed = kartoteka(&lib, &["list"]);
+    let text = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        text.contains("berdyaev1937destiny") && text.contains("cone1970black"),
+        "{text}"
+    );
+
+    // A file that isn't what its extension says fails cleanly.
+    let bad = dir.path().join("bad.ris");
+    std::fs::write(&bad, "nothing here").unwrap();
+    assert!(
+        !kartoteka(&lib, &["import", "--from", bad.to_str().unwrap()])
+            .status
+            .success()
+    );
+}

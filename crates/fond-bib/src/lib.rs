@@ -25,6 +25,7 @@ pub mod library;
 pub mod node;
 pub mod note;
 pub mod project;
+pub mod records;
 pub mod relation;
 pub mod render;
 pub mod util;
@@ -46,6 +47,7 @@ pub use note::{
     ReadStatus, Task,
 };
 pub use project::Project;
+pub use records::{parse_csl_json, parse_ris, Kind, Work};
 pub use relation::{Predicate, Relation, TargetKind};
 pub use render::{
     resolve_style, style_choices, style_from_csl, suggest_styles, RenderedEntry, StyleChoice,

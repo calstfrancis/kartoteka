@@ -122,3 +122,125 @@ fn reports_unmapped_fields() {
     assert!(fields.iter().any(|f| f == "mendeley-tags"));
     assert!(!fields.iter().any(|f| f == "annotation"));
 }
+
+const CSL_EXPORT: &str = r#"[
+  {"id":"cone1970black","type":"article-journal","title":"Black Theology and Black Power",
+   "author":[{"family":"Cone","given":"James H."}],"container-title":"Christianity and Crisis",
+   "volume":"30","issue":"1","page":"6-13","issued":{"date-parts":[[1970]]},
+   "DOI":"10.2307/abc","keyword":"christology, liberation"},
+  {"id":"http://zotero.org/users/1/items/AB12","type":"book","title":"The Destiny of Man",
+   "author":[{"family":"Berdyaev","given":"Nikolai"}],"publisher":"Geoffrey Bles",
+   "publisher-place":"London","issued":{"date-parts":[[1937]]},"ISBN":"9780140449136"}
+]"#;
+
+#[test]
+fn csl_json_import_keeps_better_bibtex_keys_makes_the_rest_and_writes_tags() {
+    use fond_bib::entry::read_fields;
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(dir.path()).unwrap();
+
+    let report = lib
+        .import_csl_json(CSL_EXPORT, &ImportOptions::default())
+        .unwrap();
+    assert_eq!(report.imported.len(), 2, "{report:?}");
+    assert!(report.imported.contains(&"cone1970black".to_string()));
+    // The Zotero-URL id is not a key; a fresh one is made from the entry.
+    assert!(
+        report.imported.contains(&"berdyaev1937destiny".to_string()),
+        "{:?}",
+        report.imported
+    );
+
+    let cone = read_fields(&lib.load_entry("cone1970black").unwrap().entry);
+    assert_eq!(cone.entry_type, "article");
+    assert_eq!(
+        (
+            cone.container.as_str(),
+            cone.volume.as_str(),
+            cone.issue.as_str(),
+            cone.pages.as_str()
+        ),
+        ("Christianity and Crisis", "30", "1", "6-13")
+    );
+    assert_eq!(
+        (cone.year.as_str(), cone.doi.as_str()),
+        ("1970", "10.2307/abc")
+    );
+    let book = read_fields(&lib.load_entry("berdyaev1937destiny").unwrap().entry);
+    assert_eq!(
+        (
+            book.publisher.as_str(),
+            book.location.as_str(),
+            book.isbn.as_str()
+        ),
+        ("Geoffrey Bles", "London", "9780140449136")
+    );
+
+    let note = lib.load_note("cone1970black").unwrap().unwrap();
+    assert_eq!(note.frontmatter.tags, ["christology", "liberation"]);
+
+    // library.yml is regenerated, and the imported entries render as proper citations.
+    assert!(std::fs::read_to_string(lib.library_yml_path())
+        .unwrap()
+        .contains("cone1970black"));
+    let style = fond_bib::resolve_style("chicago-author-date").unwrap();
+    let rendered = lib
+        .bibliography_for_all(&style, fond_bib::BufWriteFormat::Plain)
+        .unwrap();
+    let text = rendered
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Christianity and Crisis"), "{text}");
+    assert!(text.contains("Geoffrey Bles"), "{text}");
+}
+
+#[test]
+fn importing_the_same_export_twice_adds_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(dir.path()).unwrap();
+    lib.import_csl_json(CSL_EXPORT, &ImportOptions::default())
+        .unwrap();
+    let again = lib
+        .import_csl_json(CSL_EXPORT, &ImportOptions::default())
+        .unwrap();
+    assert!(again.imported.is_empty(), "{again:?}");
+    assert_eq!(again.skipped_key_collisions.len(), 2);
+    assert_eq!(lib.keys_sorted().unwrap().len(), 2);
+
+    // The same books arriving as RIS (no keys) are recognised by DOI / ISBN too.
+    let ris = "TY  - JOUR\nTI  - Black Theology and Black Power\nAU  - Cone, James H.\nDO  - 10.2307/ABC\nER  -\n\nTY  - BOOK\nTI  - The Destiny of Man\nAU  - Berdyaev, Nikolai\nSN  - 0-14-044913-2\nER  -\n";
+    let from_ris = lib.import_ris(ris, &ImportOptions::default()).unwrap();
+    assert!(from_ris.imported.is_empty(), "{from_ris:?}");
+    assert_eq!(lib.keys_sorted().unwrap().len(), 2);
+}
+
+#[test]
+fn ris_import_generates_keys_and_collision_free_ones_for_lookalikes() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(dir.path()).unwrap();
+    let ris = "TY  - JOUR\nAU  - Cone, James H.\nTI  - Black Theology\nPY  - 1970\nKW  - christology\nER  -\n\nTY  - JOUR\nAU  - Cone, James H.\nTI  - Black Power\nPY  - 1970\nER  -\n";
+    let report = lib.import_ris(ris, &ImportOptions::default()).unwrap();
+    assert_eq!(report.imported.len(), 2, "{report:?}");
+    let mut keys = report.imported.clone();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), 2, "keys collided: {:?}", report.imported);
+    assert!(keys.iter().all(|k| k.starts_with("cone1970")), "{keys:?}");
+    let tagged = lib.load_note(&report.imported[0]).unwrap().unwrap();
+    assert_eq!(tagged.frontmatter.tags, ["christology"]);
+}
+
+#[test]
+fn a_file_that_is_not_the_format_is_a_clear_error_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(dir.path()).unwrap();
+    assert!(lib
+        .import_ris("this is not ris", &ImportOptions::default())
+        .is_err());
+    assert!(lib
+        .import_csl_json("{oops", &ImportOptions::default())
+        .is_err());
+    assert!(lib.keys_sorted().unwrap().is_empty());
+}
