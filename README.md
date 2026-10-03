@@ -1,8 +1,9 @@
 # Kartoteka
 
 A plain-file reference manager and PDF/EPUB library for writing in Typst. Part of the
-**Fond** suite (with Zerkalo and Skrizhal). Kartoteka (Картотека) is the card catalogue:
-the inventory that lets you find anything in the fond.
+**Fond** suite (with Zerkalo, the Typst writing app, and Skrizhal). Documents open in
+[Pereplyot](https://github.com/calstfrancis/pereplyot), the PDF/EPUB reader. Kartoteka
+(Картотека) is the card catalogue: the inventory that lets you find anything in the fond.
 
 **Plain files are the source of truth.** Your library is Hayagriva YAML, Markdown notes,
 and JSON annotation sidecars in a git repo — human-readable, editable in `vim`, with no
@@ -10,9 +11,10 @@ opaque database. The search index and metadata cache are disposable and rebuild 
 files with one command. `library.yml` is regenerated on every write, so
 `#bibliography("library.yml")` in Typst is always current.
 
-> Status: **0.11.0 "Wide Margin"**, released 2026-09-06. A full GTK4/libadwaita desktop app
-> (`kartoteka-ui-gtk`) ships alongside the headless CLI, distributed as a flatpak — see
-> **Install** below. See `docs/ROADMAP.md` for what's still ahead.
+> Status: **0.18.2 "Lending Desk"**. A full GTK4/libadwaita desktop app (`kartoteka-gtk`)
+> ships alongside the headless CLI (`kartoteka`), distributed as a flatpak — see **Install**
+> below. `CHANGELOG.md` is the record of what has shipped; `docs/UX-REVIEW.md` is the current
+> list of what to improve next.
 
 ## Features
 
@@ -50,7 +52,9 @@ files with one command. `library.yml` is regenerated on every write, so
   map, either centered on one entry or across the whole library, with most-connected/
   most-cited analytics.
 - Exact and fuzzy duplicate detection, with one-click merging.
-- Bibliography output in SBL and Chicago styles, and annotated Typst documents.
+- Bibliography output in SBL, Chicago, Turabian, APA, MLA and every other bundled CSL style
+  (`kartoteka styles` lists them), for a collection or the whole library, and annotated Typst
+  documents.
 - Full-text search over metadata, notes, annotations, and PDF/EPUB text.
 - Sync via git, GitHub, or WebDAV.
 
@@ -90,8 +94,10 @@ kartoteka -L my-library fsck
 
 ## Documentation
 
-`docs/ARCHITECTURE.md`, `docs/DATA-MODEL.md`, `docs/LICENSES.md`, `docs/ROADMAP.md`,
-`packaging/PACKAGING.md`, `CHANGELOG.md`.
+`docs/ARCHITECTURE.md`, `docs/DATA-MODEL.md`, `docs/LICENSES.md`, `docs/UX-REVIEW.md`,
+`packaging/PACKAGING.md`, `CHANGELOG.md`. `docs/STATUS.md` records how the milestone docs
+(`M2`–`M5-SPEC.md`, `NOTES-SPEC.md`) fit together; the original brief (`ROADMAP.md`) is no longer
+in the tree.
 
 ## Licensing
 

@@ -2,7 +2,10 @@
 
 **Read this first when picking up Kartoteka cold** (e.g. after a cleared chat). It records
 where the project actually is, how the docs fit together, and what's committed vs. not.
-Last updated: **2026-08-11.**
+Last updated: **2026-08-11** — **the "Where things stand" section below is out of date** (it
+describes v0.1.0-dev9; Kartoteka is at 0.18.x). The track disambiguation and the document map are
+still accurate. For what has shipped, read `CHANGELOG.md`; for what to do next, `UX-REVIEW.md`.
+`ROADMAP.md` and `M2-GUI-PLAN.md`, referenced below, are no longer in the tree.
 
 ---
 
@@ -137,6 +140,7 @@ Clean once the dev7 bump is committed.
 | `M3-SPEC.md` | Extension-M3 spec (knowledge-graph nodes). **Complete** — all 8 PRs built and tested. |
 | `M4-SPEC.md` | Extension-M4: the map toward a "full-fledged" citation manager (live PDF annotation, Zerkalo vault adoption, remaining GUI/platform gaps), tiered by how much each blocks the core workflow. **Tier 1 done; Tiers 3–4 remain.** |
 | `NOTES-SPEC.md` | Standalone (not M-numbered) plan for a more robust note/annotation system. **Tier 0 (right-hand Notes sidebar) and Tier 1 (child/standalone notes) done; Tiers 2–6 scoped, not started.** |
+| `UX-REVIEW.md` | The 2026-10 review of Kartoteka as an academic citation manager alongside Zerkalo and Pereplyot: verified problems, design moves, integration gaps, suggested order. |
 | `LICENSES.md` | Licensing (`fond-*` crates MIT; app proprietary). |
 
 **Reading order for a cold start:** this file → `DATA-MODEL-EXTENSIONS.md` (the map) →

@@ -2,6 +2,30 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased]
+
+- **Fixed: "Used in" missed citations written as `#cite(<key>)`.** Only `@key` was counted, so
+  any source cited with the function form — including `#cite(<key>, supplement: [p. 3])` and
+  `#cite(form: "prose", <key>)` — showed as unused. A `<label>` that merely defines a label
+  (`= Intro <intro>`) is still not mistaken for a citation.
+- **Edit a reference's journal, volume, issue, pages and URL in place.** The editor had no way
+  to correct these, so an article added by DOI with incomplete data stayed that way. A new
+  "Published in" row (plus Volume / Issue / Pages and URL) appears for articles, chapters and
+  papers, and for anything that already has a value. Volume and issue are saved back to where
+  the entry already keeps them, so existing files don't change shape.
+- **The citation key is always visible on the card**, directly under the title, with a button
+  that copies `@key` — it was previously folded away inside "Details".
+- **Export bibliography works in a library with no collections** ("All entries" is now the
+  first choice), and offers every citation style Kartoteka can render — SBL, Chicago, Turabian,
+  APA, MLA first, then the rest — instead of four. In the CLI, `kartoteka styles [filter]` lists
+  them, `bib` and `annotated-bib` take `--all`, `turabian` is a recognised name, and a mistyped
+  style now suggests close matches.
+- **Backup now says what it doesn't hold.** GitHub backups keep your references, notes and
+  highlights but not your PDF and EPUB files (they're too large for GitHub); the backup
+  dialogs say so and point to "Save a copy…" and WebDAV, which do include them.
+- **Drag in more than PDFs.** Dropping an EPUB adds it, dropping a folder adds its PDFs, and a
+  dropped `.bib` points you to Import instead of failing with "Only PDF files can be dropped".
+
 ## [0.18.2] "Lending Desk" — 2026-09-29
 
 - **"Annotations…" now opens in Pereplyot**, like "Read" already does, instead of a copy of

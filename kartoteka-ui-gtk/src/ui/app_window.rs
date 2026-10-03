@@ -848,16 +848,27 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
                     skipped_remote = true;
                     continue;
                 };
-                if path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.eq_ignore_ascii_case("pdf"))
-                    == Some(true)
-                {
-                    import_pdf(&state, &widgets, path);
-                    handled = true;
-                } else {
-                    toast(&widgets, "Only PDF files can be dropped");
+                match DropKind::of(&path) {
+                    DropKind::Pdf => {
+                        import_pdf(&state, &widgets, path);
+                        handled = true;
+                    }
+                    DropKind::Epub => {
+                        import_epub(&state, &widgets, path);
+                        handled = true;
+                    }
+                    DropKind::Folder => {
+                        import_pdf_folder(&state, &widgets, path);
+                        handled = true;
+                    }
+                    DropKind::Bibliography => toast(
+                        &widgets,
+                        "That's a bibliography file — use Import… in the menu to bring it in",
+                    ),
+                    DropKind::Unsupported => toast(
+                        &widgets,
+                        "Drop a PDF, an EPUB, or a folder of PDFs to add it",
+                    ),
                 }
             }
             if skipped_remote && !handled {
@@ -1730,6 +1741,37 @@ fn show_about(window: &adw::ApplicationWindow) {
 
 /// Pick a PDF, identify it (DOI sniff or embedded metadata), create the entry, and attach
 /// the PDF. Identification and any network lookup run on a worker thread.
+/// What a file or folder dropped onto the window is, and so what to do with it.
+#[derive(Debug, PartialEq, Eq)]
+enum DropKind {
+    Pdf,
+    Epub,
+    /// A folder — its PDFs are added in one go (the same as "Add folder of PDFs…").
+    Folder,
+    /// A BibTeX/BibLaTeX list: imported through the Import dialog, which also handles
+    /// attachments and Zotero data, not silently by a drop.
+    Bibliography,
+    Unsupported,
+}
+
+impl DropKind {
+    fn of(path: &std::path::Path) -> DropKind {
+        if path.is_dir() {
+            return DropKind::Folder;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        match ext.as_deref() {
+            Some("pdf") => DropKind::Pdf,
+            Some("epub") => DropKind::Epub,
+            Some("bib" | "bibtex") => DropKind::Bibliography,
+            _ => DropKind::Unsupported,
+        }
+    }
+}
+
 fn show_add_pdf(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     if state.borrow().library.is_none() {
         toast(widgets, "Open a library first");
@@ -3541,6 +3583,7 @@ fn show_backup_wizard(
     setup_page.append(&gtk4::Label::new(Some("Repository name")));
     setup_page.append(&repo_name_entry);
     setup_page.append(&private_row);
+    setup_page.append(&backup_scope_note());
     setup_page.append(&gtk4::Label::new(Some("Commit message")));
     setup_page.append(&message_entry);
     setup_page.append(&start_button);
@@ -3822,6 +3865,23 @@ fn show_backup_wizard(
     );
 }
 
+/// What a git/GitHub backup does and does not hold. Attachments (PDFs, EPUBs) are kept out of
+/// git on purpose — they're large, binary and undiffable — so a library restored from GitHub
+/// has every reference, note and highlight but not the files themselves. Said plainly wherever
+/// a GitHub backup is offered, because finding that out after a disk failure is too late.
+fn backup_scope_note() -> gtk4::Label {
+    let note = gtk4::Label::new(Some(
+        "Your references, notes and highlights are backed up. Your PDF and EPUB files are not \
+         — they're too large for GitHub. To keep them safe too, use \"Save a copy…\" or \
+         \"Back up to WebDAV…\" from the menu.",
+    ));
+    note.set_wrap(true);
+    note.set_xalign(0.0);
+    note.add_css_class("dim-label");
+    note.add_css_class("caption");
+    note
+}
+
 fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     let root = state
         .borrow()
@@ -3882,6 +3942,7 @@ fn show_backup_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     push_row.append(&push_label);
     push_row.append(&push_switch);
     content.append(&push_row);
+    content.append(&backup_scope_note());
 
     view.set_content(Some(&content));
     dialog.set_content(Some(&view));
@@ -12008,4 +12069,37 @@ fn human_size(bytes: u64) -> String {
 
 fn toast(widgets: &Rc<Widgets>, message: &str) {
     widgets.toasts.add_toast(adw::Toast::new(message));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn dropped_paths_are_classified_by_what_can_be_done_with_them() {
+        assert_eq!(DropKind::of(Path::new("/x/Paper.PDF")), DropKind::Pdf);
+        assert_eq!(DropKind::of(Path::new("/x/book.epub")), DropKind::Epub);
+        assert_eq!(
+            DropKind::of(Path::new("/x/book.kepub.epub")),
+            DropKind::Epub
+        );
+        assert_eq!(
+            DropKind::of(Path::new("/x/refs.bib")),
+            DropKind::Bibliography
+        );
+        assert_eq!(
+            DropKind::of(Path::new("/x/refs.ris")),
+            DropKind::Unsupported
+        );
+        assert_eq!(
+            DropKind::of(Path::new("/x/notes.txt")),
+            DropKind::Unsupported
+        );
+        assert_eq!(
+            DropKind::of(Path::new("/x/no-extension")),
+            DropKind::Unsupported
+        );
+        assert_eq!(DropKind::of(&std::env::temp_dir()), DropKind::Folder);
+    }
 }

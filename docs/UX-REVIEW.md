@@ -27,13 +27,18 @@ three apps that still depend on the user knowing what happens underneath.
 | # | Finding | Evidence | Status |
 |---|---|---|---|
 | 1 | **"Used in" under-counts Typst citations.** `scan_typst_citation_keys` finds `@key` but not `#cite(<key>)`. Zerkalo's "Tell Kartoteka" feature feeds this scanner. | Probe: 3 of 6 common citation forms missed. The old unit test asserted `<berdyaev1937destiny>` was absent. | Fixed |
-| 2 | **Journal, volume, issue and pages can't be edited after an entry exists.** The New-item form has them; the detail-pane editor (`EntryFields`) does not. | `fond_bib::entry::EntryFields` has type, title, creators, year, publisher, location, DOI, ISBN only. A DOI lookup with incomplete data can't be corrected in the UI. | Open |
-| 3 | **Export bibliography refuses to open with no collections**, and offers a fixed list of four styles. | Toast: "No collections to export (import from Zotero creates them)". `turabian` fails and there is no way to list valid styles. | Open |
-| 4 | **GitHub backup silently leaves out PDFs.** `attachments/` is gitignored and the backup wizard never says so. | WebDAV does include attachments; GitHub does not. | Open |
-| 5 | **Drag-and-drop accepts PDFs only.** | EPUB, `.bib` and `.ris` drops give "Only PDF files can be dropped". | Open |
-| 6 | **Docs are stale.** | README said 0.11.0; `docs/ROADMAP.md` and `M2-GUI-PLAN.md` are referenced but absent. | Partly fixed |
+| 2 | **Journal, volume, issue and pages can't be edited after an entry exists.** The New-item form has them; the detail-pane editor (`EntryFields`) does not. | `fond_bib::entry::EntryFields` has type, title, creators, year, publisher, location, DOI, ISBN only. A DOI lookup with incomplete data can't be corrected in the UI. | Fixed |
+| 3 | **Export bibliography refuses to open with no collections**, and offers a fixed list of four styles. | Toast: "No collections to export (import from Zotero creates them)". `turabian` fails and there is no way to list valid styles. | Fixed |
+| 4 | **GitHub backup silently leaves out PDFs.** `attachments/` is gitignored and the backup wizard never says so. | WebDAV does include attachments; GitHub does not. | Fixed (disclosed in the backup dialogs; a real fix is to back PDFs up too) |
+| 5 | **Drag-and-drop accepts PDFs only.** | EPUB, `.bib` and `.ris` drops give "Only PDF files can be dropped". | Fixed (EPUB, folders; `.bib` redirects to Import; `.ris` is still unsupported) |
+| 6 | **Docs are stale.** | README said 0.11.0; `docs/ROADMAP.md` and `M2-GUI-PLAN.md` are referenced but absent. | Fixed |
 
 ---
+
+Also observed while running the app headless: at the default 1300px window the detail pane is
+only ~320px wide, narrower than the creator-editor row, so the right edge (the "Single field",
+reorder and delete buttons) is clipped. A wider default pane, or a creator row that wraps, would
+fix the first-run view. Not yet addressed.
 
 ## 2. Design moves, simplest first
 
@@ -51,8 +56,9 @@ three apps that still depend on the user knowing what happens underneath.
 5. **One-click Zotero switch.** Detect `~/Zotero`, import items, collections, notes and files
    with a progress bar. Today it requires a BetterBibTeX export first. Add RIS and CSL-JSON.
 6. **A first-run flow that ends with a first source in the library.**
-7. **Keys stay visible; make them handier.** Click-to-copy on the key in the detail pane and
-   spreadsheet; the existing Cite action stays on Ctrl+K.
+7. **Keys stay visible; make them handier.** ✔ The key now shows under the title in the detail
+   pane with a copy button. Still to do: copy from the spreadsheet row; the Cite action stays
+   on Ctrl+K.
 
 ---
 
@@ -101,8 +107,9 @@ three apps that still depend on the user knowing what happens underneath.
 
 ## 6. Suggested order
 
-1. **Days:** scanner fix ✔, missing detail fields, export without collections, backup
-   disclosure, accept all file types on drop, refresh the README.
+1. **Days:** ✔ scanner fix, ✔ missing detail fields, ✔ export without collections and a full
+   style list, ✔ backup disclosure, ✔ wider drop support, ✔ README refresh. Still open from this
+   tier: the detail-pane width at the default window size.
 2. **Weeks:** unified Add box, menu consolidation, Backup status, locators in Cite,
    Typst annotation export, vault discovery.
 3. **Larger:** Zotero auto-import, "cited but unread" views, search snippets, forward-compatible
