@@ -1053,11 +1053,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "fond-annot"
+version = "0.1.0"
+source = "git+https://github.com/calstfrancis/fond-core?rev=d519cc2#d519cc2d6829a239c9e3595f3ab2ed428a54e1ee"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "fond-bib"
 version = "0.1.0"
 dependencies = [
  "biblatex 0.11.0",
  "blake3",
+ "fond-annot",
  "hayagriva",
  "reqwest",
  "rusqlite",
@@ -1072,6 +1084,7 @@ dependencies = [
 [[package]]
 name = "fond-doc"
 version = "0.1.0"
+source = "git+https://github.com/calstfrancis/fond-core?rev=d519cc2#d519cc2d6829a239c9e3595f3ab2ed428a54e1ee"
 dependencies = [
  "pdfium-render",
  "quick-xml 0.41.0",

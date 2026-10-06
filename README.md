@@ -72,7 +72,7 @@ files with one command. `library.yml` is regenerated on every write, so
 
 - `crates/fond-bib` — Hayagriva model, on-disk layout, citation keys, `library.yml` (MIT)
 - `crates/fond-vault` — in-process git (vendored libgit2) + filesystem watching (MIT)
-- `crates/fond-doc` — PDF/EPUB rendering, text extraction, and annotations (MIT)
+- `fond-doc` and `fond-annot` — PDF/EPUB access and the annotation sidecar format (MIT), now in [`fond-core`](https://github.com/calstfrancis/fond-core) so Pereplyot and the suite share one source
 - `crates/fond-index` — tantivy full-text search + derived cache (MIT)
 - `kartoteka-cli` — the headless `kartoteka` binary (proprietary)
 - `kartoteka-ui-gtk` — the GTK4/libadwaita desktop app, `kartoteka-gtk` (proprietary)

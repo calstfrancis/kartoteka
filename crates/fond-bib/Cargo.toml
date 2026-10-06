@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+fond-annot.workspace = true
 hayagriva.workspace = true
 biblatex.workspace = true
 rusqlite.workspace = true
