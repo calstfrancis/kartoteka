@@ -2,8 +2,8 @@
     {
         "type": "git",
         "url": "https://github.com/calstfrancis/fond-core",
-        "commit": "d519cc2d6829a239c9e3595f3ab2ed428a54e1ee",
-        "dest": "flatpak-cargo/git/fond-core-d519cc2"
+        "commit": "847e13e75b257c291308a32ccc3e99dc44d02c31",
+        "dest": "flatpak-cargo/git/fond-core-847e13e"
     },
     {
         "type": "archive",
@@ -1464,7 +1464,7 @@
     {
         "type": "shell",
         "commands": [
-            "cp -r --reflink=auto \"flatpak-cargo/git/fond-core-d519cc2/crates/fond-annot\" \"cargo/vendor/fond-annot\""
+            "cp -r --reflink=auto \"flatpak-cargo/git/fond-core-847e13e/crates/fond-annot\" \"cargo/vendor/fond-annot\""
         ]
     },
     {
@@ -1482,7 +1482,7 @@
     {
         "type": "shell",
         "commands": [
-            "cp -r --reflink=auto \"flatpak-cargo/git/fond-core-d519cc2/crates/fond-doc\" \"cargo/vendor/fond-doc\""
+            "cp -r --reflink=auto \"flatpak-cargo/git/fond-core-847e13e/crates/fond-doc\" \"cargo/vendor/fond-doc\""
         ]
     },
     {
@@ -2561,19 +2561,6 @@
         "type": "inline",
         "contents": "{\"package\": \"2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285\", \"files\": {}}",
         "dest": "cargo/vendor/itertools-0.14.0",
-        "dest-filename": ".cargo-checksum.json"
-    },
-    {
-        "type": "archive",
-        "archive-type": "tar-gzip",
-        "url": "https://static.crates.io/crates/itertools/itertools-0.15.0.crate",
-        "sha256": "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc",
-        "dest": "cargo/vendor/itertools-0.15.0"
-    },
-    {
-        "type": "inline",
-        "contents": "{\"package\": \"8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc\", \"files\": {}}",
-        "dest": "cargo/vendor/itertools-0.15.0",
         "dest-filename": ".cargo-checksum.json"
     },
     {
@@ -6322,7 +6309,7 @@
     },
     {
         "type": "inline",
-        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/calstfrancis/fond-core\"]\ngit = \"https://github.com/calstfrancis/fond-core\"\nreplace-with = \"vendored-sources\"\nrev = \"d519cc2\"\n",
+        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/calstfrancis/fond-core\"]\ngit = \"https://github.com/calstfrancis/fond-core\"\nreplace-with = \"vendored-sources\"\nrev = \"847e13e75\"\n",
         "dest": "cargo",
         "dest-filename": "config"
     }
