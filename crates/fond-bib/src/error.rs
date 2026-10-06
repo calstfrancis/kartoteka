@@ -61,3 +61,13 @@ impl BibError {
 }
 
 pub type Result<T> = std::result::Result<T, BibError>;
+
+impl From<fond_annot::AnnotError> for BibError {
+    fn from(e: fond_annot::AnnotError) -> Self {
+        match e {
+            fond_annot::AnnotError::PlainYaml { path, message } => {
+                BibError::PlainYaml { path, message }
+            }
+        }
+    }
+}

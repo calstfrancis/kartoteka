@@ -1053,11 +1053,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "fond-annot"
+version = "0.1.0"
+source = "git+https://github.com/calstfrancis/fond-core?rev=847e13e75#847e13e75b257c291308a32ccc3e99dc44d02c31"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "fond-bib"
 version = "0.1.0"
 dependencies = [
  "biblatex 0.11.0",
  "blake3",
+ "fond-annot",
  "hayagriva",
  "reqwest",
  "rusqlite",
@@ -1072,6 +1084,7 @@ dependencies = [
 [[package]]
 name = "fond-doc"
 version = "0.1.0"
+source = "git+https://github.com/calstfrancis/fond-core?rev=847e13e75#847e13e75b257c291308a32ccc3e99dc44d02c31"
 dependencies = [
  "pdfium-render",
  "quick-xml 0.41.0",
@@ -2041,15 +2054,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2659,7 +2663,7 @@ dependencies = [
  "chrono",
  "console_error_panic_hook",
  "console_log",
- "itertools 0.15.0",
+ "itertools",
  "js-sys",
  "libloading",
  "log",
@@ -3657,7 +3661,7 @@ dependencies = [
  "fs4",
  "htmlescape",
  "hyperloglogplus",
- "itertools 0.14.0",
+ "itertools",
  "levenshtein_automata",
  "log",
  "lru",
@@ -3705,7 +3709,7 @@ checksum = "6300428e0c104c4f7db6f95b466a6f5c1b9aece094ec57cdd365337908dc7344"
 dependencies = [
  "downcast-rs",
  "fastdivide",
- "itertools 0.14.0",
+ "itertools",
  "serde",
  "tantivy-bitpacker",
  "tantivy-common",
@@ -3755,7 +3759,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "709f22c08a4c90e1b36711c1c6cad5ae21b20b093e535b69b18783dd2cb99416"
 dependencies = [
  "futures-util",
- "itertools 0.14.0",
+ "itertools",
  "tantivy-bitpacker",
  "tantivy-common",
  "tantivy-fst",

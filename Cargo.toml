@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/fond-bib",
     "crates/fond-vault",
-    "crates/fond-doc",
     "crates/fond-index",
     "kartoteka-cli",
     "kartoteka-ui-gtk",
@@ -18,6 +17,8 @@ repository = "https://github.com/calstfrancis/kartoteka"
 # Shared dependency versions. Only Milestone 1 dependencies are declared here; PDF,
 # tantivy, and network crates are added at their milestones (see docs/ROADMAP.md).
 [workspace.dependencies]
+fond-annot = { git = "https://github.com/calstfrancis/fond-core", rev = "847e13e75" }
+fond-doc = { git = "https://github.com/calstfrancis/fond-core", rev = "847e13e75" }
 hayagriva = "0.10"
 biblatex = "0.11"
 serde = { version = "1", features = ["derive"] }
