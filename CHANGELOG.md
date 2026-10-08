@@ -2,6 +2,13 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased]
+
+- Picks up fond-core's fixes: text extraction (and so the full-text index) now reads rotated
+  pages and pages with an offset crop box in full instead of coming back empty or short, and
+  annotation sidecars written by a newer app keep their unknown kinds and fields when this
+  version loads and saves them.
+
 ## [0.21.0] "Spoken Index" — 2026-10-03 — Podcasts, interviews and videos from a link
 
 - **Paste a link to a podcast episode, interview or video, and it comes in as one.** Pasting
