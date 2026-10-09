@@ -1055,7 +1055,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "fond-annot"
 version = "0.1.0"
-source = "git+https://github.com/calstfrancis/fond-core?rev=b910bc66d#b910bc66df6b96331d3f8ee82b883cac36139158"
+source = "git+https://github.com/calstfrancis/fond-core?rev=b1adce104#b1adce10452309e9b0e44b43a14650c854f73325"
 dependencies = [
  "blake3",
  "serde",
@@ -1084,7 +1084,7 @@ dependencies = [
 [[package]]
 name = "fond-doc"
 version = "0.1.0"
-source = "git+https://github.com/calstfrancis/fond-core?rev=b910bc66d#b910bc66df6b96331d3f8ee82b883cac36139158"
+source = "git+https://github.com/calstfrancis/fond-core?rev=b1adce104#b1adce10452309e9b0e44b43a14650c854f73325"
 dependencies = [
  "pdfium-render",
  "quick-xml 0.41.0",
