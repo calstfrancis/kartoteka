@@ -17,8 +17,8 @@ repository = "https://github.com/calstfrancis/kartoteka"
 # Shared dependency versions. Only Milestone 1 dependencies are declared here; PDF,
 # tantivy, and network crates are added at their milestones (see docs/ROADMAP.md).
 [workspace.dependencies]
-fond-annot = { git = "https://github.com/calstfrancis/fond-core", rev = "b910bc66d" }
-fond-doc = { git = "https://github.com/calstfrancis/fond-core", rev = "b910bc66d" }
+fond-annot = { git = "https://github.com/calstfrancis/fond-core", rev = "b1adce104" }
+fond-doc = { git = "https://github.com/calstfrancis/fond-core", rev = "b1adce104" }
 hayagriva = "0.10"
 biblatex = "0.11"
 serde = { version = "1", features = ["derive"] }
