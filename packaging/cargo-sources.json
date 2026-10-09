@@ -2,8 +2,8 @@
     {
         "type": "git",
         "url": "https://github.com/calstfrancis/fond-core",
-        "commit": "847e13e75b257c291308a32ccc3e99dc44d02c31",
-        "dest": "flatpak-cargo/git/fond-core-847e13e"
+        "commit": "e26b9b97535067aad96ec907e2ec7ca7c89ae349",
+        "dest": "flatpak-cargo/git/fond-core-e26b9b9"
     },
     {
         "type": "archive",
@@ -1464,7 +1464,7 @@
     {
         "type": "shell",
         "commands": [
-            "cp -r --reflink=auto \"flatpak-cargo/git/fond-core-847e13e/crates/fond-annot\" \"cargo/vendor/fond-annot\""
+            "cp -r --reflink=auto \"flatpak-cargo/git/fond-core-e26b9b9/crates/fond-annot\" \"cargo/vendor/fond-annot\""
         ]
     },
     {
@@ -1482,7 +1482,7 @@
     {
         "type": "shell",
         "commands": [
-            "cp -r --reflink=auto \"flatpak-cargo/git/fond-core-847e13e/crates/fond-doc\" \"cargo/vendor/fond-doc\""
+            "cp -r --reflink=auto \"flatpak-cargo/git/fond-core-e26b9b9/crates/fond-doc\" \"cargo/vendor/fond-doc\""
         ]
     },
     {
@@ -6309,7 +6309,7 @@
     },
     {
         "type": "inline",
-        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/calstfrancis/fond-core\"]\ngit = \"https://github.com/calstfrancis/fond-core\"\nreplace-with = \"vendored-sources\"\nrev = \"847e13e75\"\n",
+        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/calstfrancis/fond-core\"]\ngit = \"https://github.com/calstfrancis/fond-core\"\nreplace-with = \"vendored-sources\"\nrev = \"e26b9b975\"\n",
         "dest": "cargo",
         "dest-filename": "config"
     }

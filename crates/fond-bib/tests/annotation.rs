@@ -15,6 +15,7 @@ const ENTRY: &str = "cone1970black:\n  type: article\n  title: Black Theology an
 
 fn highlight(id: &str) -> Annotation {
     Annotation {
+        extra: Default::default(),
         id: id.into(),
         kind: AnnotationKind::Highlight,
         page: Some(7),
