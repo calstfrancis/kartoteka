@@ -4,6 +4,9 @@ All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fon
 
 ## [Unreleased]
 
+- **Files on the command line.** `kartoteka-gtk FILE…` (a PDF, an EPUB, a folder of PDFs or a
+  bibliography) adds them to the open library exactly as dropping them on the window does, also
+  when Kartoteka is already running. Pereplyot's *Add to Kartoteka* uses it.
 - Picks up fond-core's fixes: text extraction (and so the full-text index) now reads rotated
   pages and pages with an offset crop box in full instead of coming back empty or short, and
   annotation sidecars written by a newer app keep their unknown kinds and fields when this

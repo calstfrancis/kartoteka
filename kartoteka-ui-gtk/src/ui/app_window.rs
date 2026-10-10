@@ -211,6 +211,24 @@ pub(crate) mod entry_row {
 }
 use entry_row::EntryRow;
 
+/// Add one file or folder the way a drop does; false if it was not something Kartoteka adds.
+fn add_dropped_path(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>, path: PathBuf) -> bool {
+    match DropKind::of(&path) {
+        DropKind::Pdf => import_pdf(state, widgets, path),
+        DropKind::Epub => import_epub(state, widgets, path),
+        DropKind::Folder => import_pdf_folder(state, widgets, path),
+        DropKind::Bibliography => show_import_dialog(state, widgets, Some(path)),
+        DropKind::Unsupported => {
+            toast(
+                widgets,
+                "Drop a PDF, an EPUB, or a folder of PDFs to add it",
+            );
+            return false;
+        }
+    }
+    true
+}
+
 pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
     let state = Rc::new(RefCell::new(AppState::default()));
     let config = Rc::new(RefCell::new(config));
@@ -843,28 +861,7 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
                     skipped_remote = true;
                     continue;
                 };
-                match DropKind::of(&path) {
-                    DropKind::Pdf => {
-                        import_pdf(&state, &widgets, path);
-                        handled = true;
-                    }
-                    DropKind::Epub => {
-                        import_epub(&state, &widgets, path);
-                        handled = true;
-                    }
-                    DropKind::Folder => {
-                        import_pdf_folder(&state, &widgets, path);
-                        handled = true;
-                    }
-                    DropKind::Bibliography => {
-                        show_import_dialog(&state, &widgets, Some(path));
-                        handled = true;
-                    }
-                    DropKind::Unsupported => toast(
-                        &widgets,
-                        "Drop a PDF, an EPUB, or a folder of PDFs to add it",
-                    ),
-                }
+                handled |= add_dropped_path(&state, &widgets, path);
             }
             if skipped_remote && !handled {
                 toast(
@@ -875,6 +872,24 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
             handled
         });
         window.add_controller(drop);
+    }
+
+    // `kartoteka-gtk FILE…` (and a second launch from another app) lands here.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("add-path", Some(glib::VariantTy::STRING));
+        action.connect_activate(move |_, param| {
+            let Some(path) = param.and_then(|p| p.get::<String>()) else {
+                return;
+            };
+            if state.borrow().library.is_none() {
+                toast(&widgets, "Open a library first");
+                return;
+            }
+            add_dropped_path(&state, &widgets, PathBuf::from(path));
+        });
+        window.add_action(&action);
     }
 
     // Hamburger actions (win.add / win.reindex / win.theme / win.about).

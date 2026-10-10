@@ -53,6 +53,8 @@ files with one command. `library.yml` is regenerated on every write, so
   to your default document viewer.
 - Nestable collections you can rename, reparent, and delete from the sidebar, with
   drag-and-drop to file entries into them from either the spreadsheet or Bookshelf view.
+- `kartoteka-gtk FILE…` adds PDFs, EPUBs, folders or bibliographies to the open library, like
+  dropping them on the window — even when Kartoteka is already running.
 - A guided "Set up backup…" wizard walks through GitHub sign-in, repository creation,
   and enabling automatic backups in one flow.
 - Consistent printed-page numbering (with a manual override for scans with no embedded
