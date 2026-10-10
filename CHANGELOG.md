@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased]
+## [0.22.0] "Open Folio" — 2026-10-10 — Hand Kartoteka a file from another app
 
 - **Files on the command line.** `kartoteka-gtk FILE…` (a PDF, an EPUB, a folder of PDFs or a
   bibliography) adds them to the open library exactly as dropping them on the window does, also

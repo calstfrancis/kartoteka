@@ -45,6 +45,16 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.22.0" date="2026-10-10">
+      <description>
+        <p>0.22.0 "Open Folio" — Kartoteka now takes files on its command line: a PDF, an EPUB, a
+        folder of PDFs or a bibliography is added to the open library exactly as if dropped on the
+        window, even when Kartoteka is already running. Pereplyot's "Add to Kartoteka" uses it.</p>
+        <p>Also picks up fond-core's fixes: text extraction reads rotated pages and pages with an
+        offset crop box in full, and annotation sidecars written by a newer app keep their unknown
+        kinds and fields.</p>
+      </description>
+    </release>
     <release version="0.21.0" date="2026-10-03">
       <description>
         <p>0.21.0 "Spoken Index" — paste a link to a podcast episode, interview or video and it
