@@ -2,6 +2,16 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.23.0] "Marked Slip" — 2026-10-16 — Add a file with a say in it
+
+- **"Add this file" dialog.** A PDF or EPUB handed over from another app (Pereplyot's "Add to
+  Kartoteka", or `kartoteka-gtk FILE`) now opens a dialog instead of being added on a guess. It
+  reads the file for a DOI, ISBN or embedded title and fills in the details; a lookup box takes a
+  DOI, link, ISBN, BibTeX record or a title (with a list of matches) and replaces them; every field
+  can be typed over by hand. Nothing is added until you press Add, and a file whose DOI or ISBN is
+  already in the library can be attached to that entry instead. Dropping files onto the window is
+  unchanged.
+
 ## [0.22.0] "Open Folio" — 2026-10-10 — Hand Kartoteka a file from another app
 
 - **Files on the command line.** `kartoteka-gtk FILE…` (a PDF, an EPUB, a folder of PDFs or a

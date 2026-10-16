@@ -69,7 +69,7 @@ fn describe(identified: &Identified) -> Reading {
 
 /// An identifier the box can fetch a reference for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Target {
+pub(super) enum Target {
     Doi(String),
     /// Without its `vN` version.
     Arxiv(String),
@@ -77,7 +77,7 @@ enum Target {
 }
 
 impl Target {
-    fn from_candidate(candidate: &Candidate) -> Target {
+    pub(super) fn from_candidate(candidate: &Candidate) -> Target {
         match &candidate.id {
             CandidateId::Doi(doi) => Target::Doi(doi.clone()),
             CandidateId::Isbn(isbn) => Target::Isbn(isbn.clone()),
@@ -90,7 +90,7 @@ impl Target {
     }
 
     /// What to tell someone when this couldn't be fetched, and what to try instead.
-    fn failure_message(&self) -> &'static str {
+    pub(super) fn failure_message(&self) -> &'static str {
         match self {
             Target::Doi(_) => {
                 "Couldn't find that DOI online. Check it's complete and try again, or enter the \
@@ -108,7 +108,7 @@ impl Target {
 }
 
 /// What a lookup came back with, worked out off the main thread.
-enum Lookup {
+pub(super) enum Lookup {
     /// Entries ready to add. `partial` when the full record couldn't be fetched and only the
     /// search result's own details are being added.
     Found {
@@ -126,7 +126,7 @@ impl Lookup {
     /// fill in whatever the fetched record left out, and add the result's own details if
     /// fetching fails or reads nothing — the person already saw what they picked, so it is
     /// never refused for missing a field the result showed.
-    fn run(target: &Target, candidate: Option<&Candidate>) -> Lookup {
+    pub(super) fn run(target: &Target, candidate: Option<&Candidate>) -> Lookup {
         use fond_bib::acquire;
         let fetched = match target {
             Target::Doi(doi) => acquire::fetch_doi_bibtex(doi).map(|s| (true, s)),
@@ -579,7 +579,7 @@ fn show_results(ui: &Rc<Ui>, found: Vec<Candidate>) {
 }
 
 /// `Article · Cone, James H. · 1970 · Christianity and Crisis`
-fn result_meta(candidate: &Candidate) -> String {
+pub(super) fn result_meta(candidate: &Candidate) -> String {
     let byline = candidate.byline();
     if byline.is_empty() {
         candidate.kind.clone()

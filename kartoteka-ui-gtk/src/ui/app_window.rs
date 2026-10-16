@@ -22,6 +22,7 @@ use crate::ui::{bookshelf, friendly, worker};
 use crate::{github, secret_store, webdav};
 
 mod add_box;
+mod add_file;
 
 /// A compact, display-ready summary of one entry.
 struct EntrySummary {
@@ -887,7 +888,16 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
                 toast(&widgets, "Open a library first");
                 return;
             }
-            add_dropped_path(&state, &widgets, PathBuf::from(path));
+            let path = PathBuf::from(path);
+            // One PDF or EPUB handed over by another app (Pereplyot's "Add to Kartoteka") gets
+            // a dialog — what was read from the file, a lookup, and every field — rather than
+            // being added on a guess the person never sees.
+            match DropKind::of(&path) {
+                DropKind::Pdf | DropKind::Epub => add_file::show(&state, &widgets, path),
+                _ => {
+                    add_dropped_path(&state, &widgets, path);
+                }
+            }
         });
         window.add_action(&action);
     }

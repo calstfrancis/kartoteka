@@ -45,6 +45,16 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.23.0" date="2026-10-16">
+      <description>
+        <p>0.23.0 "Marked Slip" — a PDF or EPUB handed to Kartoteka from another app (Pereplyot's
+        "Add to Kartoteka", or <code>kartoteka-gtk FILE</code>) now opens an "Add this file"
+        dialog instead of being added on a guess. It reads the file for a DOI, ISBN or title and
+        fills in the details; a lookup box takes a DOI, link, ISBN, BibTeX record or a title; and
+        every field can be typed over by hand. Nothing is added until you press Add, and a file
+        whose DOI or ISBN is already in the library can be attached to that entry instead.</p>
+      </description>
+    </release>
     <release version="0.22.0" date="2026-10-10">
       <description>
         <p>0.22.0 "Open Folio" — Kartoteka now takes files on its command line: a PDF, an EPUB, a
