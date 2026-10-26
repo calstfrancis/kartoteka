@@ -677,7 +677,10 @@ pub(crate) fn write_creators_into(
         let mut m = serde_yaml_ng::Mapping::new();
         m.insert(Value::String("name".into()), Value::String(p.name.clone()));
         if let Some(suffix) = &p.suffix {
-            m.insert(Value::String("suffix".into()), Value::String(suffix.clone()));
+            m.insert(
+                Value::String("suffix".into()),
+                Value::String(suffix.clone()),
+            );
         }
         Ok(Value::Mapping(m))
     }
@@ -690,7 +693,11 @@ pub(crate) fn write_creators_into(
         .map(|g| {
             let mut v = to_value(g)?;
             if let Value::Mapping(m) = &mut v {
-                let names = g.names.iter().map(person_value).collect::<Result<Vec<_>>>()?;
+                let names = g
+                    .names
+                    .iter()
+                    .map(person_value)
+                    .collect::<Result<Vec<_>>>()?;
                 m.insert(Value::String("names".into()), Value::Sequence(names));
             }
             Ok(v)

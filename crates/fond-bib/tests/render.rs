@@ -211,5 +211,9 @@ fn whole_name_creator_survives_a_save_and_renders_in_full() {
 
     let style = resolve_style("chicago-notes").unwrap();
     let r = render_bibliography(&[&reparsed], &style, BufWriteFormat::Plain).unwrap();
-    assert!(r[0].text.starts_with("Symeon the New Theologian"), "{}", r[0].text);
+    assert!(
+        r[0].text.starts_with("Symeon the New Theologian"),
+        "{}",
+        r[0].text
+    );
 }
