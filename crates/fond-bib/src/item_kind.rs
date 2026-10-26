@@ -103,6 +103,8 @@ pub const ITEM_KINDS: &[ItemKind] = &[
     media("Video", "video", "video", Some("Video"), false),
     media("Audio recording", "audio", "audio", None, false),
     kind("Anthology", "anthology", "anthology", true),
+    // Hayagriva's `anthos` — a poem, story or essay printed in an anthology.
+    kind("Anthology piece", "anthos", "anthology", true),
     kind("Periodical", "periodical", "periodical", false),
     kind("Miscellaneous", "misc", "periodical", false),
 ];

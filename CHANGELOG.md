@@ -2,6 +2,18 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.23.1] "Whole Cloth" — 2026-10-26 — Whole names, anthology pieces
+
+- **Fixed: a one-field name lost its first words in the bibliography.** A creator entered as a
+  single name with spaces ("Symeon the New Theologian", an organization) was saved as a bare YAML
+  string, which Hayagriva re-split into given and family on the next read — so citations printed
+  only "New Theologian". Such names are now saved in the `{name: …}` form. An entry already saved
+  the old way needs its creator re-entered once (retype the name as a single name and save).
+- **A piece in an anthology is now a proper type, "Anthology piece".** It was shown as the raw
+  Hayagriva name `anthos`, with the "Published in" / Volume / Issue / Pages row hidden. It now
+  appears in the type list like the others and always shows that row, so you can enter the pages
+  the poem or article runs on.
+
 ## [0.23.0] "Marked Slip" — 2026-10-16 — Add a file with a say in it
 
 - **"Add this file" dialog.** A PDF or EPUB handed over from another app (Pereplyot's "Add to

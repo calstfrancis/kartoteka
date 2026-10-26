@@ -45,6 +45,13 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.23.1" date="2026-10-26">
+      <description>
+        <p>0.23.1 "Whole Cloth" — a creator entered as a single name with spaces ("Symeon the New
+        Theologian") is no longer cut down to "New Theologian" in bibliographies, and a poem or
+        article in an anthology is now a proper "Anthology piece" type with its pages editable.</p>
+      </description>
+    </release>
     <release version="0.23.0" date="2026-10-16">
       <description>
         <p>0.23.0 "Marked Slip" — a PDF or EPUB handed to Kartoteka from another app (Pereplyot's

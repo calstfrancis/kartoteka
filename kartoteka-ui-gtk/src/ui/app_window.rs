@@ -2464,9 +2464,19 @@ fn push_creator_yaml(out: &mut String, creators: &[fond_bib::Creator]) {
     let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
     for c in creators {
         let key = c.role.role_key();
+        // A whole name with a space or comma ("Symeon the New Theologian") written as a bare
+        // scalar is re-split into given + family by Hayagriva, so it goes in `{name: …}` form.
+        let family = c.family.trim();
+        let value = if (c.single_field || c.given.trim().is_empty())
+            && family.contains(|ch: char| ch.is_whitespace() || ch == ',')
+        {
+            format!("{{ name: {} }}", yaml_quote(family))
+        } else {
+            yaml_quote(&c.display_line())
+        };
         match groups.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, lines)) => lines.push(c.display_line()),
-            None => groups.push((key, vec![c.display_line()])),
+            Some((_, lines)) => lines.push(value),
+            None => groups.push((key, vec![value])),
         }
     }
 
@@ -2474,7 +2484,7 @@ fn push_creator_yaml(out: &mut String, creators: &[fond_bib::Creator]) {
         if *role_key == "author" || *role_key == "editor" {
             out.push_str(&format!("  {role_key}:\n"));
             for name in names {
-                out.push_str(&format!("    - {}\n", yaml_quote(name)));
+                out.push_str(&format!("    - {name}\n"));
             }
         }
     }
@@ -2488,7 +2498,7 @@ fn push_creator_yaml(out: &mut String, creators: &[fond_bib::Creator]) {
         for (role_key, names) in affiliated {
             out.push_str("    - names:\n");
             for name in names {
-                out.push_str(&format!("        - {}\n", yaml_quote(name)));
+                out.push_str(&format!("        - {name}\n"));
             }
             out.push_str(&format!("      role: {role_key}\n"));
         }

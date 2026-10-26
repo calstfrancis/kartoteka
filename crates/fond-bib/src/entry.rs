@@ -662,10 +662,40 @@ pub(crate) fn write_creators_into(
         }
     }
 
+    // A family-only name with a space or comma in it ("Symeon the New Theologian", an
+    // organization) must be written in Hayagriva's `{name: …}` map form: as a bare scalar it
+    // is re-split into given + family on the next read ("Symeon the" / "New Theologian"), and
+    // citations then print only "New Theologian".
+    fn person_value(p: &hayagriva::types::Person) -> Result<Value> {
+        let whole_name = p.given_name.is_none()
+            && p.alias.is_none()
+            && p.prefix.is_none()
+            && p.name.contains(|c: char| c.is_whitespace() || c == ',');
+        if !whole_name {
+            return to_value(p);
+        }
+        let mut m = serde_yaml_ng::Mapping::new();
+        m.insert(Value::String("name".into()), Value::String(p.name.clone()));
+        if let Some(suffix) = &p.suffix {
+            m.insert(Value::String("suffix".into()), Value::String(suffix.clone()));
+        }
+        Ok(Value::Mapping(m))
+    }
+
     let (authors, editors, affiliated) = creator::write_creators(creators);
-    let author_vals: Vec<Value> = authors.iter().map(to_value).collect::<Result<_>>()?;
-    let editor_vals: Vec<Value> = editors.iter().map(to_value).collect::<Result<_>>()?;
-    let affiliated_vals: Vec<Value> = affiliated.iter().map(to_value).collect::<Result<_>>()?;
+    let author_vals: Vec<Value> = authors.iter().map(person_value).collect::<Result<_>>()?;
+    let editor_vals: Vec<Value> = editors.iter().map(person_value).collect::<Result<_>>()?;
+    let affiliated_vals: Vec<Value> = affiliated
+        .iter()
+        .map(|g| {
+            let mut v = to_value(g)?;
+            if let Value::Mapping(m) = &mut v {
+                let names = g.names.iter().map(person_value).collect::<Result<Vec<_>>>()?;
+                m.insert(Value::String("names".into()), Value::Sequence(names));
+            }
+            Ok(v)
+        })
+        .collect::<Result<_>>()?;
 
     set_seq(map, "author", author_vals);
     set_seq(map, "editor", editor_vals);

@@ -187,3 +187,29 @@ fn an_empty_library_renders_an_empty_list_not_an_error() {
         Err(e) => panic!("empty library should render an empty list: {e}"),
     }
 }
+
+#[test]
+fn whole_name_creator_survives_a_save_and_renders_in_full() {
+    use fond_bib::creator::{parse_creators, Creator, CreatorRole};
+    use fond_bib::entry::{apply_fields_to_yaml, parse_single, read_fields};
+    use std::path::Path;
+
+    let yaml = "s:\n  type: anthos\n  title: Hymn\n  date: 2024\n  parent:\n    type: anthology\n    title: 100 Great Catholic Poems\n";
+    let entry = parse_single(yaml, Path::new("s.yml")).unwrap().entry;
+    let current = read_fields(&entry);
+    let mut edited = current.clone();
+    edited.creators = vec![Creator::new_single_field(
+        CreatorRole::Author,
+        "Symeon the New Theologian",
+    )];
+    let out = apply_fields_to_yaml(yaml, &current, &edited).unwrap();
+    let reparsed = parse_single(&out, Path::new("s.yml")).unwrap().entry;
+    let creators = parse_creators(&reparsed);
+    assert_eq!(creators.len(), 1);
+    assert_eq!(creators[0].family, "Symeon the New Theologian");
+    assert!(creators[0].single_field);
+
+    let style = resolve_style("chicago-notes").unwrap();
+    let r = render_bibliography(&[&reparsed], &style, BufWriteFormat::Plain).unwrap();
+    assert!(r[0].text.starts_with("Symeon the New Theologian"), "{}", r[0].text);
+}
