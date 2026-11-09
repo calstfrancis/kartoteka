@@ -45,6 +45,12 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.23.2" date="2026-11-09">
+      <description>
+        <p>0.23.2 "Tight Seal" — the bundled SQLite is updated to a version that no longer returns
+        stale memory for a crafted database file. Nothing changes in how Kartoteka works.</p>
+      </description>
+    </release>
     <release version="0.23.1" date="2026-10-26">
       <description>
         <p>0.23.1 "Whole Cloth" — a creator entered as a single name with spaces ("Symeon the New

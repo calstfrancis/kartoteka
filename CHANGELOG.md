@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [0.23.2-dev1] — 2026-11-09 — SQLite security update
+## [0.23.2] "Tight Seal" — 2026-11-09 — SQLite security update
 
 - **Updated the bundled SQLite (rusqlite 0.40 → 0.41).** The old copy could return stale memory contents when handed a crafted database and write-ahead-log pair (RUSTSEC-2026-0459). Needs a local crafted file, but the library database is opened by Zerkalo too, so both move together.
 
