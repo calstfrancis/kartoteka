@@ -17,6 +17,10 @@ fond-bib = { path = "../crates/fond-bib", features = ["acquire"] }
 fond-index = { path = "../crates/fond-index" }
 fond-doc = { workspace = true }
 fond-vault = { path = "../crates/fond-vault" }
+# The Porog launcher's status file. A path dependency until fond-core's `fond-status` is
+# pushed; switch to `git = "https://github.com/calstfrancis/fond-core", rev = "…"` before
+# any flatpak build, which cannot see a sibling directory.
+fond-status = { path = "../../fond-core/crates/fond-status" }
 gtk4 = { version = "0.11", features = ["v4_10"] }
 libadwaita = { version = "0.9", features = ["v1_4"] }
 glib = "0.22"

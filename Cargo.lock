@@ -1103,6 +1103,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fond-status"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "fond-vault"
 version = "0.1.0"
 dependencies = [
@@ -2125,6 +2134,7 @@ dependencies = [
  "fond-bib",
  "fond-doc",
  "fond-index",
+ "fond-status",
  "fond-vault",
  "glib",
  "gtk4",

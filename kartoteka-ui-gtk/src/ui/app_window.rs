@@ -902,6 +902,19 @@ pub fn build(app: &adw::Application, config: Config) -> adw::ApplicationWindow {
         window.add_action(&action);
     }
 
+    // `kartoteka:KEY` from another app (Porog's search) lands here.
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("select-key", Some(glib::VariantTy::STRING));
+        action.connect_activate(move |_, param| {
+            if let Some(key) = param.and_then(|p| p.get::<String>()) {
+                select_key(&state, &widgets, &key);
+            }
+        });
+        window.add_action(&action);
+    }
+
     // Hamburger actions (win.add / win.reindex / win.theme / win.about).
     let auto_backup_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     add_window_actions(&window, &state, &widgets, &config, &auto_backup_timer);
@@ -7853,7 +7866,19 @@ fn new_collection_dialog(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
     dialog.present();
 }
 
+/// Hands the size of the open library to the Porog launcher's status file (`fond-status`),
+/// which that crate writes on its own worker thread and only when the line changes. Called
+/// from `refresh_list`, which every load, add and removal already goes through.
+fn report_to_porog(s: &AppState) {
+    let line = s.library.as_ref().map(|_| match s.entries.len() {
+        1 => "1 reference".to_string(),
+        n => format!("{n} references"),
+    });
+    fond_status::summary::set("kartoteka", line, None);
+}
+
 fn refresh_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    report_to_porog(&state.borrow());
     // Recompute the visible set: empty query → all; otherwise the tantivy index (field
     // scoping: author: title: tag: type: year:), falling back to a substring match if the
     // index is absent or the query doesn't parse.

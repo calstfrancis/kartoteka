@@ -2,6 +2,14 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased]
+
+### Added
+
+- **Porog can show the size of your library.** Kartoteka now keeps a small status file, `~/.local/share/fond/status/kartoteka.json`, holding a line such as "412 references". Porog, the Fond suite launcher, reads it for Kartoteka's row. The number is as of the last time Kartoteka ran. Nothing else reads the file, and deleting it is harmless.
+
+- **Porog can search your library.** `kartoteka-gtk --search-json WORDS` (the flatpak command `kartoteka-search`) prints the matching references as one line of JSON, from the search index Kartoteka already keeps. It opens no window, writes nothing and never builds the index. Opening `kartoteka:KEY` (what Porog's results hand over) selects that reference in the running window.
+
 ## [0.23.2] "Tight Seal" — 2026-11-09 — SQLite security update
 
 - **Updated the bundled SQLite (rusqlite 0.40 → 0.41).** The old copy could return stale memory contents when handed a crafted database and write-ahead-log pair (RUSTSEC-2026-0459). Needs a local crafted file, but the library database is opened by Zerkalo too, so both move together.

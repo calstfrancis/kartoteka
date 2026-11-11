@@ -59,6 +59,9 @@ modules:
       - cargo --offline build --release -p kartoteka-ui-gtk
       - install -Dm755 target/release/kartoteka-gtk /app/bin/kartoteka-gtk
       - strip /app/bin/kartoteka-gtk
+      # `flatpak run --command=kartoteka-search` is how Porog searches the library without a window.
+      - printf '#!/bin/sh\nexec /app/bin/kartoteka-gtk --search-json "$@"\n' > kartoteka-search
+      - install -Dm755 kartoteka-search /app/bin/kartoteka-search
       # Bundle PDFium (BSD-3).
       - install -Dm755 pdfium/lib/libpdfium.so /app/lib/libpdfium.so
       # Desktop entry, icon, AppStream metainfo.
