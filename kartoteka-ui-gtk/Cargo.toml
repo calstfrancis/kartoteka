@@ -1,6 +1,6 @@
 [package]
 name = "kartoteka-ui-gtk"
-version = "0.23.2"
+version = "0.24.0"
 description = "Kartoteka — Linux GTK4/libadwaita frontend (proprietary)"
 license = "LicenseRef-Proprietary"
 edition.workspace = true
@@ -17,10 +17,8 @@ fond-bib = { path = "../crates/fond-bib", features = ["acquire"] }
 fond-index = { path = "../crates/fond-index" }
 fond-doc = { workspace = true }
 fond-vault = { path = "../crates/fond-vault" }
-# The Porog launcher's status file. A path dependency until fond-core's `fond-status` is
-# pushed; switch to `git = "https://github.com/calstfrancis/fond-core", rev = "…"` before
-# any flatpak build, which cannot see a sibling directory.
-fond-status = { path = "../../fond-core/crates/fond-status" }
+# The Porog launcher's status file, from fond-core.
+fond-status = { git = "https://github.com/calstfrancis/fond-core", rev = "28d95c1491bdda6e708c04ce2768f89374e62338" }
 gtk4 = { version = "0.11", features = ["v4_10"] }
 libadwaita = { version = "0.9", features = ["v1_4"] }
 glib = "0.22"

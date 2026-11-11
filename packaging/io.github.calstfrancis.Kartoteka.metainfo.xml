@@ -45,6 +45,13 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.24.0" date="2026-11-11">
+      <description>
+        <p>0.24.0 "Open Drawer" — Kartoteka now works with Porog, the new Fond suite launcher: it
+        shows how many references your library holds and can search it, and a result opens
+        straight to that reference. Nothing changes in Kartoteka itself unless you use Porog.</p>
+      </description>
+    </release>
     <release version="0.23.2" date="2026-11-09">
       <description>
         <p>0.23.2 "Tight Seal" — the bundled SQLite is updated to a version that no longer returns

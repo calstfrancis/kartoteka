@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased]
+## [0.24.0] "Open Drawer" — 2026-11-11 — Porog support
 
 ### Added
 
