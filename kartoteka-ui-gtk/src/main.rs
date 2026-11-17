@@ -22,7 +22,8 @@ fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // `--whats-new-json` prints the newest released CHANGELOG entry for Porog and leaves.
     if args.first().map(String::as_str) == Some("--whats-new-json") {
-        const CHANGELOG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../CHANGELOG.md"));
+        const CHANGELOG: &str =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../CHANGELOG.md"));
         println!(
             "{}",
             fond_status::whats_new::from_changelog(CHANGELOG)
