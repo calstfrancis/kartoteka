@@ -20,6 +20,17 @@ const APP_ID: &str = "io.github.calstfrancis.Kartoteka";
 fn main() -> glib::ExitCode {
     // `--search-json` is a command-line helper, not the app: answer and leave before GTK starts.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--whats-new-json` prints the newest released CHANGELOG entry for Porog and leaves.
+    if args.first().map(String::as_str) == Some("--whats-new-json") {
+        const CHANGELOG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../CHANGELOG.md"));
+        println!(
+            "{}",
+            fond_status::whats_new::from_changelog(CHANGELOG)
+                .map(|w| w.to_json())
+                .unwrap_or_else(|| r#"{"schema":1,"version":"","items":[]}"#.to_string())
+        );
+        return glib::ExitCode::SUCCESS;
+    }
     if args.first().map(String::as_str) == Some("--search-json") {
         search_helper::run(&args[1..]);
         return glib::ExitCode::SUCCESS;

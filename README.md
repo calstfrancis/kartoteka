@@ -108,6 +108,8 @@ kartoteka -L my-library fsck
 
 `kartoteka-gtk --search-json WORDS` (flatpak: `flatpak run --command=kartoteka-search io.github.calstfrancis.Kartoteka WORDS`) searches the configured library's existing index and prints `{"schema":1,"hits":[{key,title,author,year}]}`, or `{"schema":1,"error":"…"}`. It never builds the index. `kartoteka-gtk kartoteka:KEY` selects that reference.
 
+`kartoteka-gtk --whats-new-json` (flatpak command `kartoteka-whats-new`) prints the newest release's name and changes as one line of JSON, for the What's New icon on this app's row in Porog.
+
 ## Porog status file
 
 Kartoteka writes `~/.local/share/fond/status/kartoteka.json` (the `fond-status` format from `fond-core`) with the number of references in the open library. Porog, the Fond suite launcher, reads it for Kartoteka's row. The write is on `fond-status`'s own worker thread, never the GTK thread.

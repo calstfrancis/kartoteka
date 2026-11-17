@@ -1554,6 +1554,7 @@ A batch of features bringing the GUI toward Zotero's everyday workflow:
 
 ### Added
 
+- **What's new, for Porog.** `kartoteka-gtk --whats-new-json` (flatpak command `kartoteka-whats-new`) prints the newest release's name and what changed as one line of JSON; Porog shows it from the icon on this app's row. Needs the next `fond-status`.
 - **`kartoteka acquire`** — populate an entry from an identifier, generating a fresh key:
   - `--doi <doi>` — doi.org content negotiation (BibTeX).
   - `--arxiv <id>` — routed through the arXiv DataCite DOI (`10.48550/arXiv.<id>`).
