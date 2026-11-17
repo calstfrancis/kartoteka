@@ -45,6 +45,12 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.25.0" date="2026-11-17">
+      <description>
+        <p>0.25.0 "Labelled Drawer" — Porog, the Fond suite launcher, can now show what is new in
+        Kartoteka from the icon on its row. Nothing changes in Kartoteka itself.</p>
+      </description>
+    </release>
     <release version="0.24.0" date="2026-11-11">
       <description>
         <p>0.24.0 "Open Drawer" — Kartoteka now works with Porog, the new Fond suite launcher: it

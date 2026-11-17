@@ -2,6 +2,16 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.25.0] "Labelled Drawer" — 2026-11-17 — What's new, for Porog
+
+### Added
+
+- **What's new, for Porog.** `kartoteka-gtk --whats-new-json` (the flatpak command `kartoteka-whats-new`) prints the newest release's name and what changed as one line of JSON. Porog shows it from the icon on Kartoteka's row. It opens no window and changes nothing in Kartoteka itself.
+
+### Changed
+
+- Built against the newest shared Fond library revision, so the Fond apps agree on one copy of it.
+
 ## [0.24.0] "Open Drawer" — 2026-11-11 — Porog support
 
 ### Added
@@ -1554,7 +1564,6 @@ A batch of features bringing the GUI toward Zotero's everyday workflow:
 
 ### Added
 
-- **What's new, for Porog.** `kartoteka-gtk --whats-new-json` (flatpak command `kartoteka-whats-new`) prints the newest release's name and what changed as one line of JSON; Porog shows it from the icon on this app's row. Needs the next `fond-status`.
 - **`kartoteka acquire`** — populate an entry from an identifier, generating a fresh key:
   - `--doi <doi>` — doi.org content negotiation (BibTeX).
   - `--arxiv <id>` — routed through the arXiv DataCite DOI (`10.48550/arXiv.<id>`).

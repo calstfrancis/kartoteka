@@ -1,6 +1,6 @@
 [package]
 name = "kartoteka-ui-gtk"
-version = "0.24.0"
+version = "0.25.0"
 description = "Kartoteka — Linux GTK4/libadwaita frontend (proprietary)"
 license = "LicenseRef-Proprietary"
 edition.workspace = true
@@ -18,7 +18,7 @@ fond-index = { path = "../crates/fond-index" }
 fond-doc = { workspace = true }
 fond-vault = { path = "../crates/fond-vault" }
 # The Porog launcher's status file, from fond-core.
-fond-status = { git = "https://github.com/calstfrancis/fond-core", rev = "28d95c1491bdda6e708c04ce2768f89374e62338" }
+fond-status = { git = "https://github.com/calstfrancis/fond-core", rev = "3364c34cb1f0bec978596270a753abb0e91ea398" }
 gtk4 = { version = "0.11", features = ["v4_10"] }
 libadwaita = { version = "0.9", features = ["v1_4"] }
 glib = "0.22"
