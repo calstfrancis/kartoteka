@@ -2,6 +2,12 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [Unreleased]
+
+### Added
+
+- **Add by URL.** Menu → "Add by URL…" (Ctrl+Shift+U) opens a box that takes one web address and nothing else. It does what pasting the link into the Add box does: reads the page's citation details and fetches its PDF if it links one. Text that is not a web address is told so instead of being searched for.
+
 ## [0.25.0] "Labelled Drawer" — 2026-11-17 — What's new, for Porog
 
 ### Added

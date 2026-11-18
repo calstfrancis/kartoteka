@@ -384,6 +384,91 @@ fn show_error(ui: &Rc<Ui>, message: &str, detail: Option<&str>) {
 }
 
 /// The main button / Enter.
+/// "Add by URL…": a box that takes one link and nothing else — for when you already have the
+/// address and don't want the general Add box guessing. Same fetch as pasting the link there.
+pub(super) fn show_url(state: &Rc<RefCell<AppState>>, widgets: &Rc<Widgets>) {
+    if state.borrow().library.is_none() {
+        toast(widgets, "Open a library first");
+        return;
+    }
+
+    let dialog = adw::Window::new();
+    dialog.set_title(Some("Add by URL"));
+    dialog.set_modal(true);
+    dialog.set_transient_for(Some(&widgets.window));
+    dialog.set_default_size(520, -1);
+    close_on_escape(&dialog);
+
+    let view = adw::ToolbarView::new();
+    let header = adw::HeaderBar::new();
+    header.add_css_class("fond-chrome");
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let button = gtk4::Button::with_label("Add");
+    button.add_css_class("suggested-action");
+    header.pack_start(&cancel);
+    header.pack_end(&button);
+    view.add_top_bar(&header);
+
+    let content = gtk4::Box::new(Orientation::Vertical, 10);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    let entry = gtk4::Entry::builder()
+        .placeholder_text("https://…")
+        .hexpand(true)
+        .input_purpose(gtk4::InputPurpose::Url)
+        .build();
+    entry.add_css_class("title-4");
+    let hint = gtk4::Label::new(Some(
+        "Kartoteka reads the page's citation details, and fetches its PDF if it links one.",
+    ));
+    hint.set_wrap(true);
+    hint.set_xalign(0.0);
+    hint.add_css_class("dim-label");
+    hint.add_css_class("caption");
+    content.append(&entry);
+    content.append(&hint);
+    view.set_content(Some(&content));
+    dialog.set_content(Some(&view));
+
+    let submit = {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let dialog = dialog.clone();
+        let entry = entry.clone();
+        let hint = hint.clone();
+        Rc::new(move || match fond_bib::identify(&entry.text()) {
+            Identified::Url(url) => {
+                dialog.close();
+                add_from_url(&state, &widgets, url);
+            }
+            Identified::Empty => {}
+            _ => {
+                hint.set_text(
+                    "That doesn't look like a web address. Try one that starts with https://",
+                );
+                hint.remove_css_class("dim-label");
+                hint.add_css_class("error");
+            }
+        })
+    };
+    {
+        let submit = submit.clone();
+        entry.connect_activate(move |_| submit());
+    }
+    button.connect_clicked(move |_| submit());
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.close());
+    }
+
+    dialog.present();
+    entry.grab_focus();
+}
+
 fn go(ui: &Rc<Ui>) {
     if ui.busy.get() {
         return;

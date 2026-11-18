@@ -1093,6 +1093,9 @@ fn build_hamburger_popover(
 
     rows.append(&popover_separator());
     activate_row(&rows, &popover, "Add a reference…", "win.add");
+    activate_row(&rows, &popover, "Add by URL…", "win.add-url").set_tooltip_text(Some(
+        "Add a web page from its address — its citation details are read from the page",
+    ));
     activate_row(&rows, &popover, "Import…", "win.import").set_tooltip_text(Some(
         "Bring in a BibTeX (.bib) file, optionally with your Zotero library's collections and notes",
     ));
@@ -1240,6 +1243,7 @@ const SHORTCUT_GROUPS: &[(&str, &[(&str, &str)])] = &[
         "Entries",
         &[
             ("Ctrl+N", "New item…"),
+            ("Ctrl+Shift+U", "Add by URL…"),
             ("Ctrl+K", "Cite (search and copy a citation)…"),
             ("Ctrl+F", "Focus the search field"),
             ("Ctrl+Shift+E", "New note on the selected entry"),
@@ -1399,11 +1403,19 @@ fn add_window_actions(
     if let Some(app) = window.application() {
         app.set_accels_for_action("win.cite", &["<Primary>k"]);
         app.set_accels_for_action("win.new-item", &["<Primary>n"]);
+        app.set_accels_for_action("win.add-url", &["<Primary><Shift>u"]);
         app.set_accels_for_action("win.open-library", &["<Primary>o"]);
         app.set_accels_for_action("win.new-library", &["<Primary><Shift>n"]);
         app.set_accels_for_action("win.focus-search", &["<Primary>f"]);
         app.set_accels_for_action("win.new-note-on-selected", &["<Primary><Shift>e"]);
         app.set_accels_for_action("win.shortcuts", &["<Primary>question", "F1"]);
+    }
+    {
+        let state = state.clone();
+        let widgets = widgets.clone();
+        let action = gio::SimpleAction::new("add-url", None);
+        action.connect_activate(move |_, _| add_box::show_url(&state, &widgets));
+        window.add_action(&action);
     }
     {
         let state = state.clone();
