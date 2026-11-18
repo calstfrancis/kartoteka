@@ -45,6 +45,13 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.26.0" date="2026-11-18">
+      <description>
+        <p>0.26.0 "Direct Address" — a new "Add by URL…" entry in the menu (Ctrl+Shift+U) adds a
+        web page from its address, reading its citation details and fetching its PDF if it links
+        one.</p>
+      </description>
+    </release>
     <release version="0.25.0" date="2026-11-17">
       <description>
         <p>0.25.0 "Labelled Drawer" — Porog, the Fond suite launcher, can now show what is new in

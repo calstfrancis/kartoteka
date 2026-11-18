@@ -2,7 +2,7 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
-## [Unreleased]
+## [0.26.0] "Direct Address" — 2026-11-18 — Add by URL
 
 ### Added
 
