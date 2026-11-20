@@ -45,6 +45,13 @@
 
   <!-- Release entries are added at actual release time, never for dev builds. -->
   <releases>
+    <release version="0.26.1" date="2026-11-20">
+      <description>
+        <p>0.26.1 "Current Card" — editing, deleting or refreshing a source now updates the
+        vault's library.yml straight away, so Zerkalo and Typst documents print the new details
+        without waiting for the next import.</p>
+      </description>
+    </release>
     <release version="0.26.0" date="2026-11-18">
       <description>
         <p>0.26.0 "Direct Address" — a new "Add by URL…" entry in the menu (Ctrl+Shift+U) adds a

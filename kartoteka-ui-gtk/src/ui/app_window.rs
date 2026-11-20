@@ -3168,6 +3168,7 @@ fn refresh_book_part(
                 fond_bib::entry::refresh_book_part_parent(&part_yaml, &source.entry, role)?;
             let reparsed = fond_bib::entry::parse_single(&refreshed, &lib.entry_path(&key))?;
             lib.write_entry(&reparsed.entry)?;
+            lib.refresh_library_yml();
             Ok(())
         })
     };

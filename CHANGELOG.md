@@ -2,6 +2,12 @@
 
 All notable changes to Kartoteka are recorded here. Kartoteka is part of the Fond suite.
 
+## [0.26.1] "Current Card" — 2026-11-20 — library.yml keeps up with every edit
+
+### Fixed
+
+- **`library.yml` now follows every change to an entry.** Editing a source's fields (adding a date, fixing a title), deleting a source, or "Refresh from source book" changed the entry's own file but left `library.yml` as it was, so a document reading the vault through `#bibliography("library.yml")` — Zerkalo, or Typst on its own — kept printing the old details until something else (an import or a merge) rewrote it. Each of these now rewrites `library.yml` straight away.
+
 ## [0.26.0] "Direct Address" — 2026-11-18 — Add by URL
 
 ### Added

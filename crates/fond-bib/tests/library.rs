@@ -1167,6 +1167,36 @@ fn edit_fields_updates_managed_fields_and_preserves_others() {
 }
 
 #[test]
+fn edits_and_deletes_reach_library_yml() {
+    use fond_bib::entry::{self, EntryFields};
+    let (_dir, lib) = temp_library();
+    lib.add_from_yaml(BERDYAEV).unwrap();
+    lib.add_from_yaml(CONE).unwrap();
+    let keys = lib.keys_sorted().unwrap();
+    let key = keys[0].clone();
+
+    let current = entry::read_fields(&lib.load_entry(&key).unwrap().entry);
+    let edited = EntryFields {
+        year: "1899".into(),
+        ..current
+    };
+    lib.edit_fields(&key, &edited).unwrap();
+    let yml = fs::read_to_string(lib.library_yml_path()).unwrap();
+    assert!(
+        yml.contains("1899"),
+        "an edit must reach library.yml: {yml}"
+    );
+
+    lib.delete_entry(&key).unwrap();
+    let yml = fs::read_to_string(lib.library_yml_path()).unwrap();
+    assert!(
+        !yml.contains(&format!("{key}:")),
+        "a deleted entry must leave library.yml: {yml}"
+    );
+    assert!(yml.contains(&format!("{}:", keys[1])));
+}
+
+#[test]
 fn edit_fields_clearing_a_field_removes_it() {
     use fond_bib::entry::{self, EntryFields};
     let (_dir, lib) = temp_library();

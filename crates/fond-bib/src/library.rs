@@ -221,7 +221,15 @@ impl Library {
         // Validate + normalize by round-tripping through Hayagriva before writing.
         let reparsed = entry::parse_single(&new_yaml, &self.entry_path(key))?;
         self.write_entry(&reparsed.entry)?;
+        self.refresh_library_yml();
         Ok(())
+    }
+
+    /// Brings `library.yml` up to date after a single change. The change itself is already
+    /// on disk and `entries/` is the truth, so a failure here (an unrelated unreadable entry,
+    /// which `fsck` reports) must not turn a completed edit into a reported failure.
+    pub fn refresh_library_yml(&self) {
+        let _ = self.regenerate_library_yml();
     }
 
     /// Write a note to `notes/<key>.md`.
@@ -1222,6 +1230,7 @@ impl Library {
                 Err(e) => return Err(BibError::io(&path, e)),
             }
         }
+        self.refresh_library_yml();
         // 3b. Remove any child notes (`docs/NOTES-SPEC.md` Tier 1) along with the entry —
         // otherwise they'd linger as an orphaned `notes/<key>/` directory for fsck to flag.
         let child_note_dir = self.child_note_dir(key);
